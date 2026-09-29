@@ -2,6 +2,11 @@
 
 **下载最新版：** [haidou-helper-main.zip](https://github.com/mingxintan-coder/haidou-helper/archive/refs/heads/main.zip)（解压后双击 `start.bat`）
 
+> **English:** Mayhem Helper — a live build/augment advisor overlay for League of Legends ARAM: Mayhem.
+> Download the zip above, unzip, double-click `start.bat`. Switch the interface to English in the ⋯ menu →
+> 「语言 / Language」→ English (or run with `--ui-lang en`), then restart. English mode also uses English item/champion/augment
+> names (`en_US`) so augment-screen detection matches an English game client; use `--lang` to pick another client language.
+
 ## 使用
 1. 安装 Python 3.8+（python.org，安装时勾选 “Add python to PATH”）。
 2. 双击 `demo.bat` 先看效果（不用开游戏，会模拟一局装备变化、阵亡和一次三选一）。
@@ -28,6 +33,7 @@
   别人买装备、升级不会弹开。鼠标在窗口上停 0.6 秒才展开（打团时划过去不会误弹），移开 1 秒收起；📌 固定展开（只在本次有效）。
 - 标题栏：连线状态灯｜「识别 F8」识别三选一｜📌｜⋯ 设置（字号、胜率分段、一直自动识别、手动输入、关闭）。
   点底部「ARAMKit … ⇄」也能直接切换全部分段 / 高分段。标题栏可拖动，位置和设置都会记住。
+- **语言 / Language**：⋯ →「语言 / Language」选中文或 English，重新打开后生效。英文界面会同时使用英文的装备/英雄/增幅名称（英文客户端）。
 - 名称和你的游戏客户端一致（zh_MY：简体字＋台服用语）；台服繁体用 `--lang zh_TW`，国服用 `--lang zh_CN`。
 - 为了不拖慢游戏：程序优先级调低，文字识别只用 1 个 CPU 核心、只在需要时运行。
 
@@ -91,4 +97,4 @@
 - 海斗三张地图（咆啸深渊、高辛渡口、屠戮大桥）都按海斗处理：同时看游戏模式名称和地图编号。
 - 识别有问题时，在三选一画面按 F8，截图和识别文字会存到 `%USERPROFILE%\.lol_haidou_helper\debug\`。
 - 其他参数：`--console` 文字模式，`--alpha 0.8` 透明度，`--scale 1.2` 字号，`--no-scan` 关闭屏幕识别，`--no-stats` 不用网上胜率，`--no-click` 不自动记录点选，`--auto-scan` 一直自动识别，`--hotkey F9` 换快捷键，
-  `--web` 同时开网页查看。
+  `--web` 同时开网页查看，`--ui-lang en` 英文界面。
