@@ -1,9 +1,13 @@
 {
- "version": "1.7.0",
+ "version": "1.8.0",
  "date": "2026-09-29",
  "notes": [
-  "新增英文界面：⋯ →「语言 / Language」→ English（重新打开后生效）",
-  "英文模式使用英文装备/英雄/增幅名称，支持英文客户端的三选一识别",
-  "English interface: ⋯ menu → Language → English (restart to apply)"
- ]
+  "一键更新：点标题栏「⇪ 新版」直接从 GitHub 更新，不用重新下载 zip",
+  "One-click update from GitHub (click \"⇪ New\" in the title bar)"
+ ],
+ "files": {
+  "haidou_helper.py": "25604db4bc8fc773b78e191ecdfc75f352df79650fe59754512376272a37d0f2",
+  "lang_en.py": "c66bc85d9d58a27812e8c9c50574be57a19ff88474ec7d399d7364f5809c7c21",
+  "README.md": "02e14dbf1748ce3b25079c6abd5f623298dfc6585f3ac8a494bf1aa631b96e43"
+ }
 }

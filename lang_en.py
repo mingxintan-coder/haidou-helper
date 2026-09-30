@@ -333,6 +333,8 @@ EN = {'【战术建议】': '[Tactics]',
  '克制暴击': 'Anti-crit',
  '克制攻速': 'Anti-attack-speed'}
 
+EN.update({'下载 {0}…': 'Downloading {0}…', '{0} 校验不符（GitHub 可能还没同步，稍后再试）': '{0} checksum mismatch (GitHub may not have synced yet, try again later)', '更新中…': 'Updating…', '已更新到 v{0}，重新打开海斗助手生效': 'Updated to v{0}. Restart Mayhem Helper to apply', '已是最新文件，重新打开即可': 'Files already up to date, just restart', '更新失败：{0}': 'Update failed: {0}', '更新失败': 'Update failed', '已更新 ✓ 请重新打开': 'Updated ✓ please restart', '\n点一下直接更新（从 GitHub 下载并校验），重新打开生效': '\nClick to update directly (downloaded from GitHub and verified); restart to apply', '输入「更新」回车直接更新': 'Type "update" and press Enter to update', '更新': 'update'})
+
 COMBOS_EN = {'Aatrox': {'notes': ['Use E to adjust so all three Q casts land with the sweet spot (outer edge)',
                       'R for speed to stick to targets; heals more the lower you get'],
             'style': "Frontline fighter: go in after they burn CC, don't back off with R up"},

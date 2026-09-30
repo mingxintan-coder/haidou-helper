@@ -19,6 +19,7 @@
 只需要 Python 3.8+ 标准库（Windows 官方安装包自带 tkinter）。
 """
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -32,7 +33,7 @@ import urllib.error
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.8.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -2720,6 +2721,46 @@ def check_app_version():
     return None, err
 
 
+RAW_BASE = "https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/"
+UPDATABLE = ("haidou_helper.py", "lang_en.py", "README.md")    # 一键更新只会替换这几个文件
+
+
+def install_update(manifest, log=print):
+    """用户点「立即更新」后才执行：从本仓库下载 version.json 列出的程序文件，
+    每个都核对 SHA-256、.py 先检查语法，全部没问题才替换；旧文件留成 .bak 可还原。重新打开后生效。"""
+    prog_dir = os.path.dirname(os.path.abspath(__file__))
+    files = manifest.get("files") or {}
+    new = {}
+    for name in UPDATABLE:
+        sha = files.get(name)
+        if not sha:
+            continue
+        path = os.path.join(prog_dir, name)
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                if hashlib.sha256(f.read()).hexdigest() == sha:
+                    continue                      # 没变，不用下载
+        log(tr("下载 {0}…").format(name))
+        req = urllib.request.Request(RAW_BASE + name + "?v=" + sha[:8],
+                                     headers={"User-Agent": f"haidou-helper/{APP_VERSION}", "Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            data = r.read()
+        if hashlib.sha256(data).hexdigest() != sha:
+            raise RuntimeError(tr("{0} 校验不符（GitHub 可能还没同步，稍后再试）").format(name))
+        if name.endswith(".py"):
+            compile(data, name, "exec")
+        new[name] = data
+    for name, data in new.items():
+        path = os.path.join(prog_dir, name)
+        tmp = path + ".new"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        if os.path.exists(path):
+            os.replace(path, path + ".bak")
+        os.replace(tmp, path)
+    return list(new)
+
+
 # --------------------------------------------------------------------------------------
 # 数据版本更新：跟着游戏 / 海斗版本走
 # --------------------------------------------------------------------------------------
@@ -2796,6 +2837,20 @@ class DataUpdater:
 
     def check_now(self):
         self.now.set()
+
+    def upgrade(self):
+        """一键更新（背景执行）"""
+        q = self.engine.q
+        m = self.app_new
+        if not m:
+            return
+        try:
+            q.put(("data", tr("更新中…")))
+            changed = install_update(m, log=lambda x: q.put(("data", x)))
+            q.put(("upgraded", tr("已更新到 v{0}，重新打开海斗助手生效").format(m.get("version")) if changed
+                   else tr("已是最新文件，重新打开即可")))
+        except Exception as e:  # noqa
+            q.put(("data", tr("更新失败：{0}").format(e)))
 
     def _remote_versions(self):
         game = http_json(DDRAGON + "/api/versions.json", timeout=10)[0]
@@ -2922,6 +2977,9 @@ def run_console(engine, scanner=None):
     def reader():
         for line in sys.stdin:
             parts = line.strip().split(maxsplit=1)
+            if parts and parts[0].lower() in (tr("更新").lower(), "update") and getattr(engine, "updater", None):
+                threading.Thread(target=engine.updater.upgrade, daemon=True).start()
+                continue
             if parts and parts[0].lower() in keymap:
                 engine.set_manual(keymap[parts[0].lower()], parts[1] if len(parts) > 1 else "")
     threading.Thread(target=reader, daemon=True).start()
@@ -2933,7 +2991,7 @@ def run_console(engine, scanner=None):
                 print(format_rec(payload), flush=True)
             elif kind == "appupd":
                 print(tr('· 海斗助手有新版本 v{0}：').format(payload.get('version')) + tr("；").join(payload.get("notes", [])[:3]) +
-                      tr('\n  下载：{0}').format(REPO_URL), flush=True)
+                      "\n  " + tr("输入「更新」回车直接更新"), flush=True)
             elif payload != last_status:
                 print("·", payload, flush=True)
                 last_status = payload
@@ -3073,13 +3131,23 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             status.config(text=text, fg=DIM, cursor="")
 
     def open_download(_e=None):
-        if st.get("app_new"):
+        """点「⇪ 新版」：直接从 GitHub 更新（没有文件清单的旧版本就打开下载页）"""
+        m = st.get("app_new")
+        up = getattr(engine, "updater", None)
+        if not m or st.get("upgrading"):
+            return
+        if m.get("files") and up is not None:
+            st["upgrading"] = True
+            st["status_hold"] = time.time() + 120
+            set_status(tr("更新中…"))
+            threading.Thread(target=up.upgrade, daemon=True).start()
+        else:
             import webbrowser
             webbrowser.open(REPO_URL)
     status.bind("<Button-1>", open_download, add="+")
     hover(status, lambda: (tr("海斗助手 v{} 已发布（你现在是 v{}）\n").format(st["app_new"].get("version"), APP_VERSION) +
                            "\n".join("· " + x for x in st["app_new"].get("notes", [])[:6]) +
-                           tr("\n点一下打开下载页，下载后解压覆盖旧文件")) if st.get("app_new") else "")
+                           tr("\n点一下直接更新（从 GitHub 下载并校验），重新打开生效")) if st.get("app_new") else "")
 
     def hbtn(text, cmd, fg=SUB, bg=HEAD):
         b = tk.Label(header, text=text, bg=bg, fg=fg, font=F["small"], padx=7, pady=3, cursor="hand2")
@@ -3545,11 +3613,18 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                     show(payload, flash=not payload.get("quiet"))
                     if not hold:
                         set_status("")
-                elif kind == "appupd":         # 程序有新版本：只提醒，点一下打开下载页
+                elif kind == "upgraded":       # 一键更新完成
+                    st["app_new"], st["upgrading"] = None, False
+                    set_status(tr("已更新 ✓ 请重新打开"))
+                    st["status_hold"] = time.time() + 10 ** 9
+                    st["data_msg"] = payload
+                elif kind == "appupd":         # 程序有新版本：点一下直接更新
                     st["app_new"] = payload
                     set_status("")
                 elif kind == "data":           # 数据版本检查 / 更新
                     st["data_msg"] = payload
+                    if payload.startswith(tr("更新失败")):
+                        st["upgrading"] = False
                     set_status(tr("数据已更新 ✓") if payload.startswith(tr("数据已更新")) else short(payload, 14))
                     st["status_hold"] = time.time() + 8
                     st["hold_until"] = time.time() + 6
