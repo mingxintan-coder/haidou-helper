@@ -33,7 +33,7 @@ import urllib.error
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.9.2"
+APP_VERSION = "1.10.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -696,6 +696,45 @@ class GameData:
                 a.setdefault("aliases", []).append(en)
                 n += 1
         return n
+
+    def add_arammayhem(self, am):
+        """并入 arammayhem.com：按英文名 / 繁中名 / 简中名对到库里的增幅，
+        把各语言名称都记为别名（国服、台服、英文客户端的卡名都认得），再记下国服选取率与推荐组合。"""
+        def key(x):
+            return re.sub(r"[\s'’\-!.,:：·]", "", simp(str(x))).lower()
+        index = {}
+        for a in self.augments:
+            for n in [a["name"]] + a.get("aliases", []):
+                index.setdefault(key(n), a)
+        slug_to_id, matched = {}, 0
+        for r in am.get("augments", []):
+            names = r.get("name") if isinstance(r.get("name"), dict) else \
+                {k[5:]: v for k, v in r.items() if k.startswith("name_")}
+            a = next((index.get(key(names[lc])) for lc in ("en", "zh-TW", "zh-CN") if names.get(lc)
+                      and index.get(key(names[lc]))), None)
+            if a is None:
+                continue
+            matched += 1
+            for lc, n in names.items():
+                n = simp(n) if lc.startswith("zh") else n
+                if n and n != a["name"] and n not in a.setdefault("aliases", []):
+                    a["aliases"].append(n)
+            if isinstance(r.get("pickRate"), (int, float)):
+                a["am_pick"] = r["pickRate"] / 100.0
+            slug_to_id[r.get("augmentId")] = a
+        combos = {}
+        for c in am.get("combos", []):
+            types = {str(x).lower() for x in c.get("types", [])}
+            kind = "good" if types & AM_GOOD else "bad" if types & AM_BAD else None
+            if not kind:
+                continue
+            for sid in c.get("augmentIds", []):
+                a = slug_to_id.get(sid)
+                if a is not None:
+                    combos[(str(c.get("championId", "")).lower(), a["name"])] = kind
+        self.am_combos = combos
+        self.am_matched = matched
+        return matched
 
     def merge_augments(self, extra):
         """合并网上的增幅描述（有属性标注，覆盖所有海斗增幅）。
@@ -1934,15 +1973,28 @@ class Advisor:
         owned = self.items_profile(me.items)
         if owned and bv and cosine(owned, bv) > 0.6:
             factors.append((0.06, tr("和你现有装备属性吻合")))
+        champ = (self.gd.champ(me.cid) or {}).get("id", me.cid)
+        combo = getattr(self.gd, "am_combos", {}).get((str(champ).lower(), a["name"]))
+        combo_f = (0.15, tr("arammayhem.com 标注为这个英雄的强力组合")) if combo == "good" else \
+            (-0.2, tr("arammayhem.com 标注为这个英雄的陷阱组合")) if combo == "bad" else None
         gate = 0.6 if not bv else min(1.0, max(0.2, (fit - 0.2) / 0.4))
         situ = sum(v * (gate if v > 0 else 1) for v, _ in factors)
         sf = self.aug_stat_factor(a, cs, stage, [m["id"] for m in my_augs if m.get("id")])
+        # 国服整体选取率（arammayhem.com）：大家常拿的增幅小幅加分，冷门的小幅扣分；
+        # 编辑整理的「这个英雄 + 这个增幅」强力 / 陷阱组合不受契合度打折（是针对这个英雄的）
+        am_pick = a.get("am_pick")
+        pop = 0.12 * (math.sqrt(min(am_pick, 0.6) / 0.6) - 0.4) if am_pick is not None else 0.0
+        if combo_f:
+            situ += combo_f[0]
+            factors.insert(0, combo_f)
         if sf:
             # 有这个英雄的实战胜率：以胜率为主，本局分析做修正（通用型增幅不会因为「不挑英雄」吃亏）
-            raw = 0.2 + 0.35 * fit + situ + 0.03 * a.get("rarity", 0) + min(0.55, sf[0] * 1.3)
+            raw = 0.2 + 0.35 * fit + situ + 0.03 * a.get("rarity", 0) + min(0.55, sf[0] * 1.3) + pop
         else:
-            raw = 0.12 + 0.55 * fit + situ + 0.05 * a.get("rarity", 0)
+            raw = 0.12 + 0.55 * fit + situ + 0.05 * a.get("rarity", 0) + 1.5 * pop
         rf = factors + ([(sf[0], sf[1])] if sf and abs(sf[0]) >= 0.08 else [])
+        if am_pick is not None and (am_pick >= 0.3 or am_pick < 0.03):
+            rf.append((0.05 if am_pick >= 0.3 else -0.05, tr('国服选取率 {0:.0f}%').format(am_pick * 100)))
         return {"name": a["name"], "score": self.to_score(raw), "raw": raw,
                 "rarity": a.get("rarity", 0), "reason": self.reason(fit_text, rf),
                 "known": bool(a.get("desc")), "wr": sf[2] if sf else None, "stat_text": sf[1] if sf else ""}
@@ -3002,6 +3054,37 @@ def install_update(manifest, log=print):
 
 
 # --------------------------------------------------------------------------------------
+# 第二个数据源：arammayhem.com 公开数据（CC BY 4.0，注明「Data: arammayhem.com」即可使用）
+# 国服海斗统计：增幅选取率、7 种语言的增幅名称、编辑整理的「强力 / 陷阱」英雄+增幅组合。每天最多下载一次。
+# --------------------------------------------------------------------------------------
+AM_BASE = "https://arammayhem.com/data/v1/latest/"
+AM_ATTRIBUTION = "Data: arammayhem.com (CC BY 4.0)"
+AM_GOOD = {"god", "strong", "op", "best", "core"}
+AM_BAD = {"trap", "weak", "bad", "avoid"}
+
+
+def load_arammayhem(log=print):
+    """回传 {"augments": [...], "combos": [...]}；下载失败用旧缓存，都没有就回传空的"""
+    d = os.path.join(APP_DIR, "arammayhem")
+    os.makedirs(d, exist_ok=True)
+    out = {}
+    for name in ("augments", "combos"):
+        path = os.path.join(d, name + ".json")
+        data = None
+        if not os.path.exists(path) or time.time() - os.path.getmtime(path) > 24 * 3600:
+            try:
+                data = http_json(AM_BASE + name + ".json", timeout=20)
+                write_json(path, data)
+            except Exception as e:  # noqa
+                log(tr('[数据] 下载失败 {0}: {1}').format(AM_BASE + name + ".json", e))
+        if data is None:
+            data = read_json(path)
+        rows = data.get("rows", []) if isinstance(data, dict) else (data or [])
+        out[name] = [r for r in rows if isinstance(r, dict)]
+    return out
+
+
+# --------------------------------------------------------------------------------------
 # 数据版本更新：跟着游戏 / 海斗版本走
 # --------------------------------------------------------------------------------------
 def load_all(lang, bracket="all", use_stats=True, log=print, force=False):
@@ -3021,6 +3104,12 @@ def load_all(lang, bracket="all", use_stats=True, log=print, force=False):
             stats.game_version = ".".join(str(gd.version).split(".")[:2])
             log(tr('[胜率] {0}：海斗增幅 {1} 个，商店成品装备 {2} 件').format(stats.label(), len(extra), len(allow)))
     gd.add_english_names(log=log)      # 英文客户端的卡名也认得（按编号对应）
+    try:
+        n = gd.add_arammayhem(load_arammayhem(log=log))
+        if n:
+            log(tr('[arammayhem] 对上 {0} 个增幅（多语言名称、国服选取率、推荐组合）').format(n))
+    except Exception as e:  # noqa   第二个数据源出问题不影响主要功能
+        log(tr('[arammayhem] 读取失败：{0}').format(e))
     return gd, stats
 
 
@@ -3523,6 +3612,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             lines.append(st["data_msg"])
         elif up is not None and up.last_result:
             lines.append(up.last_result)
+        if getattr(engine.gd, "am_matched", 0):
+            lines.append(tr("增幅多语言名称 / 国服选取率 / 推荐组合：") + AM_ATTRIBUTION)
         lines.append(tr("点一下切换 全部分段 / 高分段"))
         return "\n".join(lines)
     hover(footer, footer_tip)

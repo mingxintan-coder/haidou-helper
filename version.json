@@ -1,14 +1,14 @@
 {
- "version": "1.9.2",
+ "version": "1.10.0",
  "date": "2026-09-30",
  "notes": [
-  "装备推荐改成明确的四项加权公式（契合度 / 热门度 / 胜率 / 本局针对），鼠标移到装备上可看算式",
-  "「差多少金」改成整数；修复部分英雄名字显示成 Character_xxx_Name",
-  "Clear 4-part item formula (fit / popularity / win rate / situational); integer gold; champion name fix"
+  "新增第二个数据源 arammayhem.com（国服海斗统计，CC BY 4.0）：7 种语言增幅名称、国服增幅选取率、英雄+增幅强力/陷阱组合",
+  "简中（国服）客户端的增幅卡名也能识别",
+  "Second data source arammayhem.com: multilingual augment names, CN pick rates, strong/trap combos"
  ],
  "files": {
-  "haidou_helper.py": "c19d1b4c23464bc02dd48b612bfeed18b5e6c5cf6c15b9d4c2e013b9a0c3e478",
-  "lang_en.py": "6bb6a7c0d891dfdce0da6c90585cda00ae359684d9399d4b5fa1129dce8179b2",
-  "README.md": "d79ea84c127e749aec5b8751e94d2ab2af8857f337ff47a6b49acd525e27833b"
+  "haidou_helper.py": "1e73964cd275d44d8b6635c8d6b730da87eae7bfdb33418217514ecb4cb94984",
+  "lang_en.py": "6807c2fb6aebad6efdeed2347bd33bc491370d1847f03c17798cb85a87cdb006",
+  "README.md": "26d4e76eea16b21eff4c26ba7e9019b330790d21c0732b94480c6dd937a89bf0"
  }
 }
