@@ -33,7 +33,7 @@ import urllib.error
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.9.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -168,6 +168,7 @@ _CC_WORDS = ("晕眩", "击飞", "禁锢", "定身", "嘲讽", "压制", "魅惑
 
 def champ_role(gd, cid, role):
     """英雄定位：已收录的英雄查表；版本新出的英雄按技能描述推导（随版本自动更新）"""
+    cid = (gd.champ(cid) or {}).get("id", cid)          # 统一成 Data Dragon 的写法（接口偶尔大小写不同）
     if cid in COMBOS or any(cid in t for t in ROLE_TABLES.values()):
         return cid in ROLE_TABLES[role]
     cache = gd.__dict__.setdefault("_roles", {})
@@ -471,6 +472,23 @@ def add_into(dst, src, w=1.0):
 # --------------------------------------------------------------------------------------
 # 网络
 # --------------------------------------------------------------------------------------
+def write_json(path, data):
+    """先写临时文件再换上：程序被关掉或断电时不会留下写了一半的缓存"""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def read_json(path):
+    """读缓存；文件坏了回传 None（之后会重新下载）"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
 def http_json(url, timeout=10, local=False):
     req = urllib.request.Request(url, headers={"User-Agent": "haidou-helper/1.0"})
     if local:
@@ -508,34 +526,33 @@ class GameData:
         except Exception as e:  # noqa
             log(tr('[数据] 无法获取版本号（{0}），尝试使用本地缓存').format(e))
 
-        def cached(name, url):
+        fresh = {"ok": True}      # 这次该下载的是否都下载成功（失败就不写版本标记，下次再试）
+
+        def cached(name, url, optional=False):
             path = os.path.join(APP_DIR, name)
             if url:
                 try:
                     data = http_json(url, timeout=30)
-                    with open(path, "w", encoding="utf-8") as f:
-                        json.dump(data, f, ensure_ascii=False)
+                    write_json(path, data)
                     return data
                 except urllib.error.HTTPError as e:
-                    if e.code == 404:  # 该数据来源不存在（备用地址），记为空，之后不再尝试
-                        with open(path, "w", encoding="utf-8") as f:
-                            json.dump([], f)
+                    if e.code == 404 and optional:  # 备用的增幅来源不存在：记为空，之后不再尝试
+                        write_json(path, [])
                         return []
                     log(tr('[数据] 下载失败 {0}: {1}').format(url, e))
+                    fresh["ok"] = False
                 except Exception as e:  # noqa
                     log(tr('[数据] 下载失败 {0}: {1}').format(url, e))
-            if os.path.exists(path):
-                with open(path, encoding="utf-8") as f:
-                    return json.load(f)
-            return None
+                    fresh["ok"] = False
+            return read_json(path)
 
         base = f"{DDRAGON}/cdn/{version}/data/{lang}" if version else None
         need_dl = version and not os.path.exists(os.path.join(APP_DIR, f"ver_{version}_{lang}"))
         items_raw = cached(f"item_{lang}.json", base + "/item.json" if need_dl else None)
         champ_raw = cached(f"champion_{lang}.json", base + "/champion.json" if need_dl else None)
-        if items_raw is None or champ_raw is None:
+        if not isinstance(items_raw, dict) or not isinstance(champ_raw, dict):
             raise RuntimeError(tr("没有装备/英雄数据：请确认能访问 ddragon.leagueoflegends.com 后重试"))
-        if need_dl:
+        if need_dl and fresh["ok"]:
             open(os.path.join(APP_DIR, f"ver_{version}_{lang}"), "w").close()
 
         items = {int(k): v for k, v in items_raw.get("data", {}).items() if k.isdigit()}
@@ -554,7 +571,7 @@ class GameData:
             ap = os.path.join(APP_DIR, f"aug_{i}_{aug_lang}.json")
             stale = not os.path.exists(ap) or (time.time() - os.path.getmtime(ap) > 24 * 3600
                                                and os.path.getsize(ap) > 2)   # 404 过的备用地址不重试
-            data = cached(f"aug_{i}_{aug_lang}.json", url if version and (need_dl or stale) else None)
+            data = cached(f"aug_{i}_{aug_lang}.json", url if version and (need_dl or stale) else None, optional=True)
             for a in cls._parse_augments(data):
                 if a.get("current") and a.get("id"):
                     current_ids.add(a["id"])
@@ -574,8 +591,13 @@ class GameData:
                     old["current"] = True
                 if not old["desc"] and a["desc"]:
                     old["desc"], old["tags"] = a["desc"], a["tags"]
-        for a in cls._local_augments():
-            augs[a["name"]] = a
+        for a in cls._local_augments():   # 自己补充的描述：已有的增幅只补描述，不丢掉编号（胜率要用）
+            old = augs.get(a["name"])
+            if old:
+                if a["desc"]:
+                    old["desc"], old["tags"] = a["desc"], a["tags"]
+            else:
+                augs[a["name"]] = a
         if not version:   # 断网：用缓存对应的版本号
             marks = [fn[4:-len(lang) - 1] for fn in os.listdir(APP_DIR)
                      if fn.startswith("ver_") and fn.endswith("_" + lang)]
@@ -620,7 +642,7 @@ class GameData:
         p = os.path.join(APP_DIR, "augments.json")
         if os.path.exists(p):
             try:
-                with open(p, encoding="utf-8") as f:
+                with open(p, encoding="utf-8-sig") as f:
                     for a in json.load(f):
                         out.append(make_aug(a["name"], clean_desc(a.get("desc", "")),
                                             GameData._rarity(a.get("rarity", 0))))
@@ -628,12 +650,18 @@ class GameData:
                 print(tr("augments.json 解析失败:"), e)
         p = os.path.join(APP_DIR, "augments.txt")
         if os.path.exists(p):
-            with open(p, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        name, _, desc = line.partition("|")
-                        out.append(make_aug(name.strip(), desc.strip(), 0))
+            for enc in ("utf-8-sig", "gbk"):        # 记事本存的可能是 ANSI(GBK)
+                try:
+                    with open(p, encoding=enc) as f:
+                        lines = f.read().splitlines()
+                    break
+                except (UnicodeDecodeError, OSError):
+                    lines = []
+            for line in lines:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    name, _, desc = line.partition("|")
+                    out.append(make_aug(name.strip(), desc.strip(), 0))
         return out
 
     def merge_augments(self, extra):
@@ -743,7 +771,8 @@ class GameData:
         for d in ("ANTIHEAL", "TENACITY", "SURVIVE", "MAXHP_DMG", "TRUE", "ANTICRIT"):
             if kt.get(d):
                 special.add(d)
-        if kt.get("HEALSHIELD") and re.search(r"治疗(和|与)护盾|治疗.{0,4}护盾.{0,4}(强度|效果)", self.item_desc(iid)):
+        if kt.get("HEALSHIELD") and re.search(r"治疗(和|与)护盾|治疗.{0,4}护盾.{0,4}(强度|效果)|(?i:heal (and|&) shield power)",
+                                              self.item_desc(iid)):
             v["HEALSHIELD"] = 1.0
         for d in ITEM_ID_TAGS.get(iid, []):
             special.add(d)
@@ -783,7 +812,12 @@ class GameData:
             maps = it.get("maps", {})
             if maps and not maps.get(mkey, False):
                 continue
-            if it.get("into"):
+            # 还能再升级、且升级版在这张地图买得到的，不是成品（鞋子的「升级版」在海斗买不到，所以鞋子保留）
+            def sold_here(t):
+                u = self.items.get(int(t)) if str(t).isdigit() else None
+                return bool(u) and u.get("gold", {}).get("purchasable", True) and u.get("inStore") is not False \
+                    and (not u.get("maps") or u["maps"].get(mkey, False))
+            if any(sold_here(t) for t in it.get("into", [])):
                 continue
             tags = it.get("tags", [])
             if "Consumable" in tags or "Trinket" in tags:
@@ -843,23 +877,24 @@ class StatsProvider:
         self.on_ready = None
         self.error = ""
         self.item_allow = None       # 海斗商店里买得到的成品装备编号
+        self.failed = {}             # 下载失败的英雄 -> 时间（稍后再试）
         self.aug_seen = None         # 实际海斗对局里出现过的增幅编号
 
     # ---------- 基础 ----------
     def _get(self, path, cache_name, max_age=None):
         cache = os.path.join(self.dir, cache_name)
         if os.path.exists(cache) and (max_age is None or time.time() - os.path.getmtime(cache) < max_age):
-            with open(cache, encoding="utf-8") as f:
-                return json.load(f)
+            data = read_json(cache)
+            if data is not None:          # 缓存坏了就重新下载
+                return data
         try:
             data = http_json(f"{ARAMKIT}/{path}", timeout=20)
-            with open(cache, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
+            write_json(cache, data)
             return data
         except Exception as e:  # noqa
-            if os.path.exists(cache):  # 断网时用旧缓存
-                with open(cache, encoding="utf-8") as f:
-                    return json.load(f)
+            data = read_json(cache) if os.path.exists(cache) else None   # 断网时用旧缓存
+            if data is not None:
+                return data
             raise e
 
     def load_version(self, force=False):
@@ -883,6 +918,8 @@ class StatsProvider:
         with self.lock:
             self.dataset = ds
             self.champs.clear()          # 换分段：重新读取英雄统计
+            self.pending.clear()
+            self.failed.clear()
         if self.on_ready:
             self.on_ready()
 
@@ -945,7 +982,7 @@ class StatsProvider:
         out = {}
         for c in (data or {}).values():
             b = c.get("balance") or {}
-            mods = {m.get("key"): float(m.get("value", 0)) for m in b.get("modifiers", []) if m.get("key")}
+            mods = {m.get("key"): float(m.get("value") or 0) for m in b.get("modifiers", []) if m.get("key")}
             changes = [(x.get("key", ""), simp(x.get("ability", "")), [simp(l) for l in x.get("lines", [])])
                        for x in b.get("abilityChanges", [])] if same_lang else []
             if c.get("riotId"):
@@ -1010,7 +1047,7 @@ class StatsProvider:
         with self.lock:
             if champ_key in self.champs:
                 return self.champs[champ_key]
-            if champ_key in self.pending:
+            if champ_key in self.pending or time.time() - self.failed.get(champ_key, 0) < 60:
                 return None
             self.pending.add(champ_key)
         threading.Thread(target=self._fetch, args=(champ_key,), daemon=True).start()
@@ -1021,31 +1058,36 @@ class StatsProvider:
             if not self.version and not self.load_version():
                 return
             dp = self.version["dataPath"]
-            ds = self.dataset
+            with self.lock:
+                ds = self.dataset
             raw = self._get(f"{dp}/stats/{ds}/champion-details/{key}.json",
                             f"champ_{dp.replace('/', '_')}_{key}.json" if ds == "all" else
                             f"champ_{ds}_{dp.replace('/', '_')}_{key}.json")
             parsed = self._parse(raw)
-            parsed["by_aug"] = self._fetch_single_augments(dp, key)
+            parsed["by_aug"] = self._fetch_single_augments(dp, key, ds)
             with self.lock:
+                if ds != self.dataset:       # 下载期间换了分段：这份作废
+                    return
                 self.champs[key] = parsed
+                self.failed.pop(key, None)
             if self.on_ready:
                 self.on_ready()
         except Exception as e:  # noqa
             self.error = tr('英雄胜率下载失败（{0}）').format(e)
             self.log(tr("[胜率] ") + self.error)
+            with self.lock:
+                self.failed[key] = time.time()        # 一分钟后再试，不要每秒重试
         finally:
             with self.lock:
                 self.pending.discard(key)
 
-    def _fetch_single_augments(self, dp, key):
+    def _fetch_single_augments(self, dp, key, ds="all"):
         """带某个增幅时，这个英雄各装备的胜率（原始文件约 5MB，只保留需要的部分存成小缓存）"""
-        ds = self.dataset
         cache = os.path.join(self.dir, f"sa_{dp.replace('/', '_')}_{key}.json" if ds == "all" else
                              f"sa_{ds}_{dp.replace('/', '_')}_{key}.json")
-        if os.path.exists(cache):
-            with open(cache, encoding="utf-8") as f:
-                return {int(k): {int(i): tuple(v) for i, v in d.items()} for k, d in json.load(f).items()}
+        old = read_json(cache) if os.path.exists(cache) else None
+        if isinstance(old, dict):
+            return {int(k): {int(i): tuple(v) for i, v in d.items()} for k, d in old.items()}
         try:
             raw = http_json(f"{ARAMKIT}/{dp}/stats/{ds}/champion-details/{key}-single-augments.json", timeout=60)
         except Exception as e:  # noqa
@@ -1058,8 +1100,7 @@ class StatsProvider:
                 continue
             out[int(aid)] = {int(r["id"]): (r.get("calibratedWinRate") or r.get("winRate", 0), r.get("sampleCount", 0))
                              for r in row.get("all", []) if "id" in r and r.get("sampleCount", 0) >= 200}
-        with open(cache, "w", encoding="utf-8") as f:
-            json.dump({str(k): {str(i): list(v) for i, v in d.items()} for k, d in out.items()}, f)
+        write_json(cache, {str(k): {str(i): list(v) for i, v in d.items()} for k, d in out.items()})
         return out
 
     @staticmethod
@@ -1250,61 +1291,97 @@ class Advisor:
         c = self.gd.champ(cid)
         return self.stats.get(c.get("key")) if c else None
 
-    def item_stat_factor(self, iid, cs, legend, owned_core=(), my_aug_ids=()):
-        """这件装在「这个英雄 + 你现在的出装进度 + 你已选的增幅」下的网上胜率。
-        回传 (加分, 说明, 显示用胜率)。几种条件的胜率按样本量加权合并。"""
+    @staticmethod
+    def _wmean(rows):
+        """按样本量加权的平均胜率"""
+        tot = sum(r["n"] for r in rows.values())
+        return sum(r["wr"] * r["n"] for r in rows.values()) / tot if tot else None
+
+    @staticmethod
+    def _shrink(diff, n, k):
+        """小样本收缩：样本越少越不可信（几百场的 +3% 多半是噪声，或是本来就领先才出的）"""
+        return diff * n / (n + k)
+
+    def item_stat_factor(self, iid, cs, nslot, owned_core=(), my_aug_ids=()):
+        """这件装在「这个英雄 + 第几件 + 已选增幅 + 已出路线」下的网上表现。
+        回传 (加分, 说明, 显示用胜率, 热门度 0~1)。
+        加分 = 胜率差（和同一条件下的平均比，并做小样本收缩）+ 热门度：大家实际常出的装备优先，
+        几乎没人出的装备就算胜率看起来高也不推。"""
         if not cs:
             return None
-        base = cs["wr"]
-        parts = []   # (相对英雄平均的胜率差, 权重, 说明, 胜率)
-        # 1) 第几件装备时出它
-        slot = cs["item_slots"].get(legend + 1, {}).get(iid)
-        r = slot if slot and slot["n"] >= 800 else cs["items"].get(iid)
-        if r and r["n"] >= 800:
-            parts.append((r["wr"] - base, 1.0, tr('网上胜率 {0:.1f}%').format(r['wr'] * 100), r["wr"]))
+        cache = cs.setdefault("_base", {})
+        parts = []   # (收缩后的胜率差, 实际胜率差, 说明, 胜率)
+        # 1) 第几件时出它（ARAMKit 的第几件包含鞋子）：和这一件的平均比
+        tbl = cs["item_slots"].get(nslot) or {}
+        slot = tbl.get(iid)
+        over = cs["items"].get(iid)
+        if ("slot", nslot) not in cache:
+            cache[("slot", nslot)] = self._wmean(tbl)
+        if "all" not in cache:
+            cache["all"] = self._wmean(cs["items"])
+        if slot and slot["n"] >= 300 and cache[("slot", nslot)]:
+            r, base = slot, cache[("slot", nslot)]
+        elif over and over["n"] >= 300 and cache["all"]:
+            r, base = over, cache["all"]
+        else:
+            r, base = None, None
+        if r:
+            parts.append((self._shrink(r["wr"] - base, r["n"], 20000), r["wr"] - base,
+                          tr('网上胜率 {0:.1f}%').format(r['wr'] * 100), r["wr"]))
         # 2) 你已选的增幅：带这个增幅时出这件的胜率，对比带这个增幅的平均
         for aid in my_aug_ids:
             table = cs.get("by_aug", {}).get(aid, {})
             row = table.get(iid)
-            # 基准＝带这个增幅时「所有装备」的平均胜率，只比同一增幅下装备之间的相对好坏
             bases = cs.setdefault("_aug_item_base", {})
             if aid not in bases and table:
                 tot = sum(n for _, n in table.values())
                 bases[aid] = sum(w * n for w, n in table.values()) / tot if tot else None
             aug_base = bases.get(aid)
             if row and aug_base and row[1] >= 300:
-                w = min(1.5, row[1] / 3000)
                 name = self.aug_name_by_id(aid)
-                parts.append((row[0] - aug_base, w, tr('带「{0}」时胜率 {1:.1f}%').format(name, row[0] * 100), row[0]))
-        # 3) 你目前的出装路线：主流路线的下一件 / 三件核心后的常见后续
+                parts.append((self._shrink(row[0] - aug_base, row[1], 3000), row[0] - aug_base,
+                              tr('带「{0}」时胜率 {1:.1f}%').format(name, row[0] * 100), row[0]))
+        # 3) 你目前的出装路线：主流路线的下一件（和所有路线的平均比）/ 三件核心后的常见后续（和这条路线比）
+        routes = cs.get("routes", [])
+        if "routes" not in cache:
+            tot = sum(rt["n"] for rt in routes)
+            cache["routes"] = (sum(rt["wr"] * rt["n"] for rt in routes) / tot if tot else None, tot)
+        rbase, rtot = cache["routes"]
         owned = set(owned_core)
-        best = None
-        for rt in cs.get("routes", []):
+        nxt_n, nxt_w, later = 0, 0.0, None
+        for rt in routes:
             order = rt["order"]
-            if not order or not owned.issubset(order) and not set(order).issubset(owned):
+            if not order:
                 continue
             if owned.issubset(order) and len(owned) < len(order):
-                nxt = next((i for i in order if i not in owned), None)
-                if nxt == iid and rt["n"] >= 500 and (best is None or rt["n"] > best[1]):
-                    best = (rt["wr"], rt["n"], tr("主流路线的下一件"))
+                if next((i for i in order if i not in owned), None) == iid:
+                    nxt_n += rt["n"]
+                    nxt_w += rt["wr"] * rt["n"]
             elif set(order).issubset(owned) and iid in rt["later"]:
                 wr, n = rt["later"][iid]
-                if n >= 300 and (best is None or n > best[1]):
-                    best = (wr, n, tr("你这套核心后的常见选择"))
-        if best:
-            parts.append((best[0] - base, min(1.5, best[1] / 5000) + 0.5, tr('{0}，胜率 {1:.1f}%').format(best[2], best[0] * 100), best[0]))
+                if n >= 300 and (later is None or n > later[2]):
+                    later = (wr - rt["wr"], wr, n)
+        if nxt_n >= 500 and rbase:
+            wr = nxt_w / nxt_n
+            parts.append((self._shrink(wr - rbase, nxt_n, 20000), wr - rbase,
+                          tr('{0}，胜率 {1:.1f}%').format(tr("主流路线的下一件"), wr * 100), wr))
+        elif later:
+            parts.append((self._shrink(later[0], later[2], 5000), later[0],
+                          tr('{0}，胜率 {1:.1f}%').format(tr("你这套核心后的常见选择"), later[1] * 100), later[1]))
+        # 热门度：这一件时的购买占比，或整局的购买率（取较高的）
+        pop = max(slot["pick"] if slot else 0.0, 0.5 * over["pick"] if over else 0.0)
+        if nxt_n and rtot:
+            pop = max(pop, nxt_n / rtot)
+        if pop < 0.005:
+            prior = -0.12
+        else:
+            prior = 0.30 * math.sqrt(min(pop, 0.4) / 0.4)
         if not parts:
-            if iid not in cs["items_any"]:
-                return (-0.12, tr("这个英雄在海斗几乎没人出"), None)
-            return None
-        wsum = sum(w for _, w, _, _ in parts)
-        lift = sum(l * w for l, w, _, _ in parts) / wsum
-        v = max(-0.35, min(0.35, lift * 8))
-        if r and r["pick"] >= 0.15:
-            v += 0.04
-        # 说明文字用最贴合本局的那一项（增幅/路线条件优先），数字是那一项自己的高低
-        main = max(parts[1:], key=lambda x: x[1]) if len(parts) > 1 else parts[0]
-        return (v, tr('{0}（比平均{1:+.1f}%）').format(main[2], main[0] * 100), main[3])
+            return (prior, tr("这个英雄在海斗几乎没人出") if pop < 0.005 else "", None, min(1.0, pop / 0.03))
+        lift = sum(l for l, _, _, _ in parts) / len(parts)
+        v = max(-0.25, min(0.25, lift * 8)) + prior
+        main = max(parts, key=lambda x: abs(x[0]))
+        return (v, tr('{0}（比平均{1:+.1f}%）').format(main[2], main[1] * 100), main[3], min(1.0, pop / 0.03))
 
     def bal(self, cid, key):
         """海斗平衡调整（例如 damageDealt -0.1 表示造成伤害 -10%）"""
@@ -1332,16 +1409,19 @@ class Advisor:
             r = cs["augs"].get(aid)
         if not r or r["n"] < 500:
             return None
-        lift, text, shown = r["wr"] - cs["wr"], tr('网上胜率 {0:.1f}%').format(r['wr'] * 100), r["wr"]
+        raw_lift = r["wr"] - cs["wr"]
+        lift = Advisor._shrink(raw_lift, r["n"], 5000)         # 小样本收缩
+        text, shown = tr('网上胜率 {0:.1f}%').format(r['wr'] * 100), r["wr"]
         for m in my_aug_ids:
             combo = cs.get("combos", {}).get(frozenset((m, aid)))
             m_base = cs["augs"].get(m, {}).get("wr")
             if combo and m_base and combo[1] >= 500:
                 clift = combo[0] - m_base          # 已有 m 的情况下再拿它，比只有 m 高多少
-                lift = (lift + 2 * clift) / 3
+                lift = (lift + 2 * Advisor._shrink(clift, combo[1], 3000)) / 3
+                raw_lift = clift
                 text, shown = tr('和已选增幅组合胜率 {0:.1f}%').format(combo[0] * 100), combo[0]
                 break
-        return (max(-0.45, min(0.45, lift * 9)), tr('{0}（比平均{1:+.1f}%）').format(text, lift * 100), shown)
+        return (max(-0.45, min(0.45, lift * 9)), tr('{0}（比平均{1:+.1f}%）').format(text, raw_lift * 100), shown)
 
     def resolve_seen(self, name, desc):
         """屏幕识别到的增幅：优先用库里的数据，库里没有就用识别到的描述打分"""
@@ -1650,6 +1730,8 @@ class Advisor:
         owned_names = {gd.item_name(i) for i in me.items}
         legend = sum(1 for i in me.items if gd.is_completed(i) and not gd.is_boots(i))
         owned_core = [i for i in me.items if gd.is_completed(i) and not gd.is_boots(i)]
+        # ARAMKit 的「第几件」包含二级鞋
+        nslot = 1 + legend + sum(1 for i in me.items if gd.is_boots(i) and gd.item_price(i) >= 900)
         my_aug_ids = [a["id"] for a in my_augs if a.get("id")]
         # 阶段：前期重核心属性，后期重针对性
         fit_w, phase = (0.72, 0.75) if legend <= 1 else (0.62, 1.0) if legend <= 3 else (0.5, 1.3)
@@ -1678,20 +1760,24 @@ class Advisor:
             syn = [a["name"] for a in my_augs if cosine(norm(a["tags"]), nv) > 0.5]
             if syn:
                 factors.append((0.08, tr('与增幅「{0}」联动').format(syn[0])))
-            sf = self.item_stat_factor(iid, cs, legend, owned_core, my_aug_ids)
+            sf = self.item_stat_factor(iid, cs, nslot, owned_core, my_aug_ids)
             dmg_item = vec.get("AD", 0) + vec.get("AP", 0) + vec.get("CRIT", 0) > 0.8
             if t["power_diff"] > 2000 and dmg_item and role not in ("tank", "support"):
                 factors.append((0.05, tr("我方领先，堆伤害滚雪球")))
             if t["power_diff"] < -2000 and ("SURVIVE" in special or (ehp and ehp[0] > 0.1)):
                 factors.append((0.06, tr("我方落后，先保命再反打")))
-            # 克制加分按契合度打折：不合定位的装备不能只靠克制排上来
+            # 克制加分按契合度、热门度打折，合计最多 +0.25：
+            # 不合定位、或这个英雄几乎没人出的装备，不能只靠「克制」排上来
             gate = min(1.0, max(0.0, (fit - 0.3) / 0.4))
-            raw = fit_w * fit + sum(v * (gate if v > 0 else 1) for v, _ in factors)
-            if sf:  # 网上胜率不受契合度打折：这是该英雄实际对局的结果
+            if sf:
+                gate *= min(1.0, 0.3 + sf[3])
+            pos = min(0.25, sum(v * gate for v, _ in factors if v > 0))
+            raw = fit_w * fit + pos + sum(v for v, _ in factors if v < 0)
+            if sf:  # 网上胜率与热门度不受契合度打折：这是该英雄实际对局的结果
                 raw += sf[0]
             dims = self.top_dims(prof, nv)
             fit_text = tr('契合你的{0}路线').format('/'.join(dims)) if dims else ""
-            rf = factors + ([(sf[0], sf[1])] if sf and abs(sf[0]) >= 0.08 else [])
+            rf = factors + ([(sf[0], sf[1])] if sf and sf[1] and abs(sf[0]) >= 0.08 else [])
             out.append({"name": gd.item_name(iid), "id": iid, "score": self.to_score(raw),
                         "raw": raw, "price": gd.item_price(iid), "reason": self.reason(fit_text, rf),
                         "wr": sf[2] if sf else None, "stat_text": sf[1] if sf else ""})
@@ -1741,14 +1827,13 @@ class Advisor:
                 factors.append(ehp)
             sf = None
             if cs:
-                rows = [r["later"][iid] for r in cs.get("routes", []) if iid in r["later"]]
                 r = cs["items"].get(iid)
-                n = (r["n"] if r else 0) + sum(x[1] for x in rows)
-                if n >= 800:
-                    wr = ((r["wr"] * r["n"] if r else 0) + sum(w * c for w, c in rows)) / n
-                    lift = wr - cs["wr"]
-                    pick = r["pick"] if r else 0
-                    sf = (max(-0.3, min(0.35, lift * 8)) + (0.05 if pick >= 0.3 else 0),
+                base = self._wmean(cs["items"])
+                if r and r["n"] >= 300 and base:
+                    wr, n, pick = r["wr"], r["n"], r["pick"]
+                    lift = wr - base
+                    prior = -0.12 if pick < 0.01 else 0.25 * math.sqrt(min(pick, 0.5) / 0.5)
+                    sf = (max(-0.25, min(0.25, self._shrink(lift, n, 20000) * 8)) + prior,
                           tr('网上胜率 {0:.1f}%（比平均{1:+.1f}%）').format(wr * 100, lift * 100) +
                           (tr('，{0:.0f}% 的人买').format(pick * 100) if pick >= 0.1 else ""), wr)
             raw = 0.3 + 0.35 * fit + sum(v for v, _ in factors) + (sf[0] if sf else 0)
@@ -2245,7 +2330,7 @@ class ScreenScanner:
             return
         import logging
         logging.getLogger("RapidOCR").setLevel(logging.ERROR)
-        light = {"EngineConfig.onnxruntime.intra_op_num_threads": 1,
+        light = {"EngineConfig.onnxruntime.intra_op_num_threads": 2,
                  "EngineConfig.onnxruntime.inter_op_num_threads": 1, "Global.use_cls": False}
         try:
             from rapidocr import RapidOCR
@@ -2257,7 +2342,7 @@ class ScreenScanner:
         except ImportError:
             try:
                 from rapidocr_onnxruntime import RapidOCR
-                self.ocr, self.kind = RapidOCR(intra_op_num_threads=1), "v1"
+                self.ocr, self.kind = RapidOCR(intra_op_num_threads=2), "v1"
             except ImportError:
                 self.error = tr("未安装 OCR 库（运行 start.bat 会自动安装）")
             except Exception as e:  # noqa
@@ -2265,6 +2350,21 @@ class ScreenScanner:
         except Exception as e:  # noqa
             self.error = tr('OCR 初始化失败：{0}').format(e)
         self.card_x = None    # 最近一次识别到的三张卡在屏幕上的 x 位置（用来判断点了哪张）
+        self.mask = None      # 挂件自己在屏幕上的位置：识别时涂黑，省时间也避免读到自己的字
+        if self.ocr is not None:
+            threading.Thread(target=self._warm_up, daemon=True).start()
+
+    def _warm_up(self):
+        """启动时先跑一次小图，第一次按 F8 就不会多等模型初始化"""
+        try:
+            import numpy as np
+            arr = np.zeros((64, 256, 3), dtype=np.uint8)
+            if self.kind == "v1":
+                self.ocr(arr, use_cls=False)
+            else:
+                self.ocr(arr)
+        except Exception:  # noqa
+            pass
 
     @property
     def available(self):
@@ -2276,7 +2376,16 @@ class ScreenScanner:
         self.screen_size = (w, h)
         c = self.CROP
         self.offset = (int(w * c[0]), int(h * c[1]))
-        return img.crop((int(w * c[0]), int(h * c[1]), int(w * c[2]), int(h * c[3])))
+        img = img.crop((int(w * c[0]), int(h * c[1]), int(w * c[2]), int(h * c[3])))
+        if self.mask:
+            try:
+                from PIL import ImageDraw
+                x0, y0, x1, y1 = self.mask
+                ox, oy = self.offset
+                ImageDraw.Draw(img).rectangle((x0 - ox, y0 - oy, x1 - ox, y1 - oy), fill=(0, 0, 0))
+            except Exception:  # noqa
+                pass
+        return img
 
     def column_of(self, x, y):
         """屏幕坐标 → 第几张卡；用识别到的卡片位置判断，不在卡片附近回传 None"""
@@ -2301,12 +2410,14 @@ class ScreenScanner:
         arr = np.asarray(img.convert("RGB"))
         lines = []
         if self.kind == "v1":
-            res, _ = self.ocr(arr)
+            res, _ = self.ocr(arr, use_cls=False)
             items = [(box, txt, sc) for box, txt, sc in (res or [])]
         else:
             r = self.ocr(arr)
             boxes, txts = getattr(r, "boxes", None), getattr(r, "txts", None)
-            scores = getattr(r, "scores", None) or [1.0] * len(txts or [])
+            scores = getattr(r, "scores", None)
+            if scores is None or len(scores) == 0:
+                scores = [1.0] * len(txts or [])
             items = list(zip(boxes if boxes is not None else [], txts or [], scores))
         for box, txt, sc in items:
             xs, ys = [p[0] for p in box], [p[1] for p in box]
@@ -2390,7 +2501,7 @@ class ScreenScanner:
     def save_debug(self, img, lines, width, offers):
         d = os.path.join(APP_DIR, "debug")
         os.makedirs(d, exist_ok=True)
-        stamp = time.strftime("%H%M%S")
+        stamp = time.strftime("%Y%m%d_%H%M%S")
         img.save(os.path.join(d, f"scan_{stamp}.png"))
         with open(os.path.join(d, f"scan_{stamp}.txt"), "w", encoding="utf-8") as f:
             f.write(tr('宽度 {0}\n结果 {1}\n\n').format(width, offers))
@@ -2475,79 +2586,102 @@ class HotkeyWatcher:
         user32 = ctypes.windll.user32
         down = False
         while True:
-            pressed = bool(user32.GetAsyncKeyState(self.vk) & 0x8000)
-            if pressed and not down:
+            st = user32.GetAsyncKeyState(self.vk)
+            pressed = bool(st & 0x8000)
+            if (pressed and not down) or (st & 0x0001 and not pressed):   # 0x0001：两次查询之间按过（很快的一下）
                 self.hit.set()
             down = pressed
-            time.sleep(0.05)
+            time.sleep(0.03)
 
 
 def scanner_loop(engine, scanner, stop, enabled, interval=3.0, clicker=None, hotkey=None):
     """
     默认「手动」：按按钮或快捷键才识别（平时完全不跑，不会拖慢游戏）。
-    * 按一下：马上识别，最多试 3 次；识别到后在三选一期间每 2 秒低频检查一次，
+    * 按一下：马上识别，最多试 3 次；识别到后在三选一期间低频检查（前 10 秒每 1.2 秒、之后每 2 秒），
       用来发现重骰（自动重新评分）、界面关闭（配合点击记录你选的卡）；再按一下＝立即刷新。
     * 勾选「自动识别」才会一直每 3 秒扫一次（较耗 CPU）。
     """
     last, misses, active = None, 0, False
     cur, changed_at = None, 0.0
     tries = 0
+    pending_pick, first_miss_grab = None, 0.0
     while not stop.is_set():
-        forced = scanner.force.is_set() or bool(hotkey and hotkey.hit.is_set())
-        if forced:
-            scanner.force.clear()
-            if hotkey:
-                hotkey.hit.clear()
-            tries = 3
-            engine.q.put(("status", tr("识别中…")))
-        run = scanner.available and (forced or active or tries > 0 or (enabled.is_set() and engine.connected))
-        if run:
-            try:
-                offers, img, lines, width = scanner.scan_full()
-            except Exception as e:  # noqa
-                engine.q.put(("status", tr('识别出错：{0}').format(e)))
-                offers, img, lines, width = None, None, [], 0
-            if offers:
-                tries, misses = 0, 0
-                names = [n for n, _ in offers]
-                known = sum(1 for n in names if engine.advisor.match_name(n, 0.75))
-                if forced or not active or known == len(names) or same_offer(last, names):
-                    if not same_offer([n for n, _ in cur or []], names):
-                        cur, changed_at = offers, time.time()   # 新的三选一或重骰
-                    engine.set_auto(offers)
-                    if not active and clicker is not None:
-                        clicker.active.set()
-                    if forced or not active:
-                        engine.q.put(("status", tr("已识别：") + " / ".join(names)))
-                    active = True
-                last = names
-            else:
-                last = None
-                if tries > 0:                      # 手动触发：再试几次
-                    tries -= 1
-                    if tries == 0 and not active:
-                        engine.q.put(("status", tr("没识别到三选一（截图已存）")))
-                        if img is not None:
-                            try:
-                                scanner.save_debug(img, lines, width, None)
-                            except Exception:  # noqa
-                                pass
-                if active:
-                    misses += 1
-                    pick = _find_pick(scanner, clicker, cur, changed_at, engine)
-                    if misses >= 3 or (pick is not None and misses >= 2):
-                        engine.set_auto([])
-                        if pick is not None:
-                            engine.add_pick(pick)
-                        if clicker is not None:
-                            clicker.active.clear()
-                            if hasattr(clicker.clicks, "clear"):
-                                clicker.clicks.clear()
-                        active, cur = False, None
+        try:
+            forced = scanner.force.is_set() or bool(hotkey and hotkey.hit.is_set())
+            if forced:
+                scanner.force.clear()
+                if hotkey:
+                    hotkey.hit.clear()
+                tries = 3
+                engine.scanning = True
+                engine.q.put(("scan", tr("识别中…")))
+            run = scanner.available and (forced or active or tries > 0 or (enabled.is_set() and engine.connected))
+            if run:
+                scanner.mask = getattr(engine, "overlay_rect", None)
+                t_grab = time.time()
+                try:
+                    offers, img, lines, width = scanner.scan_full()
+                except Exception as e:  # noqa
+                    engine.q.put(("scan", tr('识别出错：{0}').format(e)))
+                    offers, img, lines, width = None, None, [], 0
+                if offers:
+                    tries, misses, pending_pick = 0, 0, None
+                    if forced:        # 识别期间又按了几次：已经是最新结果，不再重跑
+                        scanner.force.clear()
+                        if hotkey:
+                            hotkey.hit.clear()
+                    names = [n for n, _ in offers]
+                    prev = [n for n, _ in cur or []]
+                    same_pos = sum(1 for a, b in zip(prev, names) if _same_name(a, b))
+                    accept = forced or not active or same_offer(last, names) or same_pos >= 2 or \
+                        all(engine.advisor.match_name(n, 0.75) for n in names)
+                    if accept:
+                        if not same_offer(prev, names):
+                            cur, changed_at = offers, time.time()   # 新的三选一或重骰
+                        engine.set_auto(offers)
+                        if not active and clicker is not None:
+                            clicker.active.set()
+                        if forced or not active:
+                            engine.q.put(("scan", tr("已识别：") + " / ".join(names)))
+                        active = True
+                    last = names
+                else:
+                    last = None
+                    if tries > 0:                      # 手动触发：再试几次
+                        tries -= 1
+                        if tries == 0:
+                            engine.q.put(("scan", tr("三选一已关闭") if active else tr("没识别到三选一（截图已存）")))
+                            if not active and img is not None:
+                                try:
+                                    scanner.save_debug(img, lines, width, None)
+                                except Exception:  # noqa
+                                    pass
+                    if active:
+                        misses += 1
+                        if misses == 1:                # 第一次没看到卡片：点击只算到这次截图之前的
+                            first_miss_grab = t_grab
+                            pending_pick = _find_pick(scanner, clicker, cur, changed_at, engine, first_miss_grab)
+                        if misses >= 3 or (pending_pick is not None and misses >= 2):
+                            engine.set_auto([])
+                            if pending_pick is not None:
+                                engine.add_pick(pending_pick)
+                            if clicker is not None:
+                                clicker.active.clear()
+                                try:
+                                    clicker.clicks = []
+                                except AttributeError:     # 演示用的模拟点击是唯读的
+                                    pass
+                            active, cur, pending_pick = False, None, None
+                if tries == 0:
+                    engine.scanning = False
+        except Exception as e:  # noqa  任何意外都不能让识别线程停掉
+            engine.scanning = False
+            engine.q.put(("scan", tr('识别出错：{0}').format(e)))
+            time.sleep(1)
         if tries > 0:
-            wait = 0.4
+            wait = 0.25
         elif active:
-            wait = 2.0
+            wait = 1.2 if time.time() - changed_at < 10 else 2.0
         elif enabled.is_set():
             wait = interval
         else:
@@ -2556,16 +2690,17 @@ def scanner_loop(engine, scanner, stop, enabled, interval=3.0, clicker=None, hot
         while time.time() < end and not stop.is_set():
             if scanner.force.is_set() or (hotkey and hotkey.hit.is_set()):
                 break
-            time.sleep(0.05)
+            time.sleep(0.03)
 
 
-def _find_pick(scanner, clicker, cur, changed_at, engine):
-    """关闭前最后一次、落在卡片上的点击 → 那张卡就是你选的"""
+def _find_pick(scanner, clicker, cur, changed_at, engine, before=None):
+    """三选一关闭前最后一次、落在卡片上的点击 → 那张卡就是你选的"""
     if clicker is None or not cur:
         return None
+    before = before or time.time()
     rect = getattr(engine, "overlay_rect", None)   # 点在挂件上的不算
     for t, x, y in reversed(list(clicker.clicks)):
-        if t < changed_at or time.time() - t > 12:
+        if t < changed_at or t > before:
             continue
         if rect and rect[0] <= x <= rect[2] and rect[1] <= y <= rect[3]:
             continue
@@ -2590,7 +2725,8 @@ class Engine:
         self.stats_dirty = False
         if stats is not None:
             def ready():
-                self.stats_dirty = True
+                with self.lock:
+                    self.stats_dirty = True
                 self.wake.set()
             stats.on_ready = ready
         self.manual = {"mine": [], "cand": [], "ally": [], "enemy": [], "auto": [], "picked": []}
@@ -2605,6 +2741,9 @@ class Engine:
         self.history = []
         self.pending_data = None       # (gd, stats, 说明)：新版本数据，等不在对局中时换上
         self.updater = None
+        self.scanning = False          # 正在识别三选一（界面这时刷新得快一点）
+        self.fails = 0                 # 连续读取失败次数（游戏卡一下不算断线）
+        self._raw, self._raw_t = None, 0.0
 
     def apply_pending(self):
         gd, stats, msg = self.pending_data
@@ -2615,8 +2754,7 @@ class Engine:
             stats.on_ready = self.advisor.stats.on_ready if self.advisor.stats else None
         # 原地换掉（屏幕识别等地方持有同一个 advisor）
         fresh = Advisor(gd, stats)
-        self.advisor.__dict__.clear()
-        self.advisor.__dict__.update(fresh.__dict__)
+        self.advisor.__dict__ = fresh.__dict__      # 一次换掉，识别线程不会看到半空的状态
         self.gd = gd
         self.last_sig = None
         n = clean_old_cache(data_versions(gd, stats))
@@ -2626,7 +2764,9 @@ class Engine:
         vals = [x.strip() for x in re.split(r"[,，、;；\s]+", text) if x.strip()]
         with self.lock:
             if key == "mine" and self.manual.get("picked"):
-                # 输入框里显示的是「手动 + 自动记录」的全部；用户改了就以输入框为准
+                # 输入框里显示的是「手动 + 自动记录」的全部：内容没变就什么都不动；改了才以输入框为准
+                if vals == self.manual.get("mine", []) + self.manual["picked"]:
+                    return
                 self.manual["picked"] = []
                 self.manual_dirty = True
             if self.manual.get(key) != vals:
@@ -2658,13 +2798,25 @@ class Engine:
         if self.pending_data and (not self.connected or self.last_state is None):
             self.apply_pending()           # 只在对局外 / 新一局开始前换数据
         try:
-            raw = self.source.fetch()
+            # 只是手动输入 / 识别到三选一而被叫醒、刚刚才读过对局：直接用刚才的数据，省一次读取
+            if self.manual_dirty and self._raw is not None and time.time() - self._raw_t < 1.5:
+                raw = self._raw
+            else:
+                raw = self.source.fetch()
+                self._raw, self._raw_t = raw, time.time()
             state = parse_live(raw)
         except Exception:
+            self.fails += 1
+            self._raw = None
+            if self.fails < 3 and self.connected:      # 游戏卡顿读不到一两次，不当成对局结束
+                return ("status", tr("监控中"))
             self.last_sig = None
             self.last_state = None
             self.connected = False
             return ("status", tr("等待对局…"))
+        self.fails = 0
+        if not self.connected or self.last_state is None:
+            self.advisor._ema_cid = None                # 新的一局：平滑从头开始
         self.connected = True
         if state[2] is None:
             return ("status", tr("已连接，等待玩家数据…"))
@@ -2673,7 +2825,8 @@ class Engine:
             dirty, self.manual_dirty = self.manual_dirty, False
         sig = signature(state, manual)
         lsig = live_signature(state)
-        stats_new, self.stats_dirty = self.stats_dirty, False
+        with self.lock:
+            stats_new, self.stats_dirty = self.stats_dirty, False
         if sig == self.last_sig and lsig == getattr(self, "last_lsig", None) and not stats_new:
             return ("status", tr("监控中"))
         quiet = sig == self.last_sig and not stats_new  # 只有阵亡/击杀/血量变化：更新战术，不弹出窗口
@@ -2722,6 +2875,7 @@ def check_app_version():
 
 
 RAW_BASE = "https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/"
+MIRROR_BASE = "https://cdn.jsdelivr.net/gh/mingxintan-coder/haidou-helper@main/"
 UPDATABLE = ("haidou_helper.py", "lang_en.py", "README.md")    # 一键更新只会替换这几个文件
 
 
@@ -2741,23 +2895,43 @@ def install_update(manifest, log=print):
                 if hashlib.sha256(f.read()).hexdigest() == sha:
                     continue                      # 没变，不用下载
         log(tr("下载 {0}…").format(name))
-        req = urllib.request.Request(RAW_BASE + name + "?v=" + sha[:8],
-                                     headers={"User-Agent": f"haidou-helper/{APP_VERSION}", "Cache-Control": "no-cache"})
-        with urllib.request.urlopen(req, timeout=60) as r:
-            data = r.read()
-        if hashlib.sha256(data).hexdigest() != sha:
-            raise RuntimeError(tr("{0} 校验不符（GitHub 可能还没同步，稍后再试）").format(name))
+        data, err = None, ""
+        for base in (RAW_BASE, MIRROR_BASE):      # GitHub 连不上时用 jsDelivr 镜像（内容一样，靠校验码把关）
+            try:
+                req = urllib.request.Request(base + name + "?v=" + sha[:8],
+                                             headers={"User-Agent": f"haidou-helper/{APP_VERSION}", "Cache-Control": "no-cache"})
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    got = r.read()
+            except Exception as e:  # noqa
+                err = str(e)
+                continue
+            if hashlib.sha256(got).hexdigest() == sha:
+                data = got
+                break
+            err = tr("{0} 校验不符（GitHub 可能还没同步，稍后再试）").format(name)
+        if data is None:
+            raise RuntimeError(err or tr("下载失败"))
         if name.endswith(".py"):
             compile(data, name, "exec")
         new[name] = data
+    # 先全部写成 .new，再一起换上；中途失败就把已换的还原，不会留下一半新一半旧
     for name, data in new.items():
-        path = os.path.join(prog_dir, name)
-        tmp = path + ".new"
-        with open(tmp, "wb") as f:
+        with open(os.path.join(prog_dir, name) + ".new", "wb") as f:
             f.write(data)
-        if os.path.exists(path):
-            os.replace(path, path + ".bak")
-        os.replace(tmp, path)
+    done = []
+    try:
+        for name in new:
+            path = os.path.join(prog_dir, name)
+            if os.path.exists(path):
+                os.replace(path, path + ".bak")
+            os.replace(path + ".new", path)
+            done.append(name)
+    except OSError:
+        for name in done:
+            path = os.path.join(prog_dir, name)
+            if os.path.exists(path + ".bak"):
+                os.replace(path + ".bak", path)
+        raise
     return list(new)
 
 
@@ -2773,9 +2947,9 @@ def load_all(lang, bracket="all", use_stats=True, log=print, force=False):
         stats.dataset = bracket
         stats.load_version(force=force)
         extra = stats.load_augments()
+        allow = stats.load_items() or set()        # 海斗商店清单：就算增幅资料没下载到也要用
         if extra:
             gd.merge_augments(extra)
-            allow = stats.load_items() or set()
             stats.load_spell_names()
             stats.load_balance()
             stats.game_version = ".".join(str(gd.version).split(".")[:2])
@@ -2967,7 +3141,8 @@ def start_scanner(engine, scanner, stop, enabled):
 def run_console(engine, scanner=None):
     print(tr("海斗助手（控制台模式）。可输入：候选 A,B,C / 我的 X / 敌方 Y / 队友 Z，回车应用；Ctrl+C 退出"))
     stop, enabled = threading.Event(), threading.Event()
-    enabled.set()
+    if getattr(engine, "auto_scan_default", False):      # 默认手动：按 F8 才识别
+        enabled.set()
     threading.Thread(target=engine.run, args=(stop,), daemon=True).start()
     start_scanner(engine, scanner, stop, enabled)
     if scanner is not None and not scanner.available:
@@ -3354,7 +3529,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
 
     def force_scan():
         if scanner is not None and scanner.available:
-            status.config(text=tr("识别中…"))
+            set_status(tr("识别中…"))
+            st["status_hold"] = time.time() + 15
+            engine.scanning = True
             scanner.force.set()
         else:
             status.config(text=tr("识别不可用：") + (scanner.error if scanner else tr("已关闭")))
@@ -3605,39 +3782,47 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         except tk.TclError:
             pass
         try:
+            msgs = []
             while True:
-                kind, payload = engine.q.get_nowait()
-                hold = time.time() < st.get("status_hold", 0)
-                if kind == "rec":
-                    dot.config(fg=GREEN)
-                    show(payload, flash=not payload.get("quiet"))
-                    if not hold:
-                        set_status("")
-                elif kind == "upgraded":       # 一键更新完成
-                    st["app_new"], st["upgrading"] = None, False
-                    set_status(tr("已更新 ✓ 请重新打开"))
-                    st["status_hold"] = time.time() + 10 ** 9
-                    st["data_msg"] = payload
-                elif kind == "appupd":         # 程序有新版本：点一下直接更新
-                    st["app_new"] = payload
-                    set_status("")
-                elif kind == "data":           # 数据版本检查 / 更新
-                    st["data_msg"] = payload
-                    if payload.startswith(tr("更新失败")):
-                        st["upgrading"] = False
-                    set_status(tr("数据已更新 ✓") if payload.startswith(tr("数据已更新")) else short(payload, 14))
-                    st["status_hold"] = time.time() + 8
-                    st["hold_until"] = time.time() + 6
-                elif hold and payload == tr("监控中"):
-                    pass
-                else:
-                    if payload.startswith(tr("等待")):
-                        dot.config(fg=GREY)
-                    set_status("" if payload == tr("监控中") else short(payload, 14))
+                msgs.append(engine.q.get_nowait())
         except queue.Empty:
             pass
+        last_rec = max((i for i, (k, _) in enumerate(msgs) if k == "rec"), default=None)
+        for i, (kind, payload) in enumerate(msgs):
+            hold = time.time() < st.get("status_hold", 0)
+            if kind == "rec":
+                if i != last_rec:        # 一次来了好几个推荐：只画最新的
+                    continue
+                dot.config(fg=GREEN)
+                show(payload, flash=not payload.get("quiet"))
+                if not hold:
+                    set_status("")
+            elif kind == "scan":           # 三选一识别的进度 / 结果
+                set_status(short(payload, 16))
+                st["status_hold"] = time.time() + (15 if payload == tr("识别中…") else 4)
+            elif kind == "upgraded":       # 一键更新完成
+                st["app_new"], st["upgrading"] = None, False
+                set_status(tr("已更新 ✓ 请重新打开"))
+                st["status_hold"] = time.time() + 10 ** 9
+                st["data_msg"] = payload
+            elif kind == "appupd":         # 程序有新版本：点一下直接更新
+                st["app_new"] = payload
+                if not hold:
+                    set_status("")
+            elif kind == "data":           # 数据版本检查 / 更新
+                st["data_msg"] = payload
+                if payload.startswith(tr("更新失败")):
+                    st["upgrading"] = False
+                set_status(tr("数据已更新 ✓") if payload.startswith(tr("数据已更新")) else short(payload, 14))
+                st["status_hold"] = time.time() + 8
+                st["hold_until"] = time.time() + 6
+            else:
+                if payload.startswith(tr("等待")):
+                    dot.config(fg=GREY)
+                if not hold:               # 正在显示的重要消息（识别中、更新结果…）不被一般状态盖掉
+                    set_status("" if payload == tr("监控中") else short(payload, 14))
         auto_collapse()
-        root.after(300, poll)
+        root.after(60 if engine.scanning else 300, poll)     # 识别中刷新快一点
 
     set_scale(st["k"])
     select_tab("items")
@@ -3714,7 +3899,11 @@ def start_web(engine, port=8765):
         def log_message(self, *a):
             pass
 
-    srv = ThreadingHTTPServer(("0.0.0.0", port), H)
+    try:
+        srv = ThreadingHTTPServer(("0.0.0.0", port), H)
+    except OSError as e:
+        print(tr('[网页] 端口 {0} 被占用，网页检视没有开启（{1}）').format(port, e))
+        return None
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     url = f"http://{lan_ip()}:{port}"
     print(tr('[网页] 手机/平板连同一个 WiFi，浏览器开启：{0}').format(url))
@@ -3765,6 +3954,8 @@ def main():
         if not args.no_click:
             engine.clicker = MockClickWatcher(source) if args.mock else ClickWatcher()
         engine.hotkey = None if args.mock else HotkeyWatcher(args.hotkey)
+        if engine.hotkey is not None and engine.hotkey.vk is None:
+            print(tr('快捷键 {0} 不支持，只能用 F1~F12').format(args.hotkey))
         engine.auto_scan_default = args.auto_scan or args.mock   # 演示模式自动识别
     if not args.mock:
         start_updater(engine, args.lang, not args.no_stats, threading.Event())
