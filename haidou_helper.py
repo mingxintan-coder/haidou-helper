@@ -33,7 +33,7 @@ import urllib.error
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.9.1"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -84,9 +84,17 @@ CDRAGON = "https://raw.communitydragon.org/latest"
 # augments.json（[{"name":..,"desc":..,"rarity":0-2}]）或 augments.txt（每行：名称|描述）自行补充。
 AUGMENT_URLS = [
     CDRAGON + "/cdragon/arena/{lang}.json",
-    CDRAGON + "/plugins/rcp-be-lol-game-data/global/{lang}/v1/cherry-augments.json",
-    CDRAGON + "/plugins/rcp-be-lol-game-data/global/{lang}/v1/kiwi-augments.json",
+    CDRAGON + "/plugins/rcp-be-lol-game-data/global/{plang}/v1/cherry-augments.json",
+    CDRAGON + "/plugins/rcp-be-lol-game-data/global/{plang}/v1/kiwi-augments.json",
 ]
+# 游戏客户端资料的英文放在 global/default/（没有 global/en_us/）；只含海斗增幅编号与英文名称的那一份
+EN_AUGMENT_URL = CDRAGON + "/plugins/rcp-be-lol-game-data/global/default/v1/cherry-augments.json"
+
+
+def cdragon_lang(lang):
+    """游戏客户端资料的语言资料夹：英文（美服）= default，其他 = zh_tw、zh_cn…"""
+    lg = lang.lower().replace("-", "_")
+    return "default" if lg == "en_us" else lg
 
 # --------------------------------------------------------------------------------------
 # 维度定义
@@ -567,10 +575,10 @@ class GameData:
         augs = {}
         current_ids = set()   # 当前版本游戏数据里存在的所有增幅编号
         for i, tmpl in enumerate(AUGMENT_URLS):
-            url = tmpl.format(lang=aug_lang)
+            url = tmpl.format(lang=aug_lang, plang=cdragon_lang(lang))
             ap = os.path.join(APP_DIR, f"aug_{i}_{aug_lang}.json")
-            stale = not os.path.exists(ap) or (time.time() - os.path.getmtime(ap) > 24 * 3600
-                                               and os.path.getsize(ap) > 2)   # 404 过的备用地址不重试
+            stale = not os.path.exists(ap) or os.path.getsize(ap) <= 2 or \
+                time.time() - os.path.getmtime(ap) > 24 * 3600      # 每天最多重新读一次；空的（以前地址错）马上重读
             data = cached(f"aug_{i}_{aug_lang}.json", url if version and (need_dl or stale) else None, optional=True)
             for a in cls._parse_augments(data):
                 if a.get("current") and a.get("id"):
@@ -663,6 +671,31 @@ class GameData:
                     name, _, desc = line.partition("|")
                     out.append(make_aug(name.strip(), desc.strip(), 0))
         return out
+
+    def add_english_names(self, log=print):
+        """游戏客户端是英文、但资料是中文时（或反过来），三选一上的英文卡名也要认得：
+        按增幅编号把英文名称记为别名（每天最多下载一次，约几百 KB）。"""
+        if self.lang.lower().startswith("en"):
+            return 0
+        path = os.path.join(APP_DIR, "aug_names_en.json")
+        data = None
+        if not os.path.exists(path) or time.time() - os.path.getmtime(path) > 24 * 3600:
+            try:
+                raw = http_json(EN_AUGMENT_URL, timeout=20)
+                data = {str(a["id"]): a.get("nameTRA") or a.get("name") for a in raw
+                        if isinstance(a, dict) and str(a.get("id", "")).isdigit() and (a.get("nameTRA") or a.get("name"))}
+                write_json(path, data)
+            except Exception as e:  # noqa
+                log(tr('[数据] 下载失败 {0}: {1}').format(EN_AUGMENT_URL, e))
+        if data is None:
+            data = read_json(path) or {}
+        n = 0
+        for a in self.augments:
+            en = data.get(str(a.get("id")))
+            if en and en != a["name"] and en not in a.get("aliases", []):
+                a.setdefault("aliases", []).append(en)
+                n += 1
+        return n
 
     def merge_augments(self, extra):
         """合并网上的增幅描述（有属性标注，覆盖所有海斗增幅）。
@@ -2433,6 +2466,8 @@ class ScreenScanner:
         if 2 <= len(clean) <= 12 and self._cjk_ratio(clean) >= 0.6 and not any(w in clean for w in STOP_WORDS):
             return clean
         # 英文客户端：名称是 1~4 个英文单词（描述是长句子）
+        if re.search(r"[0-9:%]|[.,;]\s*\S|[.,;]$", txt.strip()):
+            return None                       # 有数字、冒号、句号逗号的是描述或统计，不是卡名
         lat = re.sub(r"[^A-Za-z' \-!]", "", txt).strip()
         words = lat.split()
         if 3 <= len(lat) <= 32 and 1 <= len(words) <= 4 and len(lat) >= 0.8 * len(txt.strip()) \
@@ -2474,6 +2509,8 @@ class ScreenScanner:
                     if abs(cx - cx0) <= half and cy > cy0 + h0 * 0.5 and cy < cy0 + h0 * 14
                     and not (len(txt) <= 8 and any(w in txt for w in STOP_WORDS))
                     and txt.strip().lower() not in STOP_WORDS_EN]
+            if desc and len(desc) > 1 and desc[0].isascii() and desc[0].isalpha() and len(desc[0]) <= 12:
+                desc = desc[1:]                   # 英文卡名下面的小分类标签（Speed / General…）不算描述
             offers.append((name, " ".join(desc)))
         # 防误识别（例如商店的三张推荐装备卡）：名字要能对上增幅库，或描述像增幅
         item_like = sum(1 for n, _ in offers if n in self.advisor.gd_item_names())
@@ -2954,6 +2991,7 @@ def load_all(lang, bracket="all", use_stats=True, log=print, force=False):
             stats.load_balance()
             stats.game_version = ".".join(str(gd.version).split(".")[:2])
             log(tr('[胜率] {0}：海斗增幅 {1} 个，商店成品装备 {2} 件').format(stats.label(), len(extra), len(allow)))
+    gd.add_english_names(log=log)      # 英文客户端的卡名也认得（按编号对应）
     return gd, stats
 
 

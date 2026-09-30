@@ -1,14 +1,14 @@
 {
- "version": "1.9.0",
- "date": "2026-09-29",
+ "version": "1.9.1",
+ "date": "2026-09-30",
  "notes": [
-  "装备推荐改为优先大家常出的装备：胜率做小样本修正、和同一件数的平均比，冷门装备不会再靠「克制」加分排到前面",
-  "按 F8 识别更快（约快一倍，第一次按也不用等模型初始化），识别中的提示不会消失",
-  "修复：连按 F8 重复识别、识别线程出错后停止、选卡记录错误、换分段时数据错乱、缓存写坏导致无法启动等问题",
-  "Item picks now favour what players actually build; faster augment scan; many bug fixes"
+  "修复英文客户端认不出增幅：中文界面下也能认得英文卡名（按编号对应到中文名称和胜率）",
+  "修复英文模式下载增幅资料的地址错误（之前会少掉大部分海斗增幅）",
+  "卡名判断更严格，不会把描述或统计文字当成卡名",
+  "Fix augment detection for English game clients; fix English augment data source"
  ],
  "files": {
-  "haidou_helper.py": "564eb13d35278479b78cb0a3869c990411832e3ebae770dcb6d14685318d1dff",
+  "haidou_helper.py": "92af5bc43032e90686709f78ea6404de3ab193c7a7c92c2c6a1bb962242b9988",
   "lang_en.py": "6bb6a7c0d891dfdce0da6c90585cda00ae359684d9399d4b5fa1129dce8179b2",
   "README.md": "02e14dbf1748ce3b25079c6abd5f623298dfc6585f3ac8a494bf1aa631b96e43"
  }
