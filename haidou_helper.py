@@ -33,7 +33,7 @@ import urllib.error
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.10.0"
+APP_VERSION = "1.11.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -1836,6 +1836,11 @@ class Advisor:
             if t["power_diff"] < -2000 and ("SURVIVE" in special or (ehp and ehp[0] > 0.1)):
                 factors.append((0.06, tr("我方落后，先保命再反打")))
             raw, parts_txt = self.item_formula(fit, sf, factors, wts)
+            hab = self.habit_item(me, iid)
+            if hab:                         # 你的习惯：+最多 0.10（熟悉而且赢得多的更多）
+                raw += hab[0]
+                parts_txt += " + U{0:.2f}".format(hab[0])
+                factors = factors + [hab]
             dims = self.top_dims(prof, nv)
             fit_text = tr('契合你的{0}路线').format('/'.join(dims)) if dims else ""
             rf = [f for f in factors if f[0] > 0 or f[0] <= -0.05]
@@ -1850,6 +1855,47 @@ class Advisor:
             it["hint"] = self.buy_hint(it["id"], gold, owned)
         boots = self.recommend_boots(me, t, prof, role, cs, gold, legend, phase)
         return ([boots] if boots else []) + out[:k], prof
+
+    def habit_summary(self, me):
+        hp = self.habit_profile(me)
+        if not hp or hp["games"] < 1:
+            return ""
+        wr = tr('，胜率 {0:.0f}%').format(100 * hp["wins"] / hp["decided"]) if hp["decided"] else ""
+        top = sorted(hp["items"].items(), key=lambda x: -x[1][0])[:3]
+        items = tr("、").join(self.gd.item_name(i) for i, _ in top)
+        return tr('你的{0}：{1} 局{2}').format(self.gd.champ_name(me.cid), hp["games"], wr) + \
+            (tr('；常出 {0}').format(items) if items else "")
+
+    def habit_profile(self, me):
+        store = getattr(self, "habits_store", None)
+        if store is None or not store.enabled:
+            return None
+        champ = (self.gd.champ(me.cid) or {}).get("id", me.cid)
+        return store.profile(champ)
+
+    def habit_item(self, me, iid):
+        hp = self.habit_profile(me)
+        if not hp or hp["games"] < 2:
+            return None
+        cnt, wins = hp["items"].get(iid, (0, 0))
+        b = habit_bonus(cnt, wins, hp["games"], hp["wins"], hp["decided"], 0.10)
+        if b < 0.01:
+            return None
+        return (b, tr('你常出（{0} 局里出了 {1} 局，赢 {2} 局）').format(hp["games"], cnt, wins))
+
+    def habit_aug(self, me, a):
+        hp = self.habit_profile(me)
+        if not hp or hp["games"] < 2:
+            return None
+        cnt, wins = hp["augs"].get(a["name"], (0, 0))
+        seen = max(cnt, hp["offered"].get(a["name"], 0))
+        if not cnt or seen < 1:
+            return None
+        # 增幅：用「出现时你选它的比例」当熟悉度
+        b = habit_bonus(cnt, wins, max(seen, 2), hp["wins"], hp["decided"], 0.15)
+        if b < 0.01:
+            return None
+        return (b, tr('你常拿（出现 {0} 次选了 {1} 次，赢 {2} 局）').format(seen, cnt, wins))
 
     @staticmethod
     def item_score(raw):
@@ -1987,6 +2033,10 @@ class Advisor:
         if combo_f:
             situ += combo_f[0]
             factors.insert(0, combo_f)
+        hab = self.habit_aug(me, a)
+        if hab:                          # 你的习惯：+最多 0.15
+            situ += hab[0]
+            factors.insert(0, hab)
         if sf:
             # 有这个英雄的实战胜率：以胜率为主，本局分析做修正（通用型增幅不会因为「不挑英雄」吃亏）
             raw = 0.2 + 0.35 * fit + situ + 0.03 * a.get("rarity", 0) + min(0.55, sf[0] * 1.3) + pop
@@ -2146,7 +2196,8 @@ class Advisor:
 
     def champ_guide(self, me, cs, prof):
         kit = self.gd.champ_kit(me.cid)
-        g = {"combos": [], "style": "", "skills": "", "spells": "", "auto": False}
+        g = {"combos": [], "style": "", "skills": "", "spells": "", "auto": False,
+             "habit": getattr(self, "_habit_line", "")}
         if me.cid in COMBOS:
             combos, g["style"] = COMBOS[me.cid]
             en = COMBOS_EN.get(me.cid) if LANG == "en" else None
@@ -2228,6 +2279,7 @@ class Advisor:
             auto = True
         t = self.team_threat(enemies, enemy_augs, allies, ally_augs, me)
         cs = self.champ_stats(me.cid)          # 胜率全部来自海斗对局统计
+        self._habit_line = self.habit_summary(me)
         items, prof = self.recommend_items(me, allies, enemies, my_augs, t, map_id, gold, cs=cs)
         augs = self.recommend_augs(me, my_augs, t, cands, cs=cs)
         tips = self.tactics(me, allies, enemies, t, prof, my_augs)
@@ -2860,6 +2912,10 @@ class Engine:
         self.pending_data = None       # (gd, stats, 说明)：新版本数据，等不在对局中时换上
         self.updater = None
         self.scanning = False          # 正在识别三选一（界面这时刷新得快一点）
+        self.habits = HabitStore()
+        self.advisor.habits_store = self.habits
+        self.cur_game = None           # 这局的记录：英雄、装备、增幅、出现过的增幅
+        self._ended = False            # 已读到 GameEnd（结算画面还连着时不要再记一次）
         self.fails = 0                 # 连续读取失败次数（游戏卡一下不算断线）
         self._raw, self._raw_t = None, 0.0
 
@@ -2872,11 +2928,48 @@ class Engine:
             stats.on_ready = self.advisor.stats.on_ready if self.advisor.stats else None
         # 原地换掉（屏幕识别等地方持有同一个 advisor）
         fresh = Advisor(gd, stats)
+        fresh.habits_store = self.habits
         self.advisor.__dict__ = fresh.__dict__      # 一次换掉，识别线程不会看到半空的状态
         self.gd = gd
         self.last_sig = None
         n = clean_old_cache(data_versions(gd, stats))
         self.q.put(("data", msg + (tr('（清理旧缓存 {0} 个）').format(n) if n else "")))
+
+    def track_game(self, raw, state, rec):
+        """记下这局的英雄、成品装备、已选增幅、三选一出现过的增幅；读到 GameEnd 就存起来"""
+        mode, map_id, me = state[0], state[1], state[2]
+        if self._ended or me is None or mode_kind(mode, map_id) != "aram":
+            return
+        g = self.cur_game
+        champ = (self.gd.champ(me.cid) or {}).get("id", me.cid)
+        if g is None or g["champ"] != champ:
+            g = self.cur_game = {"champ": champ, "t": time.strftime("%Y-%m-%d %H:%M"), "items": [],
+                                 "augs": [], "offered": [], "win": None, "len": 0}
+        g["len"] = int(me.game_time)
+        g["items"] = [i for i in me.items if self.gd.is_completed(i)]
+        for n in rec.get("my_augs", []):
+            if n not in g["augs"]:
+                g["augs"].append(n)
+        if rec.get("cand_mode"):
+            for a in rec.get("augs", []):
+                if a["name"] not in g["offered"]:
+                    g["offered"].append(a["name"])
+
+    def check_game_end(self, raw):
+        """每次读取都看有没有 GameEnd 事件（不管推荐有没有变化）"""
+        if self._ended or self.cur_game is None:
+            return
+        for ev in ((raw.get("events") or {}).get("Events") or []):
+            if ev.get("EventName") == "GameEnd":
+                self.finish_game(str(ev.get("Result", "")).lower().startswith("win"))
+                self._ended = True
+                break
+
+    def finish_game(self, win):
+        g, self.cur_game = self.cur_game, None
+        if g and g["len"] >= 300:           # 打了 5 分钟以上的才算（重开、掉线不记）
+            g["win"] = win
+            self.habits.add_game(g)
 
     def set_manual(self, key, text):
         vals = [x.strip() for x in re.split(r"[,，、;；\s]+", text) if x.strip()]
@@ -2928,6 +3021,8 @@ class Engine:
             self._raw = None
             if self.fails < 3 and self.connected:      # 游戏卡顿读不到一两次，不当成对局结束
                 return ("status", tr("监控中"))
+            self.finish_game(None)                      # 对局结束（没读到输赢）
+            self._ended = False
             self.last_sig = None
             self.last_state = None
             self.connected = False
@@ -2938,6 +3033,7 @@ class Engine:
         self.connected = True
         if state[2] is None:
             return ("status", tr("已连接，等待玩家数据…"))
+        self.check_game_end(raw)
         with self.lock:
             manual = {k: list(v) for k, v in self.manual.items()}
             dirty, self.manual_dirty = self.manual_dirty, False
@@ -2955,6 +3051,7 @@ class Engine:
             self.advisor._ema_cid = None     # 新数据进来：重新排序，不沿用旧的平滑结果
         self.last_sig, self.last_lsig, self.last_state = sig, lsig, state
         rec = self.advisor.analyze(state, manual)
+        self.track_game(raw, state, rec)
         rec["changes"] = changes
         rec["quiet"] = quiet
         rec["time"] = time.strftime("%H:%M:%S")
@@ -3082,6 +3179,81 @@ def load_arammayhem(log=print):
         rows = data.get("rows", []) if isinstance(data, dict) else (data or [])
         out[name] = [r for r in rows if isinstance(r, dict)]
     return out
+
+
+# --------------------------------------------------------------------------------------
+# 你的习惯（只存在本机 %USERPROFILE%\.lol_haidou_helper\habits.json，不上传）
+# 每局海斗结束时记下：英雄、出了哪些成品装备、拿了哪些增幅、三选一里出现过哪些增幅、输赢。
+# 推荐时偏向你熟悉、而且你用了赢得多的装备 / 增幅（加分有上限，网上数据仍是主要依据）。
+# --------------------------------------------------------------------------------------
+class HabitStore:
+    MAX_GAMES = 400
+
+    def __init__(self, path=None):
+        self.path = path or os.path.join(APP_DIR, "habits.json")
+        data = read_json(self.path) if os.path.exists(self.path) else None
+        self.games = data.get("games", []) if isinstance(data, dict) else []
+        self.enabled = load_ui_cfg().get("habits", True)
+        self._cache = {}
+
+    def add_game(self, g):
+        if not self.enabled or not g.get("champ"):
+            return
+        self.games.append(g)
+        self.games = self.games[-self.MAX_GAMES:]
+        self._cache.clear()
+        try:
+            write_json(self.path, {"version": 1, "games": self.games})
+        except OSError:
+            pass
+
+    def clear(self):
+        self.games = []
+        self._cache.clear()
+        try:
+            write_json(self.path, {"version": 1, "games": []})
+        except OSError:
+            pass
+
+    def profile(self, champ):
+        """这个英雄的个人统计：局数、胜场、每件装备 / 每个增幅的（次数, 赢的次数），增幅出现次数"""
+        champ = str(champ or "").lower()
+        if champ in self._cache:
+            return self._cache[champ]
+        games = [g for g in self.games if str(g.get("champ", "")).lower() == champ]
+        prof = {"games": len(games), "wins": sum(1 for g in games if g.get("win")),
+                "decided": sum(1 for g in games if g.get("win") is not None),
+                "items": {}, "augs": {}, "offered": {}}
+        for g in games:
+            w = 1 if g.get("win") else 0
+            for i in set(g.get("items", [])):
+                c = prof["items"].setdefault(int(i), [0, 0])
+                c[0] += 1
+                c[1] += w
+            for a in set(g.get("augs", [])):
+                c = prof["augs"].setdefault(a, [0, 0])
+                c[0] += 1
+                c[1] += w
+            for a in set(g.get("offered", [])):
+                prof["offered"][a] = prof["offered"].get(a, 0) + 1
+        self._cache[champ] = prof
+        return prof
+
+
+def habit_bonus(cnt, wins, games, all_wins, decided, weight):
+    """个人习惯加分 = weight × 熟悉度 × 战绩修正
+         熟悉度 = √(min(次数 / 局数, 60%) / 60%)
+         战绩修正 = 1 + clamp(5 × 收缩后的胜率差, −0.5, +0.5)，收缩：差 × n / (n + 5)
+       这个英雄打不到 2 局不加分。"""
+    if games < 2 or cnt <= 0:
+        return 0.0
+    fam = math.sqrt(min(cnt / games, 0.6) / 0.6)
+    adj = 1.0
+    if decided >= 2:
+        base = (all_wins + 1) / (decided + 2)
+        mine = (wins + 1) / (cnt + 2)
+        adj = 1 + max(-0.5, min(0.5, 5 * (mine - base) * cnt / (cnt + 5)))
+    return weight * fam * adj
 
 
 # --------------------------------------------------------------------------------------
@@ -3265,7 +3437,7 @@ def format_rec(rec):
     g = rec.get("guide") or {}
     if g.get("combos") or g.get("skills"):
         lines.append(tr("【英雄玩法】"))
-        for x in (g.get("balance"), g.get("skills"), g.get("spells")):
+        for x in (g.get("habit"), g.get("balance"), g.get("skills"), g.get("spells")):
             if x:
                 lines.append(" " + x)
         for c, note in g.get("combos", []):
@@ -3725,6 +3897,26 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         menu.add_cascade(label=tr("胜率数据分段"), menu=br)
     menu.add_checkbutton(label=tr("一直自动识别三选一（较耗 CPU）"), variable=auto_var, command=toggle_auto)
     menu.add_command(label=tr("手动输入增幅…"), command=lambda: open_manual())
+    habits_var = tk.BooleanVar(value=engine.habits.enabled)
+
+    def toggle_habits():
+        engine.habits.enabled = bool(habits_var.get())
+        c = load_ui_cfg()
+        c["habits"] = engine.habits.enabled
+        save_ui_cfg(c)
+        engine.last_sig = None
+        engine.wake.set()
+
+    def clear_habits():
+        engine.habits.clear()
+        set_status(tr("已清除习惯记录"))
+        st["status_hold"] = time.time() + 5
+        engine.last_sig = None
+        engine.wake.set()
+    hm = tk.Menu(menu, tearoff=0, bg="#1b2130", fg=FG, activebackground="#2b3a57", font=F["small"])
+    hm.add_checkbutton(label=tr("按我的习惯调整推荐（只存本机）"), variable=habits_var, command=toggle_habits)
+    hm.add_command(label=tr("清除我的习惯记录"), command=clear_habits)
+    menu.add_cascade(label=tr('我的习惯（{0} 局）').format(len(engine.habits.games)), menu=hm)
     lang_var = tk.StringVar(value=LANG)
 
     def switch_lang(lg):
@@ -3885,7 +4077,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         fill_rows(aug_rows, rec.get("augs", [])[:3 if cand else 4], cand, before=mine_lbl)
         # 玩法页
         g = rec.get("guide") or {}
-        lines = [x for x in (g.get("balance"), g.get("skills"), g.get("spells")) if x]
+        lines = [x for x in (g.get("habit"), g.get("balance"), g.get("skills"), g.get("spells")) if x]
         lines += [tr('连招  {0}\n        {1}').format(c, note) for c, note in g.get("combos", [])]
         if g.get("style"):
             lines.append(tr("玩法  ") + g["style"])

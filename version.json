@@ -1,14 +1,14 @@
 {
- "version": "1.10.0",
- "date": "2026-09-30",
+ "version": "1.11.0",
+ "date": "2026-10-01",
  "notes": [
-  "新增第二个数据源 arammayhem.com（国服海斗统计，CC BY 4.0）：7 种语言增幅名称、国服增幅选取率、英雄+增幅强力/陷阱组合",
-  "简中（国服）客户端的增幅卡名也能识别",
-  "Second data source arammayhem.com: multilingual augment names, CN pick rates, strong/trap combos"
+  "按你的习惯推荐：本机记录每局的英雄、装备、增幅和输赢，推荐时偏向你熟悉、而且赢得多的路线（⋯ →「我的习惯」可关闭或清除）",
+  "「玩法」页显示你这个英雄的局数、胜率、常出装备",
+  "Habit-aware picks: learns your usual builds/augments locally and favours the ones you win with"
  ],
  "files": {
-  "haidou_helper.py": "1e73964cd275d44d8b6635c8d6b730da87eae7bfdb33418217514ecb4cb94984",
-  "lang_en.py": "6807c2fb6aebad6efdeed2347bd33bc491370d1847f03c17798cb85a87cdb006",
-  "README.md": "26d4e76eea16b21eff4c26ba7e9019b330790d21c0732b94480c6dd937a89bf0"
+  "haidou_helper.py": "1ccb6bd5ef0290c4d53dd8a013d77ad01bbe18b597d1852732513a8066174864",
+  "lang_en.py": "4b616eca02b8a157f5dd0c1a249d1d06af564ce16ec15d476f70b6136e8c42b8",
+  "README.md": "19e0441a7868079b827e6c5e6bf3ec710689993c12566b7ea9f644a561d55a75"
  }
 }
