@@ -33,7 +33,7 @@ import urllib.error
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.11.0"
+APP_VERSION = "1.12.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -2943,7 +2943,7 @@ class Engine:
         g = self.cur_game
         champ = (self.gd.champ(me.cid) or {}).get("id", me.cid)
         if g is None or g["champ"] != champ:
-            g = self.cur_game = {"champ": champ, "t": time.strftime("%Y-%m-%d %H:%M"), "items": [],
+            g = self.cur_game = {"champ": champ, "t": time.strftime("%Y-%m-%d %H:%M"), "ts": time.time(), "items": [],
                                  "augs": [], "offered": [], "win": None, "len": 0}
         g["len"] = int(me.game_time)
         g["items"] = [i for i in me.items if self.gd.is_completed(i)]
@@ -2970,6 +2970,35 @@ class Engine:
         if g and g["len"] >= 300:           # 打了 5 分钟以上的才算（重开、掉线不记）
             g["win"] = win
             self.habits.add_game(g)
+            self.import_history_async(delay=60)    # 客户端结算后会更新对局记录，补上编号以免重复
+
+    def import_history_async(self, delay=0, manual=False):
+        """背景从游戏客户端读取你的历史对局（只读）"""
+        if getattr(self, "_importing", False) or isinstance(self.source, MockGame):
+            return
+        self._importing = True
+
+        def run():
+            try:
+                time.sleep(delay)
+                n, msg = import_client_history(self.gd, self.habits)
+                if n:
+                    # 本程序自己记的、没有 gameId 的同一局：留客户端那份（有准确输赢和增幅）
+                    self.habits.games = [g for g in self.habits.games if g.get("gameId") or
+                                         not any(c.get("gameId") and c["champ"] == g["champ"] and
+                                                 abs((c.get("ts") or 0) - (g.get("ts") or 0)) < 3600
+                                                 for c in self.habits.games)]
+                    self.habits._cache.clear()
+                    self.last_sig = None
+                    self.wake.set()
+                if n or manual:
+                    self.q.put(("data", msg))
+            except Exception as e:  # noqa
+                if manual:
+                    self.q.put(("data", tr('读取客户端对局记录失败：{0}').format(e)))
+            finally:
+                self._importing = False
+        threading.Thread(target=run, daemon=True).start()
 
     def set_manual(self, key, text):
         vals = [x.strip() for x in re.split(r"[,，、;；\s]+", text) if x.strip()]
@@ -3060,6 +3089,7 @@ class Engine:
         return ("rec", rec)
 
     def run(self, stop):
+        self.import_history_async(delay=3)       # 启动时先从客户端读一次历史对局
         while not stop.is_set():
             try:
                 self.q.put(self.step())
@@ -3207,6 +3237,20 @@ class HabitStore:
         except OSError:
             pass
 
+    def import_games(self, games):
+        """导入客户端里的历史对局（按 gameId 去重），回传新增几局"""
+        have = {g.get("gameId") for g in self.games if g.get("gameId")}
+        new = [g for g in games if g.get("gameId") and g["gameId"] not in have and g.get("champ")]
+        if not new or not self.enabled:
+            return 0
+        self.games = sorted(self.games + new, key=lambda g: g.get("ts", 0) or 0)[-self.MAX_GAMES:]
+        self._cache.clear()
+        try:
+            write_json(self.path, {"version": 1, "games": self.games})
+        except OSError:
+            pass
+        return len(new)
+
     def clear(self):
         self.games = []
         self._cache.clear()
@@ -3254,6 +3298,109 @@ def habit_bonus(cnt, wins, games, all_wins, decided, weight):
         mine = (wins + 1) / (cnt + 2)
         adj = 1 + max(-0.5, min(0.5, 5 * (mine - base) * cnt / (cnt + 5)))
     return weight * fam * adj
+
+
+# --------------------------------------------------------------------------------------
+# 从游戏客户端读取你的历史对局（League Client 本机接口，只读、只读你自己的记录，不需要 API 密钥）
+# 连接资讯来自客户端的 lockfile（Porofessor、Blitz 等工具也这样读）；客户端没开就跳过。
+# --------------------------------------------------------------------------------------
+LCU_LOCKFILES = [r"C:\Riot Games\League of Legends\lockfile", r"D:\Riot Games\League of Legends\lockfile",
+                 r"C:\Program Files\Riot Games\League of Legends\lockfile",
+                 r"D:\WeGameApps\英雄联盟\LeagueClient\lockfile", r"C:\WeGameApps\英雄联盟\LeagueClient\lockfile"]
+MAYHEM_QUEUES = {2400}          # 海克斯大乱斗；另外 gameMode 为 KIWI 的也算
+
+
+def lcu_credentials():
+    """回传 (port, password) 或 None：先找 lockfile，找不到再从客户端进程的启动参数读"""
+    for path in LCU_LOCKFILES:
+        try:
+            with open(path, encoding="utf-8") as f:
+                parts = f.read().strip().split(":")
+            if len(parts) >= 5:
+                return int(parts[2]), parts[3]
+        except (OSError, ValueError):
+            continue
+    if sys.platform.startswith("win"):
+        import subprocess
+        try:
+            out = subprocess.run(["powershell", "-NoProfile", "-Command",
+                                  "Get-CimInstance Win32_Process -Filter \"name='LeagueClientUx.exe'\" | "
+                                  "Select-Object -ExpandProperty CommandLine"],
+                                 capture_output=True, text=True, timeout=10,
+                                 creationflags=0x08000000).stdout          # CREATE_NO_WINDOW
+            port = re.search(r"--app-port=(\d+)", out)
+            token = re.search(r"--remoting-auth-token=([\w-]+)", out)
+            if port and token:
+                return int(port.group(1)), token.group(1)
+        except Exception:  # noqa
+            pass
+    return None
+
+
+def lcu_get(path, cred, timeout=10):
+    import base64
+    port, pw = cred
+    req = urllib.request.Request(f"https://127.0.0.1:{port}{path}", headers={
+        "Authorization": "Basic " + base64.b64encode(f"riot:{pw}".encode()).decode(), "Accept": "application/json"})
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE            # 客户端用自签名证书，而且只连本机
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ctx))
+    with opener.open(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def parse_lcu_history(data, gd, aug_by_id):
+    """客户端对局记录 → 习惯记录（只取海斗 / 大乱斗；没有增幅资讯的普通大乱斗只记装备）"""
+    games = (data.get("games") or {}).get("games", []) if isinstance(data, dict) else []
+    by_key = {str(c.get("key")): c for c in gd.champs.values()}
+    out = []
+    for g in games:
+        mode, queue = str(g.get("gameMode", "")).upper(), g.get("queueId")
+        parts = g.get("participants") or []
+        if not parts:
+            continue
+        p = parts[0]                                  # 历史列表里只有你自己
+        st = p.get("stats") or {}
+        augs = [aug_by_id.get(int(st.get(f"playerAugment{i}") or 0)) for i in range(1, 7)]
+        augs = [a for a in augs if a]
+        mayhem = mode == "KIWI" or queue in MAYHEM_QUEUES or (augs and g.get("mapId") in (12, 14))
+        if not mayhem and not (mode == "ARAM" and g.get("mapId") in (12, 14)):
+            continue
+        champ = by_key.get(str(p.get("championId")))
+        if not champ or (g.get("gameDuration") or 0) < 300:
+            continue
+        items = [int(st.get(f"item{i}") or 0) for i in range(7)]
+        items = [i for i in items if i and gd.is_completed(i)]
+        out.append({"gameId": g.get("gameId"), "ts": (g.get("gameCreation") or 0) / 1000.0,
+                    "t": time.strftime("%Y-%m-%d %H:%M", time.localtime((g.get("gameCreation") or 0) / 1000.0)),
+                    "champ": champ["id"], "items": items, "augs": augs, "offered": list(augs),
+                    "win": bool(st.get("win")), "len": int(g.get("gameDuration") or 0),
+                    "mode": "mayhem" if mayhem else "aram", "src": "client"})
+    return out
+
+
+def import_client_history(gd, store, log=print, pages=10):
+    """读取客户端里最近最多 200 局，导入海斗 / 大乱斗对局；回传 (新增局数, 说明)"""
+    cred = lcu_credentials()
+    if not cred:
+        return 0, tr("没找到正在运行的游戏客户端")
+    aug_by_id = {a["id"]: a["name"] for a in gd.augments if a.get("id")}
+    found = []
+    for i in range(pages):
+        try:
+            data = lcu_get(f"/lol-match-history/v1/products/lol/current-summoner/matches?begIndex={i * 20}"
+                           f"&endIndex={i * 20 + 20}", cred)
+        except Exception as e:  # noqa
+            if i == 0:
+                return 0, tr('读取客户端对局记录失败：{0}').format(e)
+            break
+        batch = (data.get("games") or {}).get("games", []) if isinstance(data, dict) else []
+        found += parse_lcu_history(data, gd, aug_by_id)
+        if len(batch) < 20:
+            break
+    n = store.import_games(found)
+    return n, tr('从客户端读到 {0} 局大乱斗 / 海斗，新增 {1} 局').format(len(found), n)
 
 
 # --------------------------------------------------------------------------------------
@@ -3915,6 +4062,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         engine.wake.set()
     hm = tk.Menu(menu, tearoff=0, bg="#1b2130", fg=FG, activebackground="#2b3a57", font=F["small"])
     hm.add_checkbutton(label=tr("按我的习惯调整推荐（只存本机）"), variable=habits_var, command=toggle_habits)
+    hm.add_command(label=tr("从游戏客户端导入历史对局"),
+                   command=lambda: (set_status(tr("读取客户端对局记录…")), engine.import_history_async(manual=True)))
     hm.add_command(label=tr("清除我的习惯记录"), command=clear_habits)
     menu.add_cascade(label=tr('我的习惯（{0} 局）').format(len(engine.habits.games)), menu=hm)
     lang_var = tk.StringVar(value=LANG)

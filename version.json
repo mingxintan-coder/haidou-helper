@@ -1,14 +1,14 @@
 {
- "version": "1.11.0",
+ "version": "1.12.0",
  "date": "2026-10-01",
  "notes": [
-  "按你的习惯推荐：本机记录每局的英雄、装备、增幅和输赢，推荐时偏向你熟悉、而且赢得多的路线（⋯ →「我的习惯」可关闭或清除）",
-  "「玩法」页显示你这个英雄的局数、胜率、常出装备",
-  "Habit-aware picks: learns your usual builds/augments locally and favours the ones you win with"
+  "自动从游戏客户端读取你最近最多 200 局海斗 / 大乱斗（只读本机客户端，不需要密钥），马上按你的历史习惯推荐出装和增幅",
+  "⋯ →「我的习惯」→「从游戏客户端导入历史对局」可手动读取",
+  "Imports your recent ARAM/Mayhem games from the League client (read-only) to personalise picks"
  ],
  "files": {
-  "haidou_helper.py": "1ccb6bd5ef0290c4d53dd8a013d77ad01bbe18b597d1852732513a8066174864",
-  "lang_en.py": "4b616eca02b8a157f5dd0c1a249d1d06af564ce16ec15d476f70b6136e8c42b8",
-  "README.md": "19e0441a7868079b827e6c5e6bf3ec710689993c12566b7ea9f644a561d55a75"
+  "haidou_helper.py": "15a7e8aea0200c7fe0efb7bb7da2e162241c092776cf84a768e081d29551ab8c",
+  "lang_en.py": "1c689f3907a1d1162df205661ed7a4b252a5b90f582bf80bf13801531b42c299",
+  "README.md": "b6c8033e53b3c441e13b20682639ea54af426eaa61619b4444c61435389f2044"
  }
 }
