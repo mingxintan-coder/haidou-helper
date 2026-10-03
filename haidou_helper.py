@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.16.3"
+APP_VERSION = "1.16.4"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -4792,6 +4792,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             if changed:
                 db.cfg.pop("my_puuid", None)
                 db.cfg.pop("my_tier", None)
+            if key.get().strip() != db.cfg.get("key"):
+                en.set(True)                # 换了新密钥＝要继续收集（过期时会被自动关掉）
             db.save_cfg(key=key.get().strip(), platform=plat.get(), riot_id=rid.get().strip(),
                         enabled=bool(en.get()), ranks=bool(rk.get()))
             db.status = tr("已保存，会在不打游戏时开始收集")

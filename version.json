@@ -1,12 +1,12 @@
 {
- "version": "1.16.3",
+ "version": "1.16.4",
  "date": "2026-10-02",
  "notes": [
-  "修复：选英雄阶段看不到一开始分给你的英雄（备选席很多时被挤出列表；刚分配时客户端还没写进队伍资料）",
-  "Fix: your initially assigned champion now always shows in champ select"
+  "自建数据库：密钥过期后贴上新密钥并保存，会自动重新开始收集（不用再手动勾「启用」）",
+  "Riot DB: saving a new key after expiry re-enables collection automatically"
  ],
  "files": {
-  "haidou_helper.py": "bc85cf35d5cce2a245cb959172ccd70c91bdff37eed35ca5156e6b8c158c2b98",
+  "haidou_helper.py": "076c537bb3ca35a5561c113704bb4fd5c8043ed89951b8d63cc83112dd6c2c79",
   "lang_en.py": "3592a36107f4cb49f148ec370ae16e7151b67545f23b42cd311a32bce890371d",
   "README.md": "cd149ec59f266a2c294fd2b044183806986ab179f1d09934425c4b6782726af9"
  }
