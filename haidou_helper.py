@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.16.0"
+APP_VERSION = "1.16.1"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -3307,6 +3307,8 @@ class Engine:
     def set_auto(self, offers):
         """offers: [(name, desc)]，空列表表示三选一界面消失"""
         vals = [f"{n}|{d}" for n, d in offers]
+        if vals:
+            self._auto_t = time.time()           # 识别又看到了三选一（就算没变也更新时间）
         with self.lock:
             old = [s.split("|", 1)[0] for s in self.manual["auto"]]
             new = [n for n, _ in offers]
@@ -3348,6 +3350,11 @@ class Engine:
         if state[2] is None:
             return ("status", tr("已连接，等待玩家数据…"))
         self.check_game_end(raw)
+        # 三选一超过 20 秒没再被识别看到（画面早就关了、但没确认到关闭）：自动清掉，免得一直停在增幅页
+        if self.manual.get("auto") and time.time() - getattr(self, "_auto_t", 0) > 20:
+            self.set_auto([])
+            with self.lock:
+                self.manual_dirty = "auto_off"
         with self.lock:
             manual = {k: list(v) for k, v in self.manual.items()}
             dirty, self.manual_dirty = self.manual_dirty, False
@@ -4461,6 +4468,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         st["tab"] = name
         if user:
             st["user_tab"] = True
+            st["tab_before_cand"] = None           # 你自己选了分页：三选一结束后不用切回
         for k, (lb, ul) in tab_btns.items():
             on = k == name
             lb.config(fg=FG if on else DIM)
@@ -4970,14 +4978,19 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             footer.config(text=tr('游戏 {0} · ARAMKit {1} · {2} ⇄').format(gv, ver, tier) if ver else tr('游戏 {0} · {1} ⇄').format(gv, tier))
         else:
             footer.config(text=tr('游戏 {0}').format(gv))
-        # 自动选分页：三选一 → 增幅；开局 → 玩法
+        # 自动选分页：出现新的三选一（或重骰）时切到增幅一次；你自己切走就不再拉回来
+        cand_key = tuple(a["name"] for a in rec.get("augs", [])[:3]) if cand else None
         if cand:
-            if st["tab"] != "augs":
-                st["tab_before_cand"] = st["tab"]
-                select_tab("augs")
+            if cand_key != st.get("cand_jumped"):
+                st["cand_jumped"] = cand_key
+                if st["tab"] != "augs":
+                    st["tab_before_cand"] = st["tab"]
+                    select_tab("augs")
         elif st["tab_before_cand"]:
-            select_tab(st["tab_before_cand"])
+            if st["tab"] == "augs":                # 只有还停在增幅页时才切回原来那页
+                select_tab(st["tab_before_cand"])
             st["tab_before_cand"] = None
+            st["cand_jumped"] = None
         elif shop_text:
             if st["tab"] != "items":
                 select_tab("items")

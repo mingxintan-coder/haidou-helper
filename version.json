@@ -1,13 +1,12 @@
 {
- "version": "1.16.0",
+ "version": "1.16.1",
  "date": "2026-10-02",
  "notes": [
-  "自建数据库：填入你自己的 Riot 开发者密钥，不打游戏时在背景收集海斗对局，可按你的段位给出装 / 增幅加权",
-  "⋯ →「自建数据库（Riot 密钥）…」设定",
-  "Own database from your Riot dev key, with per-rank weighting"
+  "修复：一直自动跳到「增幅」页。现在只在新的三选一（或重骰）出现时切过去一次，你自己切走就不再拉回；三选一 20 秒没再看到就自动清掉",
+  "Fix: overlay no longer keeps jumping to the Augments tab"
  ],
  "files": {
-  "haidou_helper.py": "e479dc10f51dfd3875959d9f82dcbb88fded68daedd0fb204e2516faa039cc5c",
+  "haidou_helper.py": "fa57439e53d7e41d587e6dcd1561c8cd91fb73d8408b1e70a8a204b8a13e15c8",
   "lang_en.py": "3592a36107f4cb49f148ec370ae16e7151b67545f23b42cd311a32bce890371d",
   "README.md": "cd149ec59f266a2c294fd2b044183806986ab179f1d09934425c4b6782726af9"
  }
