@@ -1,14 +1,14 @@
 {
- "version": "1.15.0",
+ "version": "1.16.0",
  "date": "2026-10-02",
  "notes": [
-  "赛后复盘：每局结束显示出装 / 增幅有几次照推荐、这个英雄的战绩",
-  "⋯ →「我的战绩…」：照推荐 vs 没照推荐的胜率对比、各英雄战绩、最近 10 局",
-  "Post-game review and My stats window (follow-vs-not win rates)"
+  "自建数据库：填入你自己的 Riot 开发者密钥，不打游戏时在背景收集海斗对局，可按你的段位给出装 / 增幅加权",
+  "⋯ →「自建数据库（Riot 密钥）…」设定",
+  "Own database from your Riot dev key, with per-rank weighting"
  ],
  "files": {
-  "haidou_helper.py": "7938a6f78bb55d33f4b0a1422dd12b1dca6752fd9c54d43ef02e8a7a3a7cbbb7",
-  "lang_en.py": "f8c2c23dd4a5c9443d54990b820c041bf72b722ab0e80af63ebfa33988a7f461",
-  "README.md": "01c0b451f5b2e602e0e5307b30e0fdc29254bc8d57e395e53b3573c3f7872aba"
+  "haidou_helper.py": "e479dc10f51dfd3875959d9f82dcbb88fded68daedd0fb204e2516faa039cc5c",
+  "lang_en.py": "3592a36107f4cb49f148ec370ae16e7151b67545f23b42cd311a32bce890371d",
+  "README.md": "cd149ec59f266a2c294fd2b044183806986ab179f1d09934425c4b6782726af9"
  }
 }

@@ -30,10 +30,11 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.15.0"
+APP_VERSION = "1.16.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -1841,6 +1842,11 @@ class Advisor:
             if t["power_diff"] < -2000 and ("SURVIVE" in special or (ehp and ehp[0] > 0.1)):
                 factors.append((0.06, tr("我方落后，先保命再反打")))
             raw, parts_txt = self.item_formula(fit, sf, factors, wts)
+            dbf = self.db_factor(me, "items", iid, 0.08)
+            if dbf:                         # 自建数据库：±最多 0.08
+                raw += dbf[0]
+                parts_txt += " {0:+.2f}D".format(dbf[0])
+                factors = factors + [dbf]
             hab = self.habit_item(me, iid)
             if hab:                         # 你的习惯：+最多 0.10（熟悉而且赢得多的更多）
                 raw += hab[0]
@@ -1860,6 +1866,35 @@ class Advisor:
             it["hint"] = self.buy_hint(it["id"], gold, owned)
         boots = self.recommend_boots(me, t, prof, role, cs, gold, legend, phase)
         return ([boots] if boots else []) + out[:k], prof
+
+    def db_factor(self, me, kind, key, cap):
+        """自建数据库（你用 Riot 密钥收集的海斗对局）：这个英雄出这件 / 拿这个增幅时的胜率，
+        对比这个英雄的平均；有你段位的足够样本就只看你的段位。加分 = clamp(6 × 收缩后的胜率差, ±cap)"""
+        db = getattr(self, "riotdb", None)
+        if db is None:
+            return None
+        champ = (self.gd.champ(me.cid) or {}).get("id", me.cid)
+        c = db.champ(champ)
+        if not c or c["n"] < 100:
+            return None
+        tier = db.cfg.get("my_tier")
+        label = tr("自建库")
+        if kind == "items" and tier and c["tiers"].get(tier, [0])[0] >= 100:
+            n_all, w_all = c["tiers"][tier]
+            row = c["items_t"].get((tier, key))
+            label = tr('自建库·{0}').format(tier_name(tier))
+        else:
+            n_all, w_all = c["n"], c["w"]
+            row = c[kind].get(key)
+        if not row or row[0] < 20:
+            return None
+        base = w_all / n_all
+        lift = (row[1] / row[0] - base) * row[0] / (row[0] + 200)
+        v = max(-cap, min(cap, 6 * lift))
+        if abs(v) < 0.015:
+            return None
+        return (v, tr('{0} {1} 局里出现 {2} 次，胜率 {3:.0f}%（{4:+.0f}%）').format(
+            label, n_all, row[0], 100 * row[1] / row[0], 100 * (row[1] / row[0] - base)))
 
     def habit_summary(self, me):
         hp = self.habit_profile(me)
@@ -2156,6 +2191,10 @@ class Advisor:
         if combo_f:
             situ += combo_f[0]
             factors.insert(0, combo_f)
+        dbf = self.db_factor(me, "augs", a.get("id"), 0.12) if a.get("id") else None
+        if dbf:                          # 自建数据库：±最多 0.12
+            situ += dbf[0]
+            factors.insert(0, dbf)
         hab = self.habit_aug(me, a)
         if hab:                          # 你的习惯：+最多 0.15
             situ += hab[0]
@@ -3042,6 +3081,14 @@ class Engine:
         self.scanning = False          # 正在识别三选一（界面这时刷新得快一点）
         self.habits = HabitStore()
         self.advisor.habits_store = self.habits
+        self.riotdb = RiotCollector(gd)
+        self.advisor.riotdb = self.riotdb
+
+        def db_new():
+            self.riotdb.aggregate()
+            self.last_sig = None
+            self.wake.set()
+        self.riotdb.on_new = db_new
         self.cur_game = None           # 这局的记录：英雄、装备、增幅、出现过的增幅
         self._ended = False            # 已读到 GameEnd（结算画面还连着时不要再记一次）
         self.fails = 0                 # 连续读取失败次数（游戏卡一下不算断线）
@@ -3057,6 +3104,8 @@ class Engine:
         # 原地换掉（屏幕识别等地方持有同一个 advisor）
         fresh = Advisor(gd, stats)
         fresh.habits_store = self.habits
+        fresh.riotdb = self.riotdb
+        self.riotdb.gd = gd
         self.advisor.__dict__ = fresh.__dict__      # 一次换掉，识别线程不会看到半空的状态
         self.gd = gd
         self.last_sig = None
@@ -3278,6 +3327,8 @@ class Engine:
                 raw = self.source.fetch()
                 self._raw, self._raw_t = raw, time.time()
             state = parse_live(raw)
+            ap = raw.get("activePlayer") or {}
+            self.my_riot_id = ap.get("riotId") or self.__dict__.get("my_riot_id", "")
         except Exception:
             self.fails += 1
             self._raw = None
@@ -3324,6 +3375,8 @@ class Engine:
 
     def run(self, stop):
         self.import_history_async(delay=3)       # 启动时先从客户端读一次历史对局
+        if not isinstance(self.source, MockGame):
+            threading.Thread(target=self.riotdb.run, args=(self, stop), daemon=True).start()
         while not stop.is_set():
             try:
                 self.q.put(self.step())
@@ -3675,6 +3728,277 @@ def import_client_history(gd, store, log=print, pages=10):
             break
     n = store.import_games(found)
     return n, tr('从客户端读到 {0} 局大乱斗 / 海斗，新增 {1} 局').format(len(found), n)
+
+
+# --------------------------------------------------------------------------------------
+# 自建数据库：用你自己的 Riot 开发者密钥收集海斗对局（Riot 官方接口；密钥只存本机，不随程序发布）
+# 不在对局时才在背景收集；严格遵守开发者密钥的速度限制（每秒 20 次、每 2 分钟 100 次，这里只用 90 次）。
+# --------------------------------------------------------------------------------------
+RIOT_PLATFORMS = ["SG2", "TW2", "VN2", "PH2", "TH2", "OC1", "KR", "JP1", "NA1", "BR1", "LA1", "LA2",
+                  "EUW1", "EUN1", "TR1", "RU", "ME1"]
+TIER_ORDER = ["IRON", "BRONZE", "SILVER", "GOLD", "PLATINUM", "EMERALD", "DIAMOND", "MASTER", "GRANDMASTER", "CHALLENGER"]
+
+
+def tier_name(t):
+    return {"IRON": tr("黑铁"), "BRONZE": tr("青铜"), "SILVER": tr("白银"), "GOLD": tr("黄金"), "PLATINUM": tr("铂金"),
+            "EMERALD": tr("翡翠"), "DIAMOND": tr("钻石"), "MASTER": tr("大师"), "GRANDMASTER": tr("宗师"),
+            "CHALLENGER": tr("王者"), "UNRANKED": tr("未定级")}.get(t, t)
+
+
+def riot_regions(platform):
+    """(对局接口的区域, 账号接口的区域)"""
+    p = platform.upper()
+    if p in ("NA1", "BR1", "LA1", "LA2"):
+        return "americas", "americas"
+    if p in ("KR", "JP1"):
+        return "asia", "asia"
+    if p in ("OC1", "SG2", "TW2", "VN2", "PH2", "TH2"):
+        return "sea", "asia"
+    return "europe", "europe"
+
+
+class RiotAPI:
+    def __init__(self, key, platform):
+        self.key, self.platform = key.strip(), platform.upper()
+        self.mregion, self.aregion = riot_regions(self.platform)
+        self.calls = []            # 最近的请求时间（限速用）
+
+    def _wait(self):
+        while True:
+            now = time.time()
+            self.calls = [t for t in self.calls if now - t < 121]
+            if len(self.calls) < 90 and sum(1 for t in self.calls if now - t < 1) < 18:
+                self.calls.append(now)
+                return
+            time.sleep(0.5)
+
+    def get(self, host, path, stop=None):
+        for _ in range(4):
+            if stop is not None and stop():
+                raise InterruptedError
+            self._wait()
+            req = urllib.request.Request(f"https://{host}.api.riotgames.com{path}",
+                                         headers={"X-Riot-Token": self.key, "User-Agent": f"haidou-helper/{APP_VERSION}"})
+            try:
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    return json.loads(r.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                if e.code == 429:                       # 超速：按服务器说的等
+                    time.sleep(float(e.headers.get("Retry-After") or 10))
+                    continue
+                if e.code == 404:
+                    return None
+                raise
+        return None
+
+
+class RiotCollector:
+    """背景收集海斗对局到 APP_DIR/riotdb/：matches.jsonl（每行一局里每个玩家的英雄 / 装备 / 增幅 / 输赢 / 段位）"""
+
+    def __init__(self, gd, log=print):
+        self.gd, self.log = gd, log
+        self.dir = os.path.join(APP_DIR, "riotdb")
+        os.makedirs(self.dir, exist_ok=True)
+        self.cfg_path = os.path.join(self.dir, "settings.json")
+        self.cfg = read_json(self.cfg_path) if os.path.exists(self.cfg_path) else {}
+        self.cfg = self.cfg if isinstance(self.cfg, dict) else {}
+        self.state_path = os.path.join(self.dir, "state.json")
+        st = read_json(self.state_path) if os.path.exists(self.state_path) else {}
+        st = st if isinstance(st, dict) else {}
+        self.seen = set(st.get("seen", []))          # 已看过的对局编号
+        self.frontier = list(st.get("frontier", []))  # 待查的玩家
+        self.tiers = st.get("tiers", {})             # puuid -> 段位
+        self.lock = threading.Lock()
+        self.status = ""
+        self.added = 0
+        self._agg = None
+        self.wake = threading.Event()
+        self.on_new = None
+
+    # ---------- 设定 ----------
+    @property
+    def enabled(self):
+        return bool(self.cfg.get("enabled") and self.cfg.get("key") and self.cfg.get("platform"))
+
+    def save_cfg(self, **kw):
+        self.cfg.update(kw)
+        write_json(self.cfg_path, self.cfg)
+        self.wake.set()
+
+    def save_state(self):
+        with self.lock:
+            data = {"seen": list(self.seen)[-50000:], "frontier": self.frontier[-3000:], "tiers": self.tiers}
+        write_json(self.state_path, data)
+
+    # ---------- 收集 ----------
+    def is_mayhem(self, info):
+        if str(info.get("gameMode", "")).upper() == "CHERRY" or info.get("mapId") == 30:
+            return False
+        if str(info.get("gameMode", "")).upper() == "KIWI" or info.get("queueId") in MAYHEM_QUEUES or \
+                (info.get("queueId") and info.get("queueId") == self.cfg.get("mayhem_queue")):
+            return True
+        parts = info.get("participants") or []
+        return bool(parts) and any(p.get("playerAugment1") for p in parts)
+
+    def rows_from_match(self, m):
+        info = (m or {}).get("info") or {}
+        if not self.is_mayhem(info) or (info.get("gameDuration") or 0) < 300:
+            return [], []
+        if info.get("queueId") and not self.cfg.get("mayhem_queue") and any(
+                p.get("playerAugment1") for p in info.get("participants", [])):
+            self.save_cfg(mayhem_queue=info["queueId"])
+        patch = ".".join(str(info.get("gameVersion", "")).split(".")[:2])
+        rows, puuids = [], []
+        for p in info.get("participants", []):
+            items = [int(p.get(f"item{i}") or 0) for i in range(7)]
+            augs = [int(p.get(f"playerAugment{i}") or 0) for i in range(1, 7)]
+            rows.append({"m": m.get("metadata", {}).get("matchId"), "v": patch, "c": p.get("championName"),
+                         "i": [x for x in items if x], "a": [x for x in augs if x], "w": bool(p.get("win")),
+                         "u": p.get("puuid")})
+            if p.get("puuid"):
+                puuids.append(p["puuid"])
+        return rows, puuids
+
+    def tier_of(self, api, puuid, stop):
+        if puuid in self.tiers:
+            return self.tiers[puuid]
+        entries = api.get(api.platform.lower(), f"/lol/league/v4/entries/by-puuid/{puuid}", stop) or []
+        best = ""
+        for e in entries:
+            t = str(e.get("tier", "")).upper()
+            if t in TIER_ORDER and (not best or TIER_ORDER.index(t) > TIER_ORDER.index(best)):
+                best = t
+        self.tiers[puuid] = best or "UNRANKED"
+        return self.tiers[puuid]
+
+    def seed(self, api, riot_id, stop):
+        """从你自己开始：riotId（名字#TAG）→ puuid"""
+        if self.cfg.get("my_puuid"):
+            return self.cfg["my_puuid"]
+        if not riot_id or "#" not in riot_id:
+            return None
+        name, tag = riot_id.split("#", 1)
+        acc = api.get(api.aregion, "/riot/account/v1/accounts/by-riot-id/"
+                      f"{urllib.parse.quote(name)}/{urllib.parse.quote(tag)}", stop)
+        if acc and acc.get("puuid"):
+            self.save_cfg(my_puuid=acc["puuid"])
+            if self.cfg.get("ranks"):
+                self.save_cfg(my_tier=self.tier_of(api, acc["puuid"], stop))
+            return acc["puuid"]
+        return None
+
+    def run(self, engine, stop):
+        """背景线程：不在对局中、而且已设定密钥时才收集"""
+        while not stop.is_set():
+            self.wake.wait(30)
+            self.wake.clear()
+            if not self.enabled or engine.connected:
+                continue
+            api = RiotAPI(self.cfg["key"], self.cfg["platform"])
+
+            def halt():
+                return stop.is_set() or engine.connected or not self.enabled
+            try:
+                me = self.seed(api, self.cfg.get("riot_id") or getattr(engine, "my_riot_id", ""), halt)
+                if me and me not in self.frontier:
+                    self.frontier.insert(0, me)
+                batch = 0
+                while self.frontier and not halt() and batch < 60:
+                    puuid = self.frontier.pop(0)
+                    # 海斗的队列编号：从认出的第一局海斗学到后才用来筛选（还不知道时全部拿来看）
+                    q = f"&queue={self.cfg['mayhem_queue']}" if self.cfg.get("mayhem_queue") else ""
+                    ids = api.get(api.mregion, f"/lol/match/v5/matches/by-puuid/{puuid}/ids?start=0&count=20{q}", halt) or []
+                    for mid in ids:
+                        if halt() or mid in self.seen:
+                            continue
+                        self.seen.add(mid)
+                        m = api.get(api.mregion, f"/lol/match/v5/matches/{mid}", halt)
+                        rows, players = self.rows_from_match(m)
+                        if not rows:
+                            continue
+                        if self.cfg.get("ranks"):
+                            for r in rows:
+                                if halt():
+                                    break
+                                r["t"] = self.tier_of(api, r["u"], halt)
+                        with open(os.path.join(self.dir, "matches.jsonl"), "a", encoding="utf-8") as f:
+                            for r in rows:
+                                r.pop("u", None)
+                                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                        with self.lock:
+                            self.frontier += [p for p in players if p not in self.frontier][:9]
+                            self._agg = None
+                        self.added += 1
+                        batch += 1
+                    self.status = tr('自建数据库：本次新增 {0} 局').format(self.added)
+                    self.save_state()
+                if self.added and self.on_new:
+                    self.on_new()
+                if not self.frontier:
+                    self.status = tr("自建数据库：没有可以继续查的玩家（打一局后会再从你开始）")
+            except InterruptedError:
+                self.save_state()
+            except urllib.error.HTTPError as e:
+                if e.code in (401, 403):
+                    self.status = tr("Riot 密钥无效或已过期（开发者密钥每 24 小时要更新一次）")
+                    self.save_cfg(enabled=False)
+                else:
+                    self.status = tr('自建数据库出错：{0}').format(e)
+                engine.q.put(("data", self.status))
+            except Exception as e:  # noqa
+                self.status = tr('自建数据库出错：{0}').format(e)
+
+    # ---------- 统计 ----------
+    def aggregate(self):
+        """{英雄: {"n": 局数, "w": 胜场, "tiers": {段位: [n, w]}, "items": {装备: [n, w]}, "augs": {增幅: [n, w]},
+                   "items_t": {(段位, 装备): [n, w]}}}（只用最近两个版本）"""
+        with self.lock:
+            if self._agg is not None:
+                return self._agg
+        path = os.path.join(self.dir, "matches.jsonl")
+        rows = []
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        rows.append(json.loads(line))
+                    except ValueError:
+                        continue
+        patches = sorted({r.get("v", "") for r in rows}, key=ver_tuple)[-2:]
+        agg = {}
+        for r in rows:
+            if r.get("v") not in patches or not r.get("c"):
+                continue
+            c = agg.setdefault(str(r["c"]).lower(), {"n": 0, "w": 0, "tiers": {}, "items": {}, "augs": {}, "items_t": {}})
+            w = 1 if r.get("w") else 0
+            c["n"] += 1
+            c["w"] += w
+            t = r.get("t")
+            if t:
+                x = c["tiers"].setdefault(t, [0, 0])
+                x[0] += 1
+                x[1] += w
+            for i in set(r.get("i", [])):
+                x = c["items"].setdefault(i, [0, 0])
+                x[0] += 1
+                x[1] += w
+                if t:
+                    x = c["items_t"].setdefault((t, i), [0, 0])
+                    x[0] += 1
+                    x[1] += w
+            for a in set(r.get("a", [])):
+                x = c["augs"].setdefault(a, [0, 0])
+                x[0] += 1
+                x[1] += w
+        with self.lock:
+            self._agg = agg
+        return agg
+
+    def champ(self, champ_id):
+        return self.aggregate().get(str(champ_id).lower())
+
+    def total_games(self):
+        return sum(c["n"] for c in self.aggregate().values()) // 10
 
 
 # --------------------------------------------------------------------------------------
@@ -4371,6 +4695,65 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         txt.pack(fill="both", expand=True)
         st["hold_until"] = time.time() + 3
     menu.add_command(label=tr("我的战绩…"), command=open_stats)
+
+    def open_riotdb():
+        db = engine.riotdb
+        w = tk.Toplevel(root)
+        w.title(tr("自建数据库（Riot 开发者密钥）"))
+        w.attributes("-topmost", True)
+        w.configure(bg=BG, padx=12, pady=10)
+        st["hold_until"] = time.time() + 3
+
+        def lab(text, **kw):
+            lb = tk.Label(w, text=text, bg=BG, fg=kw.pop("fg", FG), font=F["small"], anchor="w", justify="left",
+                          wraplength=int(360 * dpi * st["k"]), **kw)
+            lb.pack(fill="x", pady=(4, 0))
+            return lb
+        lab(tr("用你自己的 Riot 开发者密钥，在不打游戏时于背景收集海斗对局，攒够数据后按你的段位给出装 / 增幅加权。"
+               "密钥只存在本机。到 developer.riotgames.com 登录后即可免费取得（开发者密钥每 24 小时要更新一次）。"), fg=SUB)
+        lab(tr("Riot 开发者密钥（RGAPI-…）"))
+        key = tk.Entry(w, show="•", bg=CARD, fg=FG, insertbackground=FG, relief="flat", font=F["small"])
+        key.insert(0, db.cfg.get("key", ""))
+        key.pack(fill="x", ipady=3)
+        lab(tr("你的服务器"))
+        plat = tk.StringVar(value=db.cfg.get("platform", "SG2"))
+        om = tk.OptionMenu(w, plat, *RIOT_PLATFORMS)
+        om.config(bg=CARD, fg=FG, highlightthickness=0, relief="flat", font=F["small"])
+        om.pack(anchor="w")
+        lab(tr("你的 Riot ID（名字#TAG，留空＝进游戏时自动读取）"))
+        rid = tk.Entry(w, bg=CARD, fg=FG, insertbackground=FG, relief="flat", font=F["small"])
+        rid.insert(0, db.cfg.get("riot_id", ""))
+        rid.pack(fill="x", ipady=3)
+        en = tk.BooleanVar(value=db.cfg.get("enabled", False))
+        rk = tk.BooleanVar(value=db.cfg.get("ranks", True))
+        for var, text in ((en, tr("启用收集（只在不打游戏时）")), (rk, tr("记录每个玩家的段位（可以按段位统计，收集速度约慢 10 倍）"))):
+            tk.Checkbutton(w, text=text, variable=var, bg=BG, fg=FG, selectcolor=CARD, activebackground=BG,
+                           activeforeground=FG, font=F["small"], anchor="w").pack(fill="x")
+        info = lab("", fg=GOLD)
+
+        def refresh():
+            if not w.winfo_exists():
+                return
+            n = db.total_games()
+            tier = db.cfg.get("my_tier")
+            info.config(text=tr('已收集约 {0} 局').format(n) + (tr('　你的段位：{0}').format(tier_name(tier)) if tier else "") +
+                        ("\n" + db.status if db.status else ""))
+            w.after(3000, refresh)
+
+        def save():
+            changed = key.get().strip() != db.cfg.get("key") or plat.get() != db.cfg.get("platform") or \
+                rid.get().strip() != db.cfg.get("riot_id", "")
+            if changed:
+                db.cfg.pop("my_puuid", None)
+                db.cfg.pop("my_tier", None)
+            db.save_cfg(key=key.get().strip(), platform=plat.get(), riot_id=rid.get().strip(),
+                        enabled=bool(en.get()), ranks=bool(rk.get()))
+            db.status = tr("已保存，会在不打游戏时开始收集")
+        tk.Label(w, text=tr("保存"), bg="#2b3a57", fg=FG, font=F["small"], padx=12, pady=4, cursor="hand2").pack(
+            anchor="e", pady=(8, 0))
+        w.winfo_children()[-1].bind("<Button-1>", lambda e: save())
+        refresh()
+    menu.add_command(label=tr("自建数据库（Riot 密钥）…"), command=open_riotdb)
     menu.add_cascade(label=tr('我的习惯（{0} 局）').format(len(engine.habits.games)), menu=hm)
     lang_var = tk.StringVar(value=LANG)
 
