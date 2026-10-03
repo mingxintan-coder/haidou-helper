@@ -33,7 +33,7 @@ import urllib.error
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.14.0"
+APP_VERSION = "1.15.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -3129,14 +3129,34 @@ class Engine:
             g = self.cur_game = {"champ": champ, "t": time.strftime("%Y-%m-%d %H:%M"), "ts": time.time(), "items": [],
                                  "augs": [], "offered": [], "win": None, "len": 0}
         g["len"] = int(me.game_time)
-        g["items"] = [i for i in me.items if self.gd.is_completed(i)]
+        items = [i for i in me.items if self.gd.is_completed(i)]
+        # 复盘用：新买的成品装备，是不是在「买之前那次」推荐的前 3 名里
+        top = getattr(self, "_last_top", None)
+        follow = g.setdefault("item_follow", [])
+        known = {i for i, _ in follow}
+        for i in items:
+            if i not in known and i not in g["items"] and top is not None:
+                follow.append((i, i in top))
+        g["items"] = items
+        for i in items:
+            if i not in {x for x, _ in follow} and top is None:
+                follow.append((i, None))              # 这局刚开始就有的（没有推荐可比）
+        nonboots = [x["id"] for x in rec.get("items", []) if not x.get("boots")][:3]
+        boots = [x["id"] for x in rec.get("items", []) if x.get("boots")]
+        self._last_top = set(nonboots + boots)
+        # 增幅：选的是不是 ★ 那张
+        offer = getattr(self, "_last_offer", None)
         for n in rec.get("my_augs", []):
             if n not in g["augs"]:
                 g["augs"].append(n)
-        if rec.get("cand_mode"):
-            for a in rec.get("augs", []):
-                if a["name"] not in g["offered"]:
-                    g["offered"].append(a["name"])
+                if offer and n in offer[0]:
+                    g.setdefault("aug_follow", []).append((n, n == offer[1]))
+        if rec.get("cand_mode") and rec.get("augs"):
+            names = [a["name"] for a in rec["augs"]]
+            self._last_offer = (names, names[0])
+            for a in names:
+                if a not in g["offered"]:
+                    g["offered"].append(a)
 
     def check_game_end(self, raw):
         """每次读取都看有没有 GameEnd 事件（不管推荐有没有变化）"""
@@ -3150,10 +3170,32 @@ class Engine:
 
     def finish_game(self, win):
         g, self.cur_game = self.cur_game, None
+        self._last_top = self._last_offer = None
         if g and g["len"] >= 300:           # 打了 5 分钟以上的才算（重开、掉线不记）
             g["win"] = win
             self.habits.add_game(g)
+            self.q.put(("review", self.review(g)))
             self.import_history_async(delay=60)    # 客户端结算后会更新对局记录，补上编号以免重复
+
+    def review(self, g):
+        """赛后复盘的一段文字"""
+        gd = self.gd
+        f = [x for x in g.get("item_follow", []) if x[1] is not None]
+        af = g.get("aug_follow", [])
+        hp = self.habits.profile(g["champ"])
+        res = tr("赢了") if g.get("win") else tr("输了") if g.get("win") is False else tr("结束")
+        head = tr('复盘：{0}{1} · {2} 分钟').format(gd.champ_name(g["champ"]), res, g["len"] // 60)
+        parts = []
+        if f:
+            parts.append(tr('出装 {0}/{1} 件照推荐').format(sum(1 for _, ok in f if ok), len(f)))
+        if af:
+            parts.append(tr('增幅 {0}/{1} 次选了 ★').format(sum(1 for _, ok in af if ok), len(af)))
+        if hp["games"]:
+            parts.append(tr('这个英雄 {0} 局 {1} 胜').format(hp["games"], hp["wins"]))
+        off = [gd.item_name(i) for i, ok in f if ok is False]
+        detail = tr('没照推荐的：{0}').format(tr("、").join(off)) if off else ""
+        return {"text": head + (" · " + " · ".join(parts) if parts else ""), "detail": detail,
+                "items": [gd.item_name(i) for i in g.get("items", [])], "augs": g.get("augs", [])}
 
     def import_history_async(self, delay=0, manual=False):
         """背景从游戏客户端读取你的历史对局（只读）"""
@@ -3166,6 +3208,14 @@ class Engine:
                 time.sleep(delay)
                 n, msg = import_client_history(self.gd, self.habits)
                 if n:
+                    for g in self.habits.games:           # 自己记的复盘资料搬到客户端那份上
+                        if g.get("gameId"):
+                            continue
+                        for c in self.habits.games:
+                            if c.get("gameId") and c["champ"] == g["champ"] and abs((c.get("ts") or 0) - (g.get("ts") or 0)) < 3600:
+                                for k in ("item_follow", "aug_follow"):
+                                    if g.get(k) and not c.get(k):
+                                        c[k] = g[k]
                     # 本程序自己记的、没有 gameId 的同一局：留客户端那份（有准确输赢和增幅）
                     self.habits.games = [g for g in self.habits.games if g.get("gameId") or
                                          not any(c.get("gameId") and c["champ"] == g["champ"] and
@@ -3442,6 +3492,46 @@ class HabitStore:
             write_json(self.path, {"version": 1, "games": []})
         except OSError:
             pass
+
+    def report(self, gd):
+        """战绩页的文字：总体、照推荐 vs 没照推荐、各英雄、最近几局"""
+        games = [g for g in self.games if g.get("champ")]
+        if not games:
+            return tr("还没有记录。打几局海斗，或在「我的习惯」里从游戏客户端导入历史对局。")
+        dec = [g for g in games if g.get("win") is not None]
+
+        def wr(lst):
+            d = [g for g in lst if g.get("win") is not None]
+            return (100 * sum(1 for g in d if g["win"]) / len(d)) if d else None
+
+        def fmt(w):
+            return "—" if w is None else f"{w:.0f}%"
+        lines = [tr('总计 {0} 局，胜率 {1}').format(len(games), fmt(wr(dec)))]
+        # 照推荐出装的局 vs 没照的局
+        follow, other = [], []
+        for g in dec:
+            f = [x for x in g.get("item_follow", []) if x[1] is not None]
+            if len(f) >= 2:
+                (follow if sum(1 for x in f if x[1]) / len(f) >= 0.6 else other).append(g)
+        if follow or other:
+            lines.append(tr('照推荐出装（≥60% 的装备）：{0} 局，胜率 {1}　｜　没照：{2} 局，胜率 {3}').format(
+                len(follow), fmt(wr(follow)), len(other), fmt(wr(other))))
+        lines.append("")
+        lines.append(tr("英雄            局数  胜率   常出装备"))
+        champs = Counter(g["champ"] for g in games)
+        for champ, n in champs.most_common(15):
+            prof = self.profile(champ)
+            top = sorted(prof["items"].items(), key=lambda x: -x[1][0])[:3]
+            name = gd.champ_name(champ)
+            lines.append(f"{name:<8}{n:>6}  {fmt(wr([g for g in games if g['champ'] == champ])):>5}   " +
+                         tr("、").join(gd.item_name(i) for i, _ in top))
+        lines.append("")
+        lines.append(tr("最近 10 局"))
+        for g in sorted(games, key=lambda g: g.get("t", ""))[-10:][::-1]:
+            res = tr("胜") if g.get("win") else tr("负") if g.get("win") is False else "?"
+            items = tr("、").join(gd.item_name(i) for i in g.get("items", [])[:6])
+            lines.append(f"{g.get('t', '')[:16]}  {res}  {gd.champ_name(g['champ'])}  {items}")
+        return "\n".join(lines)
 
     def profile(self, champ):
         """这个英雄的个人统计：局数、胜场、每件装备 / 每个增幅的（次数, 赢的次数），增幅出现次数"""
@@ -3835,6 +3925,8 @@ def run_console(engine, scanner=None):
             kind, payload = engine.q.get()
             if kind == "rec":
                 print(format_rec(payload), flush=True)
+            elif kind == "review":
+                print("\n📋 " + payload["text"] + ("\n   " + payload["detail"] if payload.get("detail") else ""), flush=True)
             elif kind == "select":
                 print(tr("\n==== 选英雄 ====") + "".join(f"\n {c['score']:>3}  {c['name']}  {c['reason']}" for c in payload.get("cands", [])),
                       flush=True)
@@ -4267,6 +4359,18 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     hm.add_command(label=tr("从游戏客户端导入历史对局"),
                    command=lambda: (set_status(tr("读取客户端对局记录…")), engine.import_history_async(manual=True)))
     hm.add_command(label=tr("清除我的习惯记录"), command=clear_habits)
+
+    def open_stats():
+        w = tk.Toplevel(root)
+        w.title(tr("我的战绩"))
+        w.attributes("-topmost", True)
+        w.configure(bg=BG)
+        txt = tk.Text(w, bg=CARD, fg=FG, font=F["small"], width=78, height=26, bd=0, padx=10, pady=8, wrap="none")
+        txt.insert("1.0", engine.habits.report(engine.gd))
+        txt.config(state="disabled")
+        txt.pack(fill="both", expand=True)
+        st["hold_until"] = time.time() + 3
+    menu.add_command(label=tr("我的战绩…"), command=open_stats)
     menu.add_cascade(label=tr('我的习惯（{0} 局）').format(len(engine.habits.games)), menu=hm)
     lang_var = tk.StringVar(value=LANG)
 
@@ -4443,9 +4547,12 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         # 阵亡购物清单（复活前买什么）
         shop = rec.get("shop")
         shop_text = shop_line(shop)
+        rv = st.get("review")
         if shop_text:
             shop_lbl.config(text=shop_text)
             shop_lbl.pack(fill="x", pady=(0, 3), before=tips_box)
+        elif rv and time.time() < rv[1]:
+            pass                                   # 赛后复盘还在显示
         else:
             shop_lbl.pack_forget()
         # 出装页
@@ -4545,6 +4652,16 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 show(payload, flash=not payload.get("quiet"))
                 if not hold:
                     set_status("")
+            elif kind == "review":         # 赛后复盘
+                st["review"] = (payload, time.time() + 25)
+                shop_lbl.config(text="📋 " + payload["text"] + ("\n" + payload["detail"] if payload.get("detail") else ""))
+                shop_lbl.pack(fill="x", pady=(0, 3), before=tips_box)
+                if st["tab"] != "items":
+                    select_tab("items")
+                mini.config(text="📋 " + payload["text"], fg=GOLD)
+                st["hold_until"] = time.time() + 20
+                set_expanded(True)
+                fit()
             elif kind == "select":         # 选英雄阶段
                 dot.config(fg=GOLD)
                 show_select(payload)

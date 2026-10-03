@@ -1,13 +1,14 @@
 {
- "version": "1.14.0",
+ "version": "1.15.0",
  "date": "2026-10-02",
  "notes": [
-  "选英雄阶段推荐：读取你的英雄、备选席和队友，按海斗胜率、你的战绩、阵容缺口打分，建议要不要从备选席换",
-  "Champ select advice: scores your pick and the bench by Mayhem WR, your record and team needs"
+  "赛后复盘：每局结束显示出装 / 增幅有几次照推荐、这个英雄的战绩",
+  "⋯ →「我的战绩…」：照推荐 vs 没照推荐的胜率对比、各英雄战绩、最近 10 局",
+  "Post-game review and My stats window (follow-vs-not win rates)"
  ],
  "files": {
-  "haidou_helper.py": "7b20bc844b9baec08e3c7c81fc77b05e06d4e1ec6b239e13456a9b0b5c2f64ff",
-  "lang_en.py": "ca3342b10a1c09b31dcfd816344bdaae34d1b75f9cea3f0f7b19c5b803c27ce4",
-  "README.md": "5bb19b0b6a33ecdfc919aec580000c1544145b09264165f2f217f27886fd6f1b"
+  "haidou_helper.py": "7938a6f78bb55d33f4b0a1422dd12b1dca6752fd9c54d43ef02e8a7a3a7cbbb7",
+  "lang_en.py": "f8c2c23dd4a5c9443d54990b820c041bf72b722ab0e80af63ebfa33988a7f461",
+  "README.md": "01c0b451f5b2e602e0e5307b30e0fdc29254bc8d57e395e53b3573c3f7872aba"
  }
 }
