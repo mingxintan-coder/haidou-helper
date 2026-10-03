@@ -33,7 +33,7 @@ import urllib.error
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.13.0"
+APP_VERSION = "1.14.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -1112,20 +1112,22 @@ class StatsProvider:
         return out
 
     # ---------- 英雄统计（背景下载） ----------
-    def get(self, champ_key):
-        """返回已解析的统计；还没有就在背景下载，完成后呼叫 on_ready"""
+    def get(self, champ_key, light=False):
+        """返回已解析的统计；还没有就在背景下载，完成后呼叫 on_ready。
+        light=True（选英雄阶段）只下载英雄总表，不下载约 5MB 的「带增幅时的装备胜率」"""
         if not champ_key:
             return None
         with self.lock:
-            if champ_key in self.champs:
-                return self.champs[champ_key]
+            have = self.champs.get(champ_key)
+            if have is not None and (light or not have.get("light")):
+                return have
             if champ_key in self.pending or time.time() - self.failed.get(champ_key, 0) < 60:
-                return None
+                return have
             self.pending.add(champ_key)
-        threading.Thread(target=self._fetch, args=(champ_key,), daemon=True).start()
-        return None
+        threading.Thread(target=self._fetch, args=(champ_key, light), daemon=True).start()
+        return have
 
-    def _fetch(self, key):
+    def _fetch(self, key, light=False):
         try:
             if not self.version and not self.load_version():
                 return
@@ -1136,7 +1138,10 @@ class StatsProvider:
                             f"champ_{dp.replace('/', '_')}_{key}.json" if ds == "all" else
                             f"champ_{ds}_{dp.replace('/', '_')}_{key}.json")
             parsed = self._parse(raw)
-            parsed["by_aug"] = self._fetch_single_augments(dp, key, ds)
+            if light:
+                parsed["by_aug"], parsed["light"] = {}, True
+            else:
+                parsed["by_aug"] = self._fetch_single_augments(dp, key, ds)
             with self.lock:
                 if ds != self.dataset:       # 下载期间换了分段：这份作废
                     return
@@ -1896,6 +1901,67 @@ class Advisor:
         if b < 0.01:
             return None
         return (b, tr('你常拿（出现 {0} 次选了 {1} 次，赢 {2} 局）').format(seen, cnt, wins))
+
+    def champ_traits(self, cid):
+        """阵容用：AP 为主？前排？开团？治疗/保护？"""
+        c = self.gd.champ(cid) or {}
+        info = c.get("info", {"attack": 5, "magic": 5, "defense": 5})
+        tags = set(c.get("tags", []))
+        o = CHAMP_OVERRIDE.get(c.get("id", cid), {})
+        ap = o.get("AP", 0) > o.get("AD", 0) if o else info.get("magic", 5) > info.get("attack", 5)
+        return {"ap": ap, "front": "Tank" in tags or (champ_role(self.gd, cid, "engage") and "Fighter" in tags),
+                "engage": champ_role(self.gd, cid, "engage"),
+                "sustain": champ_role(self.gd, cid, "enchanter") or champ_role(self.gd, cid, "heal") and "Support" in tags,
+                "poke": champ_role(self.gd, cid, "poke")}
+
+    def rank_champions(self, cands, team, mine=None):
+        """选英雄阶段：给你现在的英雄和备选席上的英雄打分
+           分数 = 100 × (0.55 × 海斗胜率项 + 0.25 × 你的战绩项 + 0.20 × 阵容项)
+             海斗胜率项 = clamp(0.5 + 8 × (胜率 − 50%) × n/(n+5000), 0, 1)        （还没下载到 = 0.5）
+             你的战绩项 = ½ × √(min(局数, 20)/20) + ½ × clamp(0.5 + 2 × (平滑胜率 − 50%), 0, 1)
+             阵容项     = 0.3 + 补上队伍缺的（前排 / 魔法伤害 / 开团 / 治疗保护）每项 +0.25，最高 1"""
+        store = getattr(self, "habits_store", None)
+        tr_team = [self.champ_traits(c) for c in team]
+        need = {"front": not any(x["front"] for x in tr_team),
+                "ap": sum(1 for x in tr_team if x["ap"]) <= (0 if len(team) < 3 else 1),
+                "engage": not any(x["engage"] for x in tr_team),
+                "sustain": not any(x["sustain"] for x in tr_team)}
+        label = {"front": tr("前排"), "ap": tr("魔法伤害"), "engage": tr("开团"), "sustain": tr("治疗/保护")}
+        out = []
+        for cid in cands:
+            c = self.gd.champ(cid)
+            if not c:
+                continue
+            cs = self.stats.get(c.get("key"), light=True) if self.stats else None
+            reasons = []
+            if cs and cs.get("n"):
+                W = max(0.0, min(1.0, 0.5 + 8 * (cs["wr"] - 0.5) * cs["n"] / (cs["n"] + 5000)))
+                reasons.append(tr('海斗胜率 {0:.1f}%').format(cs["wr"] * 100) +
+                               (tr('（{0} 级）').format(cs["tier"]) if cs.get("tier") else ""))
+                wr = cs["wr"]
+            else:
+                W, wr = 0.5, None
+            U = 0.5
+            if store is not None and store.enabled:
+                hp = store.profile(c["id"])
+                if hp["games"]:
+                    fam = math.sqrt(min(hp["games"], 20) / 20)
+                    pw = (hp["wins"] + 1) / (hp["decided"] + 2) if hp["decided"] else 0.5
+                    U = 0.5 * fam + 0.5 * max(0.0, min(1.0, 0.5 + 2 * (pw - 0.5)))
+                    reasons.append(tr('你 {0} 局 {1} 胜').format(hp["games"], hp["wins"]))
+                else:
+                    U = 0.25
+            t = self.champ_traits(cid)
+            fills = [k for k in need if need[k] and t[k]]
+            C = min(1.0, 0.3 + 0.25 * len(fills))
+            if fills:
+                reasons.append(tr('补上队伍缺的{0}').format(tr("、").join(label[k] for k in fills)))
+            score = 100 * (0.55 * W + 0.25 * U + 0.20 * C)
+            out.append({"id": cid, "name": c["name"], "score": int(round(score)), "raw": score / 100, "wr": wr,
+                        "reason": tr("，").join(reasons) or tr("暂无数据"), "mine": cid == mine,
+                        "hint": tr("你现在的英雄") if cid == mine else ""})
+        out.sort(key=lambda x: -x["raw"])
+        return out, [label[k] for k in need if need[k]]
 
     def shopping_plan(self, me, gold, rec_items, max_targets=2):
         """阵亡时用手上的钱怎么买：按推荐顺序，先凑第一件（钱够就直接合成，不够就买最贵的零件），
@@ -2997,6 +3063,61 @@ class Engine:
         n = clean_old_cache(data_versions(gd, stats))
         self.q.put(("data", msg + (tr('（清理旧缓存 {0} 个）').format(n) if n else "")))
 
+    def champ_select_step(self):
+        """选英雄阶段：读客户端的选人资讯（你的英雄、备选席、队友），给可换的英雄打分"""
+        if isinstance(self.source, MockGame):
+            return None
+        now = time.time()
+        if now - getattr(self, "_cs_t", 0) < 2:
+            return getattr(self, "_cs_last", None) and ("status", tr("选英雄中"))
+        self._cs_t = now
+        cred = getattr(self, "_lcu_cred", None)
+        if cred is None and now - getattr(self, "_lcu_try", 0) > 30:
+            self._lcu_try = now
+            cred = self._lcu_cred = lcu_credentials()
+        if cred is None:
+            return None
+        try:
+            sess = lcu_get("/lol-champ-select/v1/session", cred, timeout=3)
+        except urllib.error.HTTPError:
+            self._cs_last = None                         # 404＝没在选英雄
+            return None
+        except Exception:  # noqa                         客户端关了 / 换了端口
+            self._lcu_cred, self._cs_last = None, None
+            return None
+        payload = self.champ_select_payload(sess)
+        if payload is None:
+            return None
+        sig = (tuple(payload["cand_ids"]), tuple(payload["team_ids"]), self.stats_dirty)
+        with self.lock:
+            self.stats_dirty = False
+        if sig == getattr(self, "_cs_sig", None):
+            return ("status", tr("选英雄中"))
+        self._cs_sig = sig
+        self._cs_last = payload
+        return ("select", payload)
+
+    def champ_select_payload(self, sess):
+        by_key = {str(c.get("key")): c["id"] for c in self.gd.champs.values()}
+        cell = sess.get("localPlayerCellId")
+        mine, team = None, []
+        for m in sess.get("myTeam", []) or []:
+            cid = by_key.get(str(m.get("championId") or m.get("championPickIntent") or 0))
+            if m.get("cellId") == cell:
+                mine = cid
+            elif cid:
+                team.append(cid)
+        bench = sess.get("benchChampions")
+        bench_ids = [b.get("championId") for b in bench] if isinstance(bench, list) and bench and isinstance(bench[0], dict) \
+            else (sess.get("benchChampionIds") or bench or [])
+        bench_c = [by_key.get(str(b)) for b in bench_ids]
+        cands = ([mine] if mine else []) + [b for b in bench_c if b and b != mine]
+        if not cands:
+            return None
+        ranked, needs = self.advisor.rank_champions(cands, team, mine)
+        return {"cands": ranked, "cand_ids": cands, "team_ids": team, "needs": needs, "mine": mine,
+                "bench_enabled": bool(sess.get("benchEnabled", True))}
+
     def track_game(self, raw, state, rec):
         """记下这局的英雄、成品装备、已选增幅、三选一出现过的增幅；读到 GameEnd 就存起来"""
         mode, map_id, me = state[0], state[1], state[2]
@@ -3117,7 +3238,8 @@ class Engine:
             self.last_sig = None
             self.last_state = None
             self.connected = False
-            return ("status", tr("等待对局…"))
+            sel = self.champ_select_step()              # 不在对局中：看看是不是在选英雄
+            return sel or ("status", tr("等待对局…"))
         self.fails = 0
         if not self.connected or self.last_state is None:
             self.advisor._ema_cid = None                # 新的一局：平滑从头开始
@@ -3713,6 +3835,9 @@ def run_console(engine, scanner=None):
             kind, payload = engine.q.get()
             if kind == "rec":
                 print(format_rec(payload), flush=True)
+            elif kind == "select":
+                print(tr("\n==== 选英雄 ====") + "".join(f"\n {c['score']:>3}  {c['name']}  {c['reason']}" for c in payload.get("cands", [])),
+                      flush=True)
             elif kind == "appupd":
                 print(tr('· 海斗助手有新版本 v{0}：').format(payload.get('version')) + tr("；").join(payload.get("notes", [])[:3]) +
                       "\n  " + tr("输入「更新」回车直接更新"), flush=True)
@@ -4254,6 +4379,36 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             else:
                 r["fr"].pack(fill="x", pady=2)
 
+    def show_select(sel):
+        """选英雄阶段：你的英雄 + 备选席，按分数排"""
+        cands = sel.get("cands", [])
+        if not cands:
+            return
+        best = cands[0]
+        needs = sel.get("needs") or []
+        summary.config(text=tr("选英雄") + (" · " + tr('队伍缺：{0}').format(tr("、").join(needs)) if needs else ""))
+        alert.pack_forget()
+        shop_lbl.pack_forget()
+        for lb in tip_lbls:
+            lb.pack_forget()
+        mine = next((c for c in cands if c.get("mine")), None)
+        if mine and best is not mine and best["score"] - mine["score"] >= 3:
+            tip = tr('★ 建议从备选席换成 {0}（{1} 分，你现在的 {2} {3} 分）').format(
+                best["name"], best["score"], mine["name"], mine["score"])
+        elif mine:
+            tip = tr('保持 {0} 就好（备选席里没有明显更好的）').format(mine["name"])
+        else:
+            tip = tr('★ 推荐 {0}').format(best["name"])
+        tip_lbls[0].config(text=tip)
+        tip_lbls[0].pack(fill="x", pady=(0, 1))
+        fill_rows(item_rows, cands[:4])
+        if st["tab"] != "items":
+            select_tab("items")
+        mini.config(text=tip, fg=GOLD)
+        st["hold_until"] = time.time() + 8
+        set_expanded(True)
+        fit()
+
     def choose(i):
         rec = current["rec"]
         if not rec or not rec.get("cand_mode") or i >= len(rec["augs"]):
@@ -4390,6 +4545,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 show(payload, flash=not payload.get("quiet"))
                 if not hold:
                     set_status("")
+            elif kind == "select":         # 选英雄阶段
+                dot.config(fg=GOLD)
+                show_select(payload)
             elif kind == "scan":           # 三选一识别的进度 / 结果
                 set_status(short(payload, 16))
                 st["status_hold"] = time.time() + (15 if payload == tr("识别中…") else 4)

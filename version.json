@@ -1,13 +1,13 @@
 {
- "version": "1.13.0",
+ "version": "1.14.0",
  "date": "2026-10-02",
  "notes": [
-  "阵亡购物清单：一阵亡就自动展开，告诉你用手上的钱复活前该买什么（先凑推荐的第一件，钱不够就买最贵的零件）",
-  "Death shopping list: what to buy before you respawn with your current gold"
+  "选英雄阶段推荐：读取你的英雄、备选席和队友，按海斗胜率、你的战绩、阵容缺口打分，建议要不要从备选席换",
+  "Champ select advice: scores your pick and the bench by Mayhem WR, your record and team needs"
  ],
  "files": {
-  "haidou_helper.py": "6c19d31fbe84bbb512ef934bf8ef6d746dfce3d63d3b8f02ebd1361a86b7f9fa",
-  "lang_en.py": "a50d4ea4697c5e35c8ba5bb721dd85c0e9807c02bc8eb1bc7d0f130089e39b48",
-  "README.md": "ba5b501e423ac890e9b4339bb011840abae0e942de331f59fce1a3cfaebd9db2"
+  "haidou_helper.py": "7b20bc844b9baec08e3c7c81fc77b05e06d4e1ec6b239e13456a9b0b5c2f64ff",
+  "lang_en.py": "ca3342b10a1c09b31dcfd816344bdaae34d1b75f9cea3f0f7b19c5b803c27ce4",
+  "README.md": "5bb19b0b6a33ecdfc919aec580000c1544145b09264165f2f217f27886fd6f1b"
  }
 }
