@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.16.2"
+APP_VERSION = "1.16.3"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -3186,6 +3186,11 @@ class Engine:
                 mine = cid
             elif cid:
                 team.append(cid)
+        if mine is None:                        # 刚分配英雄的那一下 myTeam 可能还是 0：改看选人动作
+            for grp in sess.get("actions") or []:
+                for a in grp if isinstance(grp, list) else []:
+                    if a.get("actorCellId") == cell and a.get("championId"):
+                        mine = by_key.get(str(a["championId"])) or mine
         bench = sess.get("benchChampions")
         bench_ids = [b.get("championId") for b in bench] if isinstance(bench, list) and bench and isinstance(bench[0], dict) \
             else (sess.get("benchChampionIds") or bench or [])
@@ -4929,7 +4934,10 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             tip = tr('★ 推荐 {0}').format(best["name"])
         tip_lbls[0].config(text=tip)
         tip_lbls[0].pack(fill="x", pady=(0, 1))
-        fill_rows(item_rows, cands[:4])
+        rows = cands[:4]
+        if mine and mine not in rows:          # 你自己的英雄一定要看得到（备选席很多时会被挤出前 4）
+            rows = cands[:3] + [mine]
+        fill_rows(item_rows, rows)
         if st["tab"] != "items":
             select_tab("items")
         mini.config(text=tip, fg=GOLD)

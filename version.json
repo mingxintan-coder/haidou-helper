@@ -1,13 +1,12 @@
 {
- "version": "1.16.2",
+ "version": "1.16.3",
  "date": "2026-10-02",
  "notes": [
-  "修复：有时把别人的英雄当成你的（名字格式对不上时改用技能编号确认）",
-  "选英雄阶段识别更快：每秒更新，启动时就先连客户端",
-  "Fix: wrong champion detected as yours; faster champ-select detection"
+  "修复：选英雄阶段看不到一开始分给你的英雄（备选席很多时被挤出列表；刚分配时客户端还没写进队伍资料）",
+  "Fix: your initially assigned champion now always shows in champ select"
  ],
  "files": {
-  "haidou_helper.py": "0c309a8cad73a723062aa68cb71b296cf97b0a0a10d7001313517f5e137ec33c",
+  "haidou_helper.py": "bc85cf35d5cce2a245cb959172ccd70c91bdff37eed35ca5156e6b8c158c2b98",
   "lang_en.py": "3592a36107f4cb49f148ec370ae16e7151b67545f23b42cd311a32bce890371d",
   "README.md": "cd149ec59f266a2c294fd2b044183806986ab179f1d09934425c4b6782726af9"
  }
