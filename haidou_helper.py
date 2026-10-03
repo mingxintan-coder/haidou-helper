@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.16.1"
+APP_VERSION = "1.16.2"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -1269,7 +1269,18 @@ ITEM_WEIGHTS = [((0.35, 0.30, 0.20, 0.15), 0.75),
 def parse_live(raw):
     """把 allgamedata 解析成 (mode, map_id, me, allies, enemies, gold)"""
     ap = raw.get("activePlayer", {}) or {}
-    my_ids = {ap.get("riotId"), ap.get("summonerName"), ap.get("riotIdGameName")} - {None, ""}
+
+    def ids_of(d):
+        """同一个人在不同栏位的各种写法：名字#TAG、名字、召唤师名（统一小写、去空白）"""
+        out = set()
+        name, tag = d.get("riotIdGameName") or "", d.get("riotIdTagLine") or ""
+        for v in (d.get("riotId"), d.get("summonerName"), name, f"{name}#{tag}" if name and tag else None):
+            if v:
+                v = str(v).strip().lower()
+                out.add(v)
+                out.add(v.split("#")[0])
+        return out - {""}
+    my_ids = ids_of(ap)
     gd = raw.get("gameData", {}) or {}
     mode, map_id = gd.get("gameMode", "?"), gd.get("mapNumber", 12)
     players = []
@@ -1287,13 +1298,21 @@ def parse_live(raw):
         team = p.get("subteamId") or p.get("subteam") or p.get("team")
         name = p.get("riotId") or p.get("summonerName") or cid
         pl = Player(name, cid, items, team, p.get("level", 1), [a for a in augs if a])
-        pl.ids = {p.get("riotId"), p.get("summonerName"), p.get("riotIdGameName")} - {None, ""}
+        pl.ids = ids_of(p)
         sc = p.get("scores", {}) or {}
         pl.kills, pl.deaths = sc.get("kills", 0), sc.get("deaths", 0)
         pl.assists, pl.cs = sc.get("assists", 0), sc.get("creepScore", 0)
         pl.is_dead, pl.respawn = bool(p.get("isDead")), float(p.get("respawnTimer", 0) or 0)
         players.append(pl)
-    me = next((p for p in players if p.ids & my_ids), players[0] if players else None)
+    full = {i for i in my_ids if "#" in i}
+    me = next((p for p in players if full and p.ids & full), None) or \
+        next((p for p in players if p.ids & my_ids), None)
+    if me is None and players:
+        # 名字对不上：用你技能的内部编号认英雄（例如 Q 的编号 YasuoQ1Wrapper 以英雄名开头）
+        ab = ap.get("abilities") or {}
+        sid = str((ab.get("Q") or {}).get("id") or (ab.get("Passive") or {}).get("id") or "").lower()
+        hits = [p for p in players if p.cid and sid.startswith(p.cid.lower())]
+        me = max(hits, key=lambda p: len(p.cid)) if hits else players[0]
     if me is None:
         return mode, map_id, None, [], [], 0
     me.stats = ap.get("championStats", {}) or {}
@@ -3117,14 +3136,12 @@ class Engine:
         if isinstance(self.source, MockGame):
             return None
         now = time.time()
-        if now - getattr(self, "_cs_t", 0) < 2:
+        if now - getattr(self, "_cs_t", 0) < 0.9:
             return getattr(self, "_cs_last", None) and ("status", tr("选英雄中"))
         self._cs_t = now
         cred = getattr(self, "_lcu_cred", None)
-        if cred is None and now - getattr(self, "_lcu_try", 0) > 30:
-            self._lcu_try = now
-            cred = self._lcu_cred = lcu_credentials()
         if cred is None:
+            self.find_lcu_async()                         # 背景找客户端连接资讯（不卡住这里）
             return None
         try:
             sess = lcu_get("/lol-champ-select/v1/session", cred, timeout=3)
@@ -3145,6 +3162,19 @@ class Engine:
         self._cs_sig = sig
         self._cs_last = payload
         return ("select", payload)
+
+    def find_lcu_async(self):
+        """在背景找游戏客户端的连接资讯（读 lockfile 或进程参数，可能要 1~3 秒）"""
+        if getattr(self, "_lcu_finding", False) or time.time() - getattr(self, "_lcu_try", 0) < 10:
+            return
+        self._lcu_finding, self._lcu_try = True, time.time()
+
+        def run():
+            try:
+                self._lcu_cred = lcu_credentials()
+            finally:
+                self._lcu_finding = False
+        threading.Thread(target=run, daemon=True).start()
 
     def champ_select_payload(self, sess):
         by_key = {str(c.get("key")): c["id"] for c in self.gd.champs.values()}
@@ -3381,6 +3411,8 @@ class Engine:
         return ("rec", rec)
 
     def run(self, stop):
+        if not isinstance(self.source, MockGame):
+            self.find_lcu_async()                # 一启动就先找好客户端连接，进选英雄时马上能读
         self.import_history_async(delay=3)       # 启动时先从客户端读一次历史对局
         if not isinstance(self.source, MockGame):
             threading.Thread(target=self.riotdb.run, args=(self, stop), daemon=True).start()
@@ -3389,7 +3421,8 @@ class Engine:
                 self.q.put(self.step())
             except Exception as e:  # 推荐演算法异常不应让挂件崩溃
                 self.q.put(("status", tr('分析出错：{0}').format(e)))
-            self.wake.wait(self.interval)  # 手动输入 / 识别到新增幅时会被立即唤醒
+            # 选英雄阶段每秒看一次（换人、重骰马上更新）；平时按设定间隔
+            self.wake.wait(1.0 if getattr(self, "_cs_last", None) else self.interval)  # 手动输入 / 识别到新增幅时会被立即唤醒
             self.wake.clear()
 
 

@@ -1,12 +1,13 @@
 {
- "version": "1.16.1",
+ "version": "1.16.2",
  "date": "2026-10-02",
  "notes": [
-  "修复：一直自动跳到「增幅」页。现在只在新的三选一（或重骰）出现时切过去一次，你自己切走就不再拉回；三选一 20 秒没再看到就自动清掉",
-  "Fix: overlay no longer keeps jumping to the Augments tab"
+  "修复：有时把别人的英雄当成你的（名字格式对不上时改用技能编号确认）",
+  "选英雄阶段识别更快：每秒更新，启动时就先连客户端",
+  "Fix: wrong champion detected as yours; faster champ-select detection"
  ],
  "files": {
-  "haidou_helper.py": "fa57439e53d7e41d587e6dcd1561c8cd91fb73d8408b1e70a8a204b8a13e15c8",
+  "haidou_helper.py": "0c309a8cad73a723062aa68cb71b296cf97b0a0a10d7001313517f5e137ec33c",
   "lang_en.py": "3592a36107f4cb49f148ec370ae16e7151b67545f23b42cd311a32bce890371d",
   "README.md": "cd149ec59f266a2c294fd2b044183806986ab179f1d09934425c4b6782726af9"
  }
