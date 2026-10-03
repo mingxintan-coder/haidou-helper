@@ -1,14 +1,13 @@
 {
- "version": "1.12.0",
- "date": "2026-10-01",
+ "version": "1.13.0",
+ "date": "2026-10-02",
  "notes": [
-  "自动从游戏客户端读取你最近最多 200 局海斗 / 大乱斗（只读本机客户端，不需要密钥），马上按你的历史习惯推荐出装和增幅",
-  "⋯ →「我的习惯」→「从游戏客户端导入历史对局」可手动读取",
-  "Imports your recent ARAM/Mayhem games from the League client (read-only) to personalise picks"
+  "阵亡购物清单：一阵亡就自动展开，告诉你用手上的钱复活前该买什么（先凑推荐的第一件，钱不够就买最贵的零件）",
+  "Death shopping list: what to buy before you respawn with your current gold"
  ],
  "files": {
-  "haidou_helper.py": "15a7e8aea0200c7fe0efb7bb7da2e162241c092776cf84a768e081d29551ab8c",
-  "lang_en.py": "1c689f3907a1d1162df205661ed7a4b252a5b90f582bf80bf13801531b42c299",
-  "README.md": "b6c8033e53b3c441e13b20682639ea54af426eaa61619b4444c61435389f2044"
+  "haidou_helper.py": "6c19d31fbe84bbb512ef934bf8ef6d746dfce3d63d3b8f02ebd1361a86b7f9fa",
+  "lang_en.py": "a50d4ea4697c5e35c8ba5bb721dd85c0e9807c02bc8eb1bc7d0f130089e39b48",
+  "README.md": "ba5b501e423ac890e9b4339bb011840abae0e942de331f59fce1a3cfaebd9db2"
  }
 }

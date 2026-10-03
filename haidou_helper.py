@@ -33,7 +33,7 @@ import urllib.error
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.12.0"
+APP_VERSION = "1.13.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -1897,6 +1897,63 @@ class Advisor:
             return None
         return (b, tr('你常拿（出现 {0} 次选了 {1} 次，赢 {2} 局）').format(seen, cnt, wins))
 
+    def shopping_plan(self, me, gold, rec_items, max_targets=2):
+        """阵亡时用手上的钱怎么买：按推荐顺序，先凑第一件（钱够就直接合成，不够就买最贵的零件），
+        有剩再往下一件。回传 {"buy": [(编号, 价钱)], "left": 剩下的钱, "targets": [名称], "done": [合成完成的名称]}"""
+        gd = self.gd
+        owned = Counter(me.items)
+
+        def base(i):
+            g = gd.items.get(i, {}).get("gold", {})
+            return g.get("base", g.get("total", 0))
+
+        def comps(i):
+            return [int(c) for c in gd.items.get(i, {}).get("from", []) if str(c).isdigit()]
+
+        def cost(i, own):
+            """合成 i 还要花多少（会用掉 own 里已有的零件）"""
+            if own[i] > 0:
+                own[i] -= 1
+                return 0
+            return base(i) + sum(cost(c, own) for c in comps(i))
+
+        def buy(i, budget, own):
+            trial = Counter(own)
+            need = cost(i, trial)
+            if need <= budget:
+                own.clear()
+                own.update(trial)
+                own[i] += 1
+                return [(i, need)], need
+            bought, spent = [], 0
+            for c in sorted(comps(i), key=lambda c: -gd.item_price(c)):
+                if own[c] > 0:
+                    own[c] -= 1                       # 已有的零件留着（合成时要用）
+                    continue
+                b, sp = buy(c, budget - spent, own)
+                bought += b
+                spent += sp
+            return bought, spent
+
+        plan, left, targets, done = [], int(gold), [], []
+        for it in rec_items:
+            if len(targets) >= max_targets or left < 300:
+                break
+            iid = it.get("id")
+            if not iid or iid in me.items:
+                continue
+            own = Counter(owned)
+            bought, spent = buy(iid, left, own)
+            if not bought:
+                continue
+            targets.append(gd.item_name(iid))
+            if any(b == iid for b, _ in bought):
+                done.append(gd.item_name(iid))
+            plan += bought
+            left -= spent
+            owned = own
+        return {"buy": plan, "left": left, "targets": targets, "done": done}
+
     @staticmethod
     def item_score(raw):
         """装备分数 = 100 × raw / 0.85（raw 是 0~1 的加权和；0.85 以上即满分，让好装备落在 70~90）"""
@@ -2296,7 +2353,12 @@ class Advisor:
         summary = (tr('{0}｜{1}｜人头 {2}:{3}｜敌方物理 {4}%').format(self.gd.champ_name(me.cid), lead, t['kills_ally'], t['kills_enemy'], round(t['ad_share'] * 100)) + (tr('｜威胁 {0}').format(t['carry_name']) if t['carry_name'] else "") +
                    (tr('｜网上 {0} 级 胜率 {1:.1f}%').format(cs['tier'], cs['wr'] * 100) if cs else
                     (tr("｜网上胜率载入中…") if self.stats and not self.stats.error else "")))
-        return {"items": items, "augs": augs, "tips": tips, "cand_mode": bool(cands), "auto_cand": auto,
+        shop = None
+        if me.is_dead and gold >= 300:              # 阵亡＝可以买东西：复活前该买什么
+            shop = self.shopping_plan(me, gold, items)
+            shop["respawn"] = me.respawn
+            shop["names"] = [self.gd.item_name(i) for i, _ in shop["buy"]]
+        return {"items": items, "augs": augs, "tips": tips, "cand_mode": bool(cands), "auto_cand": auto, "shop": shop,
                 "stats_label": self.stats.label() if (self.stats and cs) else "",
                 "my_augs": [a["name"] for a in my_augs],
                 "guide": self.champ_guide(me, cs, prof), "game_time": me.game_time,
@@ -3579,8 +3641,20 @@ def start_updater(engine, lang, use_stats, stop):
 # --------------------------------------------------------------------------------------
 # 输出：控制台
 # --------------------------------------------------------------------------------------
+def shop_line(shop, gd_names=None):
+    """阵亡购物清单的一行文字"""
+    if not shop or not shop.get("buy"):
+        return ""
+    names = shop.get("names") or []
+    left = shop.get("left", 0)
+    rs = shop.get("respawn", 0)
+    return tr('💰 复活前买：{0}（剩 {1}g · {2:.0f} 秒后复活）').format(" → ".join(names), int(left), rs)
+
+
 def format_rec(rec):
     lines = [tr('\n==== {0} ｜ ').format(rec['time']) + tr("；").join(rec["changes"]) + " ====", rec["summary"]]
+    if shop_line(rec.get("shop")):
+        lines.append(shop_line(rec.get("shop")))
     g = rec.get("guide") or {}
     if g.get("combos") or g.get("skills"):
         lines.append(tr("【英雄玩法】"))
@@ -3895,6 +3969,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         return text if len(text) <= n else text[:n - 1] + "…"
 
     # 出装页：战术（最多 2 条）＋鞋子＋装备
+    shop_lbl = tk.Label(pages["items"], text="", bg="#2a2412", fg=GOLD, font=F["tip"], anchor="w", justify="left",
+                        padx=6, pady=3)
+    wraps.append(shop_lbl)
     tips_box = tk.Frame(pages["items"], bg=BG)
     tips_box.pack(fill="x")
     tip_lbls = []
@@ -4208,6 +4285,14 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             alert.pack(fill="x", padx=8, pady=(4, 0), after=summary)
         else:
             alert.pack_forget()
+        # 阵亡购物清单（复活前买什么）
+        shop = rec.get("shop")
+        shop_text = shop_line(shop)
+        if shop_text:
+            shop_lbl.config(text=shop_text)
+            shop_lbl.pack(fill="x", pady=(0, 3), before=tips_box)
+        else:
+            shop_lbl.pack_forget()
         # 出装页
         normal = [x for x in tips if not x[2]][:2]
         for i, lb in enumerate(tip_lbls):
@@ -4248,12 +4333,17 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         elif st["tab_before_cand"]:
             select_tab(st["tab_before_cand"])
             st["tab_before_cand"] = None
+        elif shop_text:
+            if st["tab"] != "items":
+                select_tab("items")
         elif not st["user_tab"]:
             select_tab("guide" if rec.get("game_time", 999) < 90 else "items")
         # 单行模式
         its = [x for x in rec.get("items", []) if not x.get("boots")]
         boots = next((x for x in rec.get("items", []) if x.get("boots")), None)
-        if urgent:
+        if shop_text and not cand:
+            mini.config(text=shop_text, fg=GOLD)
+        elif urgent:
             mini.config(text="⚠ " + urgent[0][1], fg=ORANGE)
         elif cand and rec.get("augs"):
             mini.config(text=tr('★ 选 {0}（{1}）').format(rec['augs'][0]['name'], rec['augs'][0]['score']), fg=GOLD)
@@ -4268,8 +4358,12 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         its_key = tuple(x["name"] for x in its[:2])
         key = (its_key, boots["name"] if boots else None, bool(cand),
                tuple(x["name"] for x in rec.get("augs", [])[:3]) if cand else None)
+        if shop_text and not st.get("shop_shown"):       # 刚阵亡：展开到复活为止
+            st["hold_until"] = time.time() + min(30, max(5, shop.get("respawn", 8)))
+            set_expanded(True)
+        st["shop_shown"] = bool(shop_text)
         if flash and key != st["last_key"]:
-            st["hold_until"] = time.time() + 5
+            st["hold_until"] = max(st["hold_until"], time.time() + 5)
             set_expanded(True)
         st["last_key"] = key
         fit()
