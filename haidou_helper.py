@@ -907,6 +907,12 @@ class GameData:
         return out
 
 
+# 「变成近战」类增幅（例如拔剑吧）：远程专属效果失效、近战装备效果全额（以装备基础编号判断，海斗复制品取后 4 位）
+RANGED_ONLY_ITEMS = {3085, 3094}                    # 芮兰飓风箭（分裂箭只有远程有）、冲击火炮（加攻击距离）
+MELEE_GOOD_ITEMS = {3074, 3748, 6631, 3071, 3053, 6333, 3078, 6692, 6610, 3181}
+MELEE_AUG_RE = re.compile(r"成为近战|变成近战|变为近战|(?i:become[s]? (a )?melee)")
+
+
 # 描述里没有属性词、但玩法很明确的增幅（多为符文类）
 AUG_EXTRA_TAGS = {
     "地狱三头犬": {"AS": 2, "ONHIT": 2, "AD": 1}, "不死魔舞": {"HP": 2, "SUSTAIN": 2, "MS": 1},
@@ -1830,6 +1836,9 @@ class Advisor:
         # 阶段权重（契合度 F / 热门度 P / 胜率 W / 本局针对 S）：前期看核心，后期看针对
         wts, phase = ITEM_WEIGHTS[0 if legend <= 1 else 1 if legend <= 3 else 2]
         s = me.stats or {}
+        # 选了「变成近战」的增幅、而你本来是远程英雄：装备的取舍跟着变
+        ranged = float(((gd.champ(me.cid) or {}).get("stats") or {}).get("attackrange", 0) or 0) >= 300
+        melee_aug = next((a["name"] for a in my_augs if MELEE_AUG_RE.search(a.get("desc", ""))), None) if ranged else None
         out = []
         allowed = self.stats.item_allow if self.stats else None   # 海斗实际商店清单
         for iid in gd.candidate_items(map_id, allowed):
@@ -1840,7 +1849,8 @@ class Advisor:
             vec, special = gd.item_vec(iid)
             nv = norm({d: vec[d] for d in vec if d in BUILD_DIMS})
             fit = cosine(prof, nv)
-            if fit < 0.35:
+            base_id = iid % 10000 if iid >= 100000 else iid
+            if fit < (0.25 if melee_aug and base_id in MELEE_GOOD_ITEMS else 0.35):
                 continue
             ehp = self.ehp_factor(iid, me, t, prof, role)
             factors = self.counter_factors(vec, special, t, prof, ehp_done=ehp is not None, phase=phase)
@@ -1851,10 +1861,16 @@ class Advisor:
                 factors.append((-0.3, tr("你的暴击已满，暴击属性浪费")))
             if st.get("PercentAttackSpeedMod") and s.get("attackSpeed", 0) >= 2.3:
                 factors.append((-0.15, tr("攻速已接近上限")))
+            if melee_aug and base_id in RANGED_ONLY_ITEMS:
+                factors.append((-0.35, tr("「{0}」让你变近战，这件的远程效果用不上").format(melee_aug)))
+            elif melee_aug and base_id in MELEE_GOOD_ITEMS:
+                factors.append((0.12, tr("「{0}」让你变近战，近战效果全额").format(melee_aug)))
             syn = [a["name"] for a in my_augs if cosine(norm(a["tags"]), nv) > 0.5]
             if syn:
                 factors.append((0.08, tr('与增幅「{0}」联动').format(syn[0])))
             sf = self.item_stat_factor(iid, cs, nslot, owned_core, my_aug_ids)
+            if melee_aug and base_id in MELEE_GOOD_ITEMS and sf is not None and sf["pop"] < 0.05:
+                sf = None           # 远程时的出装数据不适用（平时没人出近战装）：热门度 / 胜率改用中性值
             dmg_item = vec.get("AD", 0) + vec.get("AP", 0) + vec.get("CRIT", 0) > 0.8
             if t["power_diff"] > 2000 and dmg_item and role not in ("tank", "support"):
                 factors.append((0.05, tr("我方领先，堆伤害滚雪球")))
