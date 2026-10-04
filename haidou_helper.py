@@ -912,6 +912,38 @@ RANGED_ONLY_ITEMS = {3085, 3094}                    # 芮兰飓风箭（分裂�
 MELEE_GOOD_ITEMS = {3074, 3748, 6631, 3071, 3053, 6333, 3078, 6692, 6610, 3181}
 MELEE_AUG_RE = re.compile(r"成为近战|变成近战|变为近战|(?i:become[s]? (a )?melee)")
 
+# 会改变「装备该怎么出」的增幅（按增幅编号，各语言通用）
+#   map    算契合度前先换算装备属性（例如物攻会被转成魔攻 → 物攻装当魔攻装看）
+#   pmap   你的出装方向也一起换算；prof：并入出装方向的属性（取代按描述关键词猜的）；drop：从方向里拿掉
+#   dims   某属性占比 ≥ 35% 的装备加 / 减分（附一句理由）；ids：指定装备加 / 减分
+#   neutral  这些属性的装备，平时很少人出也不压分（你的英雄平时的出装数据不适用）
+AUG_RULES = {
+    1205: {"map": {"AD": ("AP", 1.0)}, "pmap": {"AD": ("AP", 1.0)}, "prof": {"AP": 1.0},       # 灵活转换
+           "dims": [("LETHAL", -0.15, "物攻会转成魔攻，穿甲用处变小"), ("MPEN", 0.08, "物攻转成魔攻，法穿更值")],
+           "neutral": ("AP", "MPEN")},
+    1206: {"map": {"AP": ("AD", 0.6)}, "pmap": {"AP": ("AD", 1.0)}, "prof": {"AD": 1.0},       # 转换恶作剧
+           "dims": [("MPEN", -0.15, "魔攻会转成物攻，法穿用处变小"), ("LETHAL", 0.08, "魔攻转成物攻，穿甲更值")],
+           "neutral": ("AD", "LETHAL")},
+    2018: {"map": {"AS": ("HASTE", 0.8)}, "pmap": {"AS": ("HASTE", 1.0)}, "prof": {"HASTE": 1.0},  # 纯粹 - 法师
+           "drop": ("AS", "ONHIT", "CRIT"),
+           "dims": [("AS", -0.25, "攻速会转成技能急速，攻速装的普攻效果白费"),
+                    ("ONHIT", -0.15, "攻速被转掉，命中效果打不出来"), ("HASTE", 0.06, "技能急速吃满")],
+           "neutral": ("HASTE",)},
+    2118: {"drop": ("HASTE",), "prof": {"ULT": 1.0},                                             # 大绝电脑
+           "dims": [("HASTE", -0.10, "技能急速只对大绝生效（已送 100）")]},
+    1004: {"dims": [("HASTE", -0.06, "已送 70 技能急速，再堆收益递减")]},                          # 基本功夫
+    1311: {"prof": {"MANA": 1.0}, "dims": [("MANA", 0.15, "技能效果随最大魔力增强")], "neutral": ("MANA",)},  # 溢流
+    1056: {"prof": {"MANA": 1.0, "HP": 0.4}, "dims": [("MANA", 0.15, "最大魔力的一半会变成生命")],          # 因心成体
+           "neutral": ("MANA",)},
+    2016: {"prof": {"MANA": 0.8, "AS": 0.4}, "dims": [("MANA", 0.12, "普攻按最大魔力加伤（可暴击）")],      # 强化攻击
+           "neutral": ("MANA",)},
+    336: {"crit_cap": True},                                                                     # 瞄准头部
+    1080: {"dims": [("CRIT", 0.06, "暴击率同时是格挡几率")]},                                       # 毫发无伤
+}
+MELEE_RULE = {"ids": [(RANGED_ONLY_ITEMS, -0.35, "你变近战，这件的远程效果用不上"),
+                      (MELEE_GOOD_ITEMS, 0.12, "你变近战，近战效果全额")],
+              "neutral_ids": MELEE_GOOD_ITEMS, "loose_ids": MELEE_GOOD_ITEMS}
+
 
 # 描述里没有属性词、但玩法很明确的增幅（多为符文类）
 AUG_EXTRA_TAGS = {
@@ -1568,9 +1600,62 @@ class Advisor:
         prof = {}
         add_into(prof, base, 0.55 if owned else 1.0)
         add_into(prof, owned, 0.45)
+        rules = [AUG_RULES[a["id"]] for a in my_augs if a.get("id") in AUG_RULES]
         for a in my_augs:
-            add_into(prof, {k: v for k, v in norm(a["tags"]).items() if k in BUILD_DIMS}, 0.2)
+            r = AUG_RULES.get(a.get("id"))
+            if r and r.get("prof"):          # 规则写好的方向比按描述猜的准，权重也大一点
+                add_into(prof, norm(r["prof"]), 0.35)
+            else:
+                add_into(prof, {k: v for k, v in norm(a["tags"]).items() if k in BUILD_DIMS}, 0.2)
+        for r in rules:
+            for src, (dst, k) in r.get("pmap", {}).items():
+                if src in prof:
+                    prof[dst] = prof.get(dst, 0) + k * prof.pop(src)
+            for d in r.get("drop", ()):
+                prof.pop(d, None)
         return norm(prof)
+
+    def aug_rules(self, me, my_augs):
+        """已选增幅里会改变出装的规则：[(增幅名, 规则)]"""
+        out = [(a["name"], AUG_RULES[a["id"]]) for a in my_augs if a.get("id") in AUG_RULES]
+        ranged = float(((self.gd.champ(me.cid) or {}).get("stats") or {}).get("attackrange", 0) or 0) >= 300
+        if ranged:
+            m = next((a for a in my_augs if a.get("id") == 1134 or MELEE_AUG_RE.search(a.get("desc", ""))), None)
+            if m:
+                out.append((m["name"], MELEE_RULE))
+        return out
+
+    @staticmethod
+    def rule_factors(rules, raw_nv, nv, base_id, crit_now):
+        """增幅规则对一件装备的加减分：回传 ([(分, 理由)], 是否不用英雄平时的出装数据)"""
+        out, neutral = [], False
+        for an, r in rules:
+            for d, v, why in r.get("dims", ()):
+                if raw_nv.get(d, 0) >= 0.35:
+                    out.append((v, tr("「{0}」").format(an) + tr(why)))
+            for ids, v, why in r.get("ids", ()):
+                if base_id in ids:
+                    out.append((v, tr("「{0}」").format(an) + tr(why)))
+            if r.get("crit_cap") and raw_nv.get("CRIT", 0) >= 0.3:
+                if base_id == 3031:
+                    out.append((0.10, tr("「{0}」").format(an) + tr("多的暴击率会转成暴击伤害，无尽更值")))
+                elif crit_now >= 0.4:
+                    out.append((-0.15, tr("「{0}」").format(an) + tr("暴击率有上限，再堆暴击率收益变小")))
+            neutral = neutral or base_id in r.get("neutral_ids", ()) or \
+                any(raw_nv.get(d, 0) >= 0.35 or nv.get(d, 0) >= 0.35 for d in r.get("neutral", ()))
+        return out, neutral
+
+    @staticmethod
+    def rule_vec(nv, rules):
+        """按增幅规则换算装备属性向量（例如物攻会被转成魔攻）"""
+        for _, r in rules:
+            if r.get("map"):
+                nv = dict(nv)
+                for src, (dst, k) in r["map"].items():
+                    if src in nv:
+                        nv[dst] = nv.get(dst, 0) + k * nv.pop(src)
+                nv = norm(nv)
+        return nv
 
     # ---------- 战局 ----------
     def power(self, p):
@@ -1836,9 +1921,8 @@ class Advisor:
         # 阶段权重（契合度 F / 热门度 P / 胜率 W / 本局针对 S）：前期看核心，后期看针对
         wts, phase = ITEM_WEIGHTS[0 if legend <= 1 else 1 if legend <= 3 else 2]
         s = me.stats or {}
-        # 选了「变成近战」的增幅、而你本来是远程英雄：装备的取舍跟着变
-        ranged = float(((gd.champ(me.cid) or {}).get("stats") or {}).get("attackrange", 0) or 0) >= 300
-        melee_aug = next((a["name"] for a in my_augs if MELEE_AUG_RE.search(a.get("desc", ""))), None) if ranged else None
+        rules = self.aug_rules(me, my_augs)          # 会改变出装的已选增幅（转换属性、变近战…）
+        crit_now = float(s.get("critChance", 0) or 0)
         out = []
         allowed = self.stats.item_allow if self.stats else None   # 海斗实际商店清单
         for iid in gd.candidate_items(map_id, allowed):
@@ -1847,10 +1931,12 @@ class Advisor:
             if gd.is_boots(iid):
                 continue                     # 鞋子另外单独推荐（见 recommend_boots）
             vec, special = gd.item_vec(iid)
-            nv = norm({d: vec[d] for d in vec if d in BUILD_DIMS})
+            raw_nv = norm({d: vec[d] for d in vec if d in BUILD_DIMS})
+            nv = self.rule_vec(raw_nv, rules)
             fit = cosine(prof, nv)
             base_id = iid % 10000 if iid >= 100000 else iid
-            if fit < (0.25 if melee_aug and base_id in MELEE_GOOD_ITEMS else 0.35):
+            loose = any(base_id in r.get("loose_ids", ()) for _, r in rules)
+            if fit < (0.25 if loose else 0.35):
                 continue
             ehp = self.ehp_factor(iid, me, t, prof, role)
             factors = self.counter_factors(vec, special, t, prof, ehp_done=ehp is not None, phase=phase)
@@ -1861,16 +1947,15 @@ class Advisor:
                 factors.append((-0.3, tr("你的暴击已满，暴击属性浪费")))
             if st.get("PercentAttackSpeedMod") and s.get("attackSpeed", 0) >= 2.3:
                 factors.append((-0.15, tr("攻速已接近上限")))
-            if melee_aug and base_id in RANGED_ONLY_ITEMS:
-                factors.append((-0.35, tr("「{0}」让你变近战，这件的远程效果用不上").format(melee_aug)))
-            elif melee_aug and base_id in MELEE_GOOD_ITEMS:
-                factors.append((0.12, tr("「{0}」让你变近战，近战效果全额").format(melee_aug)))
-            syn = [a["name"] for a in my_augs if cosine(norm(a["tags"]), nv) > 0.5]
+            rfac, neutral = self.rule_factors(rules, raw_nv, nv, base_id, crit_now)
+            factors += rfac
+            syn = [a["name"] for a in my_augs if not (AUG_RULES.get(a.get("id")) or {}).get("crit_cap")
+                   and cosine(norm((AUG_RULES.get(a.get("id")) or {}).get("prof") or a["tags"]), nv) > 0.5]
             if syn:
                 factors.append((0.08, tr('与增幅「{0}」联动').format(syn[0])))
             sf = self.item_stat_factor(iid, cs, nslot, owned_core, my_aug_ids)
-            if melee_aug and base_id in MELEE_GOOD_ITEMS and sf is not None and sf["pop"] < 0.05:
-                sf = None           # 远程时的出装数据不适用（平时没人出近战装）：热门度 / 胜率改用中性值
+            if neutral and sf is not None and sf["pop"] < 0.05:
+                sf = None           # 你的英雄平时的出装数据不适用（平时没人这样出）：热门度 / 胜率改用中性值
             dmg_item = vec.get("AD", 0) + vec.get("AP", 0) + vec.get("CRIT", 0) > 0.8
             if t["power_diff"] > 2000 and dmg_item and role not in ("tank", "support"):
                 factors.append((0.05, tr("我方领先，堆伤害滚雪球")))
@@ -1899,7 +1984,7 @@ class Advisor:
         owned = set(me.items)
         for it in out[:k]:
             it["hint"] = self.buy_hint(it["id"], gold, owned)
-        boots = self.recommend_boots(me, t, prof, role, cs, gold, legend, phase)
+        boots = self.recommend_boots(me, t, prof, role, cs, gold, legend, phase, rules)
         return ([boots] if boots else []) + out[:k], prof
 
     def db_factor(self, me, kind, key, cap):
@@ -2145,7 +2230,7 @@ class Advisor:
             self._top = out[0]["id"]
         return out
 
-    def recommend_boots(self, me, t, prof, role, cs, gold, legend, phase):
+    def recommend_boots(self, me, t, prof, role, cs, gold, legend, phase, rules=()):
         """还没有二级鞋时，单独推荐一双：网上这个英雄的鞋子胜率 + 本局对面阵容"""
         gd = self.gd
         if any(gd.is_boots(i) and gd.item_price(i) >= 900 for i in me.items):
@@ -2162,6 +2247,10 @@ class Advisor:
             factors = self.counter_factors(vec, special, t, prof, ehp_done=ehp is not None, phase=1.0)
             if ehp and ehp[0] > 0.03:
                 factors.append(ehp)
+            rv = norm({d: v for d, v in vec.items() if d in BUILD_DIMS})
+            rfac, neutral = self.rule_factors(rules, rv, self.rule_vec(rv, rules), iid % 10000 if iid >= 100000 else iid,
+                                              float((me.stats or {}).get("critChance", 0) or 0))
+            factors += rfac
             sf = None
             if cs:          # 鞋子：和所有鞋子的平均比；热门度＝整局购买率（一局只买一双）
                 boots_rows = {i: r for i, r in cs["items"].items() if gd.is_boots(i) and gd.item_price(i) >= 900}
@@ -2174,6 +2263,8 @@ class Advisor:
                           (tr('，{0:.0f}% 的人买').format(r["pick"] * 100) if r["pick"] >= 0.1 else "")}
                 else:
                     sf = {"lift": 0.0, "raw": 0.0, "wr": None, "pop": 0.0, "text": ""}
+            if neutral and sf is not None and sf["pop"] < 0.05:
+                sf = None
             raw, parts_txt = self.item_formula(fit, sf, factors, ITEM_WEIGHTS[0][0])
             if best is None or raw > best[0]:
                 rf = [f for f in factors if f[0] > 0 or f[0] <= -0.05] + \
