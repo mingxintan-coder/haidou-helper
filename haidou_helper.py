@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.0.0-beta.1"
+APP_VERSION = "2.0.0-beta.2"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/beta/version.json",
@@ -3258,6 +3258,21 @@ class Engine:
         except Exception:  # noqa                         客户端关了 / 换了端口
             self._lcu_cred, self._cs_last = None, None
             return None
+        try:     # 客户端直接告诉你「你现在的英雄」：分配英雄那一下 session 里还读不到时靠它
+            cur = lcu_get("/lol-champ-select/v1/current-champion", cred, timeout=2)
+            if isinstance(cur, int) and cur > 0 and isinstance(sess, dict):
+                sess["_current"] = cur
+        except Exception:  # noqa
+            pass
+        if isinstance(sess, dict):
+            raw_sig = json.dumps(sess, sort_keys=True, default=str)[:200000]
+            if raw_sig != getattr(self, "_cs_dump", None):      # 存一份选人资料（只在本机），方便查问题
+                self._cs_dump = raw_sig
+                try:
+                    with open(os.path.join(APP_DIR, "last_champselect.json"), "w", encoding="utf-8") as f:
+                        f.write(raw_sig)
+                except OSError:
+                    pass
         payload = self.champ_select_payload(sess)
         if payload is None:
             return None
@@ -3293,6 +3308,8 @@ class Engine:
                 mine = cid
             elif cid:
                 team.append(cid)
+        if mine is None and sess.get("_current"):  # 客户端回报的「你现在的英雄」
+            mine = by_key.get(str(sess["_current"]))
         if mine is None:                        # 刚分配英雄的那一下 myTeam 可能还是 0：改看选人动作
             for grp in sess.get("actions") or []:
                 for a in grp if isinstance(grp, list) else []:
@@ -3302,7 +3319,15 @@ class Engine:
         bench_ids = [b.get("championId") for b in bench] if isinstance(bench, list) and bench and isinstance(bench[0], dict) \
             else (sess.get("benchChampionIds") or bench or [])
         bench_c = [by_key.get(str(b)) for b in bench_ids]
-        cands = ([mine] if mine else []) + [b for b in bench_c if b and b != mine]
+        for k, v in sess.items():               # 其他放英雄的栏位（新模式的英雄卡片之类）
+            if k in ("myTeam", "theirTeam", "benchChampions", "benchChampionIds", "actions", "bans", "trades",
+                     "swaps", "pickOrderSwaps", "positionSwaps") or "champion" not in k.lower() or not isinstance(v, list):
+                continue
+            for x in v:
+                cid = x.get("championId") if isinstance(x, dict) else x
+                if isinstance(cid, int) and cid > 0:
+                    bench_c.append(by_key.get(str(cid)))
+        cands = list(dict.fromkeys(([mine] if mine else []) + [b for b in bench_c if b and b != mine]))
         if not cands:
             return None
         ranked, needs = self.advisor.rank_champions(cands, team, mine)
