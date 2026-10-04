@@ -1,13 +1,13 @@
 {
- "version": "2.0.0-beta.3",
+ "version": "2.0.0-beta.4",
  "date": "2026-10-03",
  "notes": [
-  "浮窗出错时不会再整个卡住（错误记到 ui_error.log）",
-  "Overlay no longer freezes on a UI error; errors go to ui_error.log"
+  "选了「拔剑吧」这类变近战的增幅：远程专属装备降分，近战装加分",
+  "浮窗出错时不会整个卡住（ui_error.log）"
  ],
  "files": {
-  "haidou_helper.py": "a728187bfb25c4789478ba86d0c0e52e0d53a24e962fc5d44b4195879c912428",
-  "lang_en.py": "1b2240b3eb242a9336039f2202b5a10cc4938c74386edc2842351142e2d5843e",
-  "README.md": "eae363127855cea9af7d5c11a703b8b3573b086f444c6f39d7b3a7bfe59b6aa0"
+  "haidou_helper.py": "c8b5a54768804fedd91113b842c37c886a245d6731e6360288b4594b5315dd0f",
+  "lang_en.py": "7e2244efa3860e8c1be9b8274f74808ee7935949c5c7be24a743506cf9daab3d",
+  "README.md": "bce83e233e7399fe58e162a1f7a21442e4d3bffcb1a64590ed6f1cf6d5959cce"
  }
 }

@@ -348,6 +348,7 @@ EN.update({'已有重伤': 'already have anti-heal', '出重伤': 'buy anti-heal
 EN.update({'海斗': 'Mayhem', '下一件': 'Next', '可以买了 ✓': 'Can buy ✓', '备选  ': 'Alt  ', '识别到三选一': 'Augment choice detected', '三选一': 'Augment pick', ' · 点卡片记为已选': ' · click a card to mark picked', '已选：': 'Picked: ', '复活前买': 'Buy before respawn', '剩 {0}g': '{0}g left', ' · 正在合成：': ' · building: ', '换 {0}': 'Swap to {0}', '{0} 分，比你现在的 {1} 高 {2} 分': '{0} pts, {2} more than your {1}', '保持 {0}': 'Keep {0}', '备选席里没有明显更好的': 'Nothing clearly better on the bench', '推荐 {0}': 'Pick {0}', '进入选英雄或对局后会自动显示': 'Shows up automatically in champ select or in game', '战术': 'Tactics', '装备': 'Items', '增幅（现在拿哪种好）': 'Augments (what to take now)', '已选增幅': 'Picked augments', '对局 {0}:{1:02d}': 'Game {0}:{1:02d}', '阵亡 {0}s': 'Dead {0}s', '收起详情 ▴': 'Hide details ▴', '详情：战术 · 装备 · 增幅 · 玩法 ▾': 'Details: tactics · items · augments · play ▾'})
 EN.update({'已结束': 'Ended'})
 EN.update({'界面出错（已记录 ui_error.log）': 'UI error (logged to ui_error.log)'})
+EN.update({'「{0}」让你变近战，这件的远程效果用不上': '[{0}] makes you melee; this item\'s ranged effect is wasted', '「{0}」让你变近战，近战效果全额': '[{0}] makes you melee; full melee effect'})
 COMBOS_EN = {'Aatrox': {'notes': ['Use E to adjust so all three Q casts land with the sweet spot (outer edge)',
                       'R for speed to stick to targets; heals more the lower you get'],
             'style': "Frontline fighter: go in after they burn CC, don't back off with R up"},
