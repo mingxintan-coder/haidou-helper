@@ -34,11 +34,11 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.18.0"
+APP_VERSION = "2.0.0-beta.1"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
-VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
-                "https://cdn.jsdelivr.net/gh/mingxintan-coder/haidou-helper@main/version.json"]
+VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/beta/version.json",
+                "https://cdn.jsdelivr.net/gh/mingxintan-coder/haidou-helper@beta/version.json"]
 APP_DIR = os.path.join(os.path.expanduser("~"), ".lol_haidou_helper")
 
 # ---------- 界面语言（中文 / English）：启动时按设置决定，切换后重新打开生效 ----------
@@ -1769,6 +1769,12 @@ class Advisor:
         who = tr('{0}等').format(t['carry_name']) if t.get("carry_name") else tr("敌方")
         return (val, tr('对{0}{1}伤害有效生命 +{2}%').format(who, kind, round(gain * 100)))
 
+    def item_remain(self, iid, owned):
+        """还要花多少钱才能合成（扣掉已有的零件）"""
+        gd = self.gd
+        comps = [int(c) for c in gd.items.get(iid, {}).get("from", []) if str(c).isdigit()]
+        return int(gd.item_price(iid) - sum(gd.item_price(c) for c in comps if c in owned))
+
     def buy_hint(self, iid, gold, owned):
         gd = self.gd
         it = gd.items.get(iid, {})
@@ -1883,6 +1889,7 @@ class Advisor:
         owned = set(me.items)
         for it in out[:k]:
             it["hint"] = self.buy_hint(it["id"], gold, owned)
+            it["remain"] = self.item_remain(it["id"], owned)
         boots = self.recommend_boots(me, t, prof, role, cs, gold, legend, phase)
         return ([boots] if boots else []) + out[:k], prof
 
@@ -2171,7 +2178,7 @@ class Advisor:
                 "stat_text": (sf["text"] if sf else "") + "\n" + parts_txt,
                 "price": gd.item_price(iid), "boots": True, "wr": sf["wr"] if sf else None,
                 "reason": self.reason(tr('契合你的{0}路线').format('/'.join(dims)) if dims else "", rf),
-                "hint": self.buy_hint(iid, gold, set(me.items))}
+                "hint": self.buy_hint(iid, gold, set(me.items)), "remain": self.item_remain(iid, set(me.items))}
 
     # ---------- augments ----------
     def score_aug(self, a, prof, t, my_augs, me, cs=None, stage=1):
@@ -3560,8 +3567,9 @@ def check_app_version():
     return None, err
 
 
-RAW_BASE = "https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/"
-MIRROR_BASE = "https://cdn.jsdelivr.net/gh/mingxintan-coder/haidou-helper@main/"
+CHANNEL = "beta"                    # 测试版：从 beta 分支检查 / 下载更新，正式版（main）不受影响
+RAW_BASE = f"https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/{CHANNEL}/"
+MIRROR_BASE = f"https://cdn.jsdelivr.net/gh/mingxintan-coder/haidou-helper@{CHANNEL}/"
 UPDATABLE = ("haidou_helper.py", "lang_en.py", "README.md")    # 一键更新只会替换这几个文件
 
 
@@ -4439,14 +4447,18 @@ def save_ui_cfg(cfg):
 
 
 def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
-    """紧凑悬浮窗：出装 / 增幅 / 玩法 三个分页，一次只看一页；平时收成一行。"""
+    """2.0 情境式悬浮窗：没有分页，按你当下在做什么只显示一件事
+       选英雄 → 换不换英雄｜对局 → 战况条 + 下一件装备｜三选一 → 选哪张｜阵亡 → 复活前买什么｜结束 → 复盘
+       其余资讯都收在底部「详情」里；平时收成一两行。"""
     import tkinter as tk
     import tkinter.font as tkfont
 
     # ---------- 配色 ----------
-    BG, CARD, CARD_HI, HEAD = "#0f1218", "#161b25", "#1d2431", "#0a0d12"
-    FG, SUB, DIM, GOLD = "#e6e9ef", "#8a93a6", "#5b6477", "#c8aa6e"
-    GREEN, YELLOW, GREY, ORANGE = "#3ddc84", "#f5c542", "#7b8497", "#ff8a3d"
+    BG, PANEL, PANEL2, LINE, HEAD = "#0d1017", "#151a25", "#1b2230", "#252d3d", "#090b10"
+    CARD = PANEL                                       # 旧名称（设置小窗沿用）
+    FG, SUB, DIM, GOLD = "#eef1f6", "#97a0b3", "#5d6679", "#d4b26a"
+    GREEN, YELLOW, GREY, ORANGE, BLUE = "#41d98a", "#f2c14e", "#7b8497", "#ff8f45", "#5aa9ff"
+    SCENE_COLOR = {"fight": BLUE, "pick": GOLD, "dead": ORANGE, "select": GREEN, "review": GOLD, "wait": GREY}
     FAMILY = "Microsoft YaHei UI" if sys.platform.startswith("win") else "Noto Sans CJK SC"
 
     def score_color(s):
@@ -4461,23 +4473,27 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         root.attributes("-alpha", alpha)
     except tk.TclError:
         pass
-    root.configure(bg=BG, highlightthickness=1, highlightbackground="#2a3140")
+    root.configure(bg=BG, highlightthickness=1, highlightbackground=LINE)
     dpi = max(1.0, root.winfo_fpixels("1i") / 96.0)
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
     st = {"k": scale or cfg.get("scale", 1.0), "x": cfg.get("x"), "y": cfg.get("y", int(sh * 0.22)),
           "pinned": False, "expanded": True, "hold_until": 0.0, "inside_since": None, "left_at": 0.0, "last_key": None,
-          "tab": "items", "user_tab": False, "tab_before_cand": None}
+          "scene": "wait", "drawer": bool(cfg.get("drawer", False)), "dead_until": 0.0, "review": None,
+          "select": None}
     if st["x"] is None:
         st["x"] = sw - int(300 * dpi * st["k"]) - 12
     st["x"], st["y"] = min(max(0, st["x"]), sw - 120), min(max(0, st["y"]), sh - 60)
 
-    BASE = {"title": (10, "bold"), "tab": (9, "bold"), "name": (10, "bold"), "score": (11, "bold"),
-            "small": (8, "normal"), "tip": (9, "normal"), "icon": (10, "normal")}
+    BASE = {"title": (10, "bold"), "chip": (8, "bold"), "hero": (12, "bold"), "big": (16, "bold"),
+            "name": (10, "bold"), "score": (11, "bold"), "small": (8, "normal"), "tip": (9, "normal"),
+            "label": (8, "bold"), "icon": (10, "normal")}
     F = {k: tkfont.Font(family=FAMILY, size=v, weight=w) for k, (v, w) in BASE.items()}
-    wraps = []
 
     def W():
         return int(300 * dpi * st["k"])
+
+    def px(n):
+        return int(n * dpi * st["k"])
 
     def fit():
         root.update_idletasks()
@@ -4486,16 +4502,15 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
 
     def persist():
         c = load_ui_cfg()
-        c.update({"scale": st["k"], "x": st["x"], "y": st["y"]})
+        c.update({"scale": st["k"], "x": st["x"], "y": st["y"], "drawer": st["drawer"]})
         save_ui_cfg(c)
 
     def set_scale(k):
         st["k"] = k
         for key, (v, w) in BASE.items():
             F[key].configure(size=max(6, round(v * k)))
-        for lb in wraps:
-            lb.config(wraplength=W() - int(28 * dpi))
-        fit()
+        mini.config(wraplength=W() - px(20))
+        rerender()
         persist()
 
     # ---------- 小工具：悬停提示 ----------
@@ -4519,7 +4534,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             tw.overrideredirect(True)
             tw.attributes("-topmost", True)
             tk.Label(tw, text=text, bg="#232b3a", fg=FG, font=F["small"], justify="left",
-                     wraplength=int(260 * dpi * st["k"]), padx=8, pady=6).pack()
+                     wraplength=px(260), padx=8, pady=6).pack()
             tw.update_idletasks()
             x = root.winfo_rootx() - tw.winfo_reqwidth() - 6
             if x < 0:
@@ -4532,15 +4547,34 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         widget.bind("<Enter>", enter, add="+")
         widget.bind("<Leave>", leave, add="+")
 
+    def L(parent, text="", font="tip", fg=FG, bg=None, wrap=0, **kw):
+        """建立一个标签；wrap＝左右共留多少像素给换行"""
+        bg = bg or parent.cget("bg")
+        lb = tk.Label(parent, text=text, font=F[font], fg=fg, bg=bg, anchor="w", justify="left", **kw)
+        if wrap:
+            lb.config(wraplength=W() - px(wrap))
+        return lb
+
+    def short(text, n):
+        n = int(n * st["k"] ** -0.2) if st["k"] > 1 else int(n / st["k"])
+        if LANG == "en":
+            n = int(n * 1.9)          # 英文字母比汉字窄
+        return text if len(text) <= n else text[:n - 1] + "…"
+
     # ---------- 标题栏 ----------
     header = tk.Frame(root, bg=HEAD)
     header.pack(fill="x")
     dot = tk.Label(header, text="●", bg=HEAD, fg=GREY, font=F["small"])
     dot.pack(side="left", padx=(8, 2), pady=5)
-    title = tk.Label(header, text=tr("海斗助手"), bg=HEAD, fg=GOLD, font=F["title"])
+    title = tk.Label(header, text=tr("海斗") + " β", bg=HEAD, fg=GOLD, font=F["title"])
     title.pack(side="left")
+    chip = tk.Label(header, text=tr("等待"), bg=HEAD, fg=GREY, font=F["chip"], padx=6)
+    chip.pack(side="left", padx=(6, 0))
     status = tk.Label(header, text="", bg=HEAD, fg=DIM, font=F["small"])
-    status.pack(side="left", padx=6)
+    status.pack(side="left", padx=4)
+
+    def set_chip(text, color):
+        chip.config(text=text, fg=BG, bg=color)
 
     def set_status(text):
         """没有别的消息时，标题栏显示新版本提醒（金色，可点）"""
@@ -4579,7 +4613,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     menu_btn = hbtn("⋯", lambda: open_menu())
     pin_btn = hbtn("📌", lambda: toggle_pin(), fg=GOLD if st["pinned"] else SUB)
     hk = getattr(getattr(engine, "hotkey", None), "name", "")
-    hbtn(tr('识别 {0}').format(hk).strip(), lambda: force_scan(), fg=FG, bg="#2b3a57")
+    hbtn(tr('识别 {0}').format(hk).strip(), lambda: force_scan(), fg=FG, bg="#26324a")
 
     drag = {}
 
@@ -4589,137 +4623,28 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     def do_drag(e):
         st["x"], st["y"] = e.x_root - drag["x"], e.y_root - drag["y"]
         root.geometry(f"+{st['x']}+{st['y']}")
-    for w in (header, title, status, dot):
+    for w in (header, title, status, dot, chip):
         w.bind("<ButtonPress-1>", start_drag, add="+")
         w.bind("<B1-Motion>", do_drag)
         w.bind("<ButtonRelease-1>", lambda e: persist())
 
-    # ---------- 单行模式 ----------
+    # ---------- 收起时：一两行 ----------
     mini = tk.Label(root, text=tr("等待对局…"), bg=BG, fg=FG, font=F["tip"], anchor="w", justify="left", padx=8, pady=5)
-    wraps.append(mini)
 
-    # ---------- 展开内容 ----------
+    # ---------- 展开内容：情境舞台 + 详情抽屉 ----------
     body = tk.Frame(root, bg=BG)
     body.pack(fill="both", expand=True)
-    summary = tk.Label(body, text="", bg=BG, fg=SUB, font=F["small"], anchor="w", justify="left", padx=8)
-    summary.pack(fill="x", pady=(5, 0))
-    wraps.append(summary)
-    alert = tk.Label(body, text="", bg="#3a2412", fg=ORANGE, font=F["tip"], anchor="w", justify="left", padx=8, pady=3)
-    wraps.append(alert)
-    # 战况条：连招 / 战局 / 威胁 / 玩法（一直显示、即时更新）
-    st["brief"] = load_ui_cfg().get("brief", True)
-    brief_box = tk.Frame(body, bg=CARD, padx=8, pady=4)
-    brief_rows = []
-    for _ in range(5):
-        lb = tk.Label(brief_box, text="", bg=CARD, fg=GOLD, font=F["small"], anchor="w")
-        tx = tk.Label(brief_box, text="", bg=CARD, fg=FG, font=F["tip"], anchor="w", justify="left")
-        brief_rows.append((lb, tx))
-        wraps.append(tx)
-
-    def show_brief(items):
-        if not st["brief"] or not items:
-            brief_box.pack_forget()
-            return False
-        for i, (lb, tx) in enumerate(brief_rows):
-            if i < len(items):
-                label, text, hot = items[i]
-                lb.config(text=label)
-                tx.config(text=text, fg=ORANGE if hot else FG)
-                lb.grid(row=i, column=0, sticky="nw", padx=(0, 8))
-                tx.grid(row=i, column=1, sticky="w")
-            else:
-                lb.grid_forget()
-                tx.grid_forget()
-        brief_box.pack(fill="x", padx=8, pady=(5, 0), before=tabs_bar)
-        return True
-
-    tabs_bar = tk.Frame(body, bg=BG)
-    tabs_bar.pack(fill="x", padx=6, pady=(6, 2))
-    tab_btns = {}
-
-    def select_tab(name, user=False):
-        st["tab"] = name
-        if user:
-            st["user_tab"] = True
-            st["tab_before_cand"] = None           # 你自己选了分页：三选一结束后不用切回
-        for k, (lb, ul) in tab_btns.items():
-            on = k == name
-            lb.config(fg=FG if on else DIM)
-            ul.config(bg=GOLD if on else BG)
-        for k, fr in pages.items():
-            fr.pack_forget()
-        pages[name].pack(fill="x", padx=6, pady=(4, 4), before=footer)
-        fit()
-
-    for key, text in (("items", tr("出装")), ("augs", tr("增幅")), ("guide", tr("玩法"))):
-        holder = tk.Frame(tabs_bar, bg=BG)
-        holder.pack(side="left", padx=(2, 10))
-        lb = tk.Label(holder, text=text, bg=BG, fg=DIM, font=F["tab"], cursor="hand2")
-        lb.pack()
-        ul = tk.Frame(holder, bg=BG, height=2)
-        ul.pack(fill="x")
-        lb.bind("<Button-1>", lambda e, k=key: select_tab(k, user=True))
-        tab_btns[key] = (lb, ul)
-    tk.Frame(body, bg="#232a36", height=1).pack(fill="x", padx=8)
-
-    pages = {k: tk.Frame(body, bg=BG) for k in ("items", "augs", "guide")}
-
-    def make_rows(parent, n):
-        rows = []
-        for _ in range(n):
-            fr = tk.Frame(parent, bg=CARD, cursor="arrow")
-            top = tk.Frame(fr, bg=CARD)
-            top.pack(fill="x")
-            sc = tk.Label(top, text="", bg=CARD_HI, fg=FG, font=F["score"], width=3)
-            sc.pack(side="left", padx=(0, 6), fill="y")
-            nm = tk.Label(top, text="", bg=CARD, fg=FG, font=F["name"], anchor="w")
-            nm.pack(side="left")
-            meta = tk.Label(top, text="", bg=CARD, fg=SUB, font=F["small"], anchor="e")
-            meta.pack(side="right", padx=6)
-            rs = tk.Label(fr, text="", bg=CARD, fg=SUB, font=F["small"], anchor="w", justify="left")
-            rs.pack(fill="x", padx=(6, 6), pady=(0, 3))
-            full = {"text": ""}
-            for w in (fr, nm, rs, meta, sc):
-                hover(w, lambda full=full: full["text"])
-            rows.append({"fr": fr, "sc": sc, "nm": nm, "meta": meta, "rs": rs, "full": full})
-        return rows
-
-    def short(text, n):
-        n = int(n * st["k"] ** -0.2) if st["k"] > 1 else int(n / st["k"])
-        if LANG == "en":
-            n = int(n * 1.9)          # 英文字母比汉字窄
-        return text if len(text) <= n else text[:n - 1] + "…"
-
-    # 出装页：战术（最多 2 条）＋鞋子＋装备
-    shop_lbl = tk.Label(pages["items"], text="", bg="#2a2412", fg=GOLD, font=F["tip"], anchor="w", justify="left",
-                        padx=6, pady=3)
-    wraps.append(shop_lbl)
-    tips_box = tk.Frame(pages["items"], bg=BG)
-    tips_box.pack(fill="x")
-    tip_lbls = []
-    for _ in range(2):
-        lb = tk.Label(tips_box, text="", bg=BG, fg=FG, font=F["tip"], anchor="w", justify="left")
-        wraps.append(lb)
-        tip_lbls.append(lb)
-    item_rows = make_rows(pages["items"], 4)
-
-    # 增幅页
-    aug_head = tk.Label(pages["augs"], text="", bg=BG, fg=SUB, font=F["small"], anchor="w")
-    aug_head.pack(fill="x", pady=(0, 2))
-    aug_rows = make_rows(pages["augs"], 4)
-    mine_lbl = tk.Label(pages["augs"], text="", bg=BG, fg=DIM, font=F["small"], anchor="w", justify="left")
-    wraps.append(mine_lbl)
-    enemy_lbl = tk.Label(pages["augs"], text="", bg=BG, fg=ORANGE, font=F["small"], anchor="w", justify="left")
-    wraps.append(enemy_lbl)
-
-    # 玩法页
-    guide_lbl = tk.Label(pages["guide"], text="", bg=CARD, fg=FG, font=F["tip"], anchor="w", justify="left",
-                         padx=8, pady=6)
-    guide_lbl.pack(fill="x")
-    wraps.append(guide_lbl)
-
-    footer = tk.Label(body, text="", bg=BG, fg=DIM, font=F["small"], anchor="w", padx=8, cursor="hand2")
-    footer.pack(fill="x", pady=(0, 4))
+    stage_wrap = tk.Frame(body, bg=BG)
+    stage_wrap.pack(fill="x", padx=px(8), pady=(px(6), px(4)))
+    accent = tk.Frame(stage_wrap, bg=GREY, width=px(3))
+    accent.pack(side="left", fill="y")
+    stage = tk.Frame(stage_wrap, bg=BG)
+    stage.pack(side="left", fill="x", expand=True, padx=(px(6), 0))
+    drawer_btn = L(body, "", "small", SUB, BG, cursor="hand2", padx=px(10))
+    drawer_btn.pack(fill="x")
+    drawer = tk.Frame(body, bg=BG)
+    footer = L(body, "", "small", DIM, BG, cursor="hand2", padx=px(10))
+    footer.pack(fill="x", pady=(px(2), px(4)))
     footer.bind("<Button-1>", lambda e: switch_bracket())
 
     def footer_tip():
@@ -4737,6 +4662,12 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         lines.append(tr("点一下切换 全部分段 / 高分段"))
         return "\n".join(lines)
     hover(footer, footer_tip)
+
+    def toggle_drawer(_e=None):
+        st["drawer"] = not st["drawer"]
+        persist()
+        rerender()
+    drawer_btn.bind("<Button-1>", toggle_drawer)
 
     # ---------- 展开 / 收起 ----------
     def set_expanded(flag):
@@ -4843,16 +4774,6 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         br.add_radiobutton(label=tr("全部分段"), variable=bracket_var, value="all", command=lambda: switch_bracket("all"))
         br.add_radiobutton(label=tr("高分段"), variable=bracket_var, value="high", command=lambda: switch_bracket("high"))
         menu.add_cascade(label=tr("胜率数据分段"), menu=br)
-    brief_var = tk.BooleanVar(value=st["brief"])
-
-    def toggle_brief():
-        st["brief"] = brief_var.get()
-        c = load_ui_cfg()
-        c["brief"] = st["brief"]
-        save_ui_cfg(c)
-        if current.get("rec"):
-            show(current["rec"], flash=False)
-    menu.add_checkbutton(label=tr("显示战况条（连招 / 战局 / 威胁 / 玩法）"), variable=brief_var, command=toggle_brief)
     menu.add_checkbutton(label=tr("一直自动识别三选一（较耗 CPU）"), variable=auto_var, command=toggle_auto)
     menu.add_command(label=tr("手动输入增幅…"), command=lambda: open_manual())
     habits_var = tk.BooleanVar(value=engine.habits.enabled)
@@ -5030,71 +4951,211 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     # ---------- 填内容 ----------
     current = {"rec": None}
 
-    def brief(reason):
-        """卡片上的一行理由：胜率已在右上角显示，这里只留原因"""
+    def clear(fr):
+        for c in fr.winfo_children():
+            c.destroy()
+
+    def reason_short(reason):
+        """卡片上的一行理由：胜率已另外显示，这里只留原因"""
         t = re.sub(r"(网上胜率|胜率) [\d.]+%（比平均[+-][\d.]+%）[，,]?", "", reason)
         t = re.sub(r"(?i)win rate [\d.]+% \([+-][\d.]+% vs avg\),? ?", "", t)
-        t = re.sub(r"[，,]\s*$", "", t.replace(tr("主流路线的下一件，"), tr("主流路线的下一件，")).strip(tr("，, ")))
+        t = re.sub(r"[，,]\s*$", "", t.strip(tr("，, ")))
         return t or reason
 
-    def fill_rows(rows, data, cand=False, before=None):
-        for i, r in enumerate(rows):
-            r["fr"].pack_forget()
-            if i >= len(data):
-                continue
-            d = data[i]
-            star = "★ " if cand and i == 0 else ""
-            r["sc"].config(text=str(d["score"]), fg=score_color(d["score"]))
-            r["nm"].config(text=star + d["name"], fg=GOLD if cand and i == 0 else FG)
-            meta = []
-            if d.get("wr"):
-                meta.append(f"{d['wr'] * 100:.1f}%")
-            if d.get("hint"):
-                meta.append(d["hint"])
-            elif not d.get("known", True):
-                meta.append(tr("未收录"))
-            r["meta"].config(text=" · ".join(meta))
-            r["rs"].config(text=short(brief(d["reason"]), 26))
-            r["full"]["text"] = d["reason"] + (f"\n{d['stat_text']}" if d.get("stat_text") else "")
-            if before is not None:
-                r["fr"].pack(fill="x", pady=2, before=before)
-            else:
-                r["fr"].pack(fill="x", pady=2)
+    def panel(parent, pady=(0, 4), bg=PANEL):
+        fr = tk.Frame(parent, bg=bg, padx=px(8), pady=px(5))
+        fr.pack(fill="x", pady=(px(pady[0]), px(pady[1])))
+        return fr
 
-    def show_select(sel):
-        """选英雄阶段：你的英雄 + 备选席，按分数排"""
+    def section(parent, text, color=DIM):
+        L(parent, text, "label", color).pack(fill="x", pady=(px(4), px(1)))
+
+    def strip(parent, rows, skip=()):
+        """战况条：标签 + 一行字"""
+        rows = [r for r in rows or [] if r[0] not in skip]
+        if not rows:
+            return
+        fr = panel(parent)
+        for i, (label, text, hot) in enumerate(rows):
+            L(fr, label, "label", GOLD).grid(row=i, column=0, sticky="nw", padx=(0, px(8)), pady=px(1))
+            L(fr, text, "tip", ORANGE if hot else FG, wrap=110).grid(row=i, column=1, sticky="w", pady=px(1))
+
+    def bar(parent, ratio, color):
+        cv = tk.Canvas(parent, height=px(5), bg=LINE, highlightthickness=0, bd=0)
+        cv.pack(fill="x", pady=(px(4), px(2)))
+
+        def draw(_e=None):
+            cv.delete("all")
+            w = cv.winfo_width()
+            cv.create_rectangle(0, 0, int(w * max(0.0, min(1.0, ratio))), px(5), fill=color, width=0)
+        cv.bind("<Configure>", draw)
+        return cv
+
+    def card(parent, d, star=False, click=None, meta_extra=""):
+        """一张推荐卡：分数 · 名称 · 胜率 / 提示，下面一行理由"""
+        fr = tk.Frame(parent, bg=PANEL2 if star else PANEL, padx=px(6), pady=px(4), cursor="hand2" if click else "")
+        fr.pack(fill="x", pady=px(2))
+        top = tk.Frame(fr, bg=fr.cget("bg"))
+        top.pack(fill="x")
+        L(top, str(d["score"]), "score", score_color(d["score"])).pack(side="left", padx=(0, px(6)))
+        L(top, ("★ " if star else "") + d["name"], "name", GOLD if star else FG).pack(side="left")
+        meta = [f"{d['wr'] * 100:.1f}%"] if d.get("wr") else []
+        if meta_extra or d.get("hint"):
+            meta.append(meta_extra or d["hint"])
+        L(top, " · ".join(meta), "small", SUB).pack(side="right")
+        rs = L(fr, short(reason_short(d.get("reason", "")), 28), "small", SUB)
+        rs.pack(fill="x")
+        full = d.get("reason", "") + (f"\n{d['stat_text']}" if d.get("stat_text") else "")
+        for w in [fr, top, rs] + list(top.winfo_children()):
+            hover(w, lambda full=full: full)
+            if click:
+                w.bind("<Button-1>", lambda e: click(), add="+")
+        return fr
+
+    def compact(parent, data, n=4):
+        """详情里的精简列表：分数 名称 提示"""
+        for d in data[:n]:
+            row = tk.Frame(parent, bg=parent.cget("bg"))
+            row.pack(fill="x")
+            L(row, f"{d['score']:>3}", "small", score_color(d["score"])).pack(side="left", padx=(0, px(6)))
+            L(row, d["name"], "small", FG).pack(side="left")
+            if d.get("hint"):
+                L(row, d["hint"], "small", DIM).pack(side="right")
+            full = d.get("reason", "") + (f"\n{d['stat_text']}" if d.get("stat_text") else "")
+            for w in [row] + list(row.winfo_children()):
+                hover(w, lambda full=full: full)
+
+    # ----- 各情境 -----
+    def scene_fight(rec):
+        strip(stage, rec.get("brief"))
+        items = rec.get("items", [])
+        its = [x for x in items if not x.get("boots")]
+        boots = next((x for x in items if x.get("boots")), None)
+        if its:
+            d = its[0]
+            gold, remain = int(rec.get("gold", 0)), int(d.get("remain") or d.get("price") or 0)
+            fr = panel(stage, bg=PANEL2)
+            top = tk.Frame(fr, bg=PANEL2)
+            top.pack(fill="x")
+            L(top, tr("下一件"), "label", BLUE).pack(side="left", padx=(0, px(6)))
+            L(top, d["name"], "hero", FG).pack(side="left")
+            L(top, str(d["score"]), "hero", score_color(d["score"])).pack(side="right")
+            ok = remain > 0 and gold >= remain
+            bar(fr, gold / remain if remain else 1.0, GREEN if ok else BLUE)
+            line = tk.Frame(fr, bg=PANEL2)
+            line.pack(fill="x")
+            L(line, tr("可以买了 ✓") if ok else d.get("hint", ""), "small", GREEN if ok else SUB).pack(side="left")
+            if remain:
+                L(line, f"{min(gold, remain)}/{remain}g", "small", DIM).pack(side="right")
+            rs = L(fr, short(reason_short(d.get("reason", "")), 30), "small", SUB)
+            rs.pack(fill="x")
+            hover(rs, lambda: d.get("reason", "") + (f"\n{d['stat_text']}" if d.get("stat_text") else ""))
+        alts = [f"{x['name']} {x['score']}" for x in its[1:3]] + ([boots["name"]] if boots else [])
+        if alts:
+            L(stage, tr("备选  ") + "  ·  ".join(alts), "small", SUB, wrap=40).pack(fill="x", pady=(px(2), 0))
+
+    def scene_pick(rec):
+        augs = rec.get("augs", [])[:3]
+        L(stage, (tr("识别到三选一") if rec.get("auto_cand") else tr("三选一")) + tr(" · 点卡片记为已选"),
+          "label", GOLD, wrap=40).pack(fill="x", pady=(0, px(2)))
+        for i, a in enumerate(augs):
+            card(stage, a, star=(i == 0), click=lambda i=i: choose(i))
+        mine = rec.get("my_augs", [])
+        if mine:
+            L(stage, tr("已选：") + tr("、").join(mine), "small", DIM, wrap=40).pack(fill="x", pady=(px(3), 0))
+
+    def scene_dead(rec):
+        shop = rec.get("shop") or {}
+        left = max(0, int(st["dead_until"] - time.time()))
+        fr = panel(stage, bg="#2a1d12")
+        L(fr, tr("复活前买"), "label", ORANGE).pack(fill="x")
+        for i, (iid, price) in enumerate(shop.get("buy", [])):
+            row = tk.Frame(fr, bg="#2a1d12")
+            row.pack(fill="x")
+            L(row, f"{i + 1}. " + engine.gd.item_name(iid), "name", FG).pack(side="left")
+            L(row, f"{int(price)}g", "small", GOLD).pack(side="right")
+        L(fr, tr("剩 {0}g").format(int(shop.get("left", 0))) + (tr(" · 正在合成：") + tr("、").join(shop["targets"])
+                                                                 if shop.get("targets") else ""),
+          "small", SUB, wrap=40).pack(fill="x", pady=(px(3), 0))
+        strip(stage, rec.get("brief"), skip=(tr("连招"), tr("玩法")))
+        return left
+
+    def scene_select(sel):
         cands = sel.get("cands", [])
         if not cands:
+            L(stage, tr("选英雄中"), "tip", SUB).pack(fill="x")
             return
         best = cands[0]
-        needs = sel.get("needs") or []
-        summary.config(text=tr("选英雄") + (" · " + tr('队伍缺：{0}').format(tr("、").join(needs)) if needs else ""))
-        alert.pack_forget()
-        brief_box.pack_forget()
-        summary.pack(fill="x", pady=(5, 0), before=tabs_bar)
-        shop_lbl.pack_forget()
-        for lb in tip_lbls:
-            lb.pack_forget()
         mine = next((c for c in cands if c.get("mine")), None)
         if mine and best is not mine and best["score"] - mine["score"] >= 3:
-            tip = tr('★ 建议从备选席换成 {0}（{1} 分，你现在的 {2} {3} 分）').format(
-                best["name"], best["score"], mine["name"], mine["score"])
+            tip, col = tr("换 {0}").format(best["name"]), GOLD
+            sub = tr("{0} 分，比你现在的 {1} 高 {2} 分").format(best["score"], mine["name"], best["score"] - mine["score"])
         elif mine:
-            tip = tr('保持 {0} 就好（备选席里没有明显更好的）').format(mine["name"])
+            tip, col, sub = tr("保持 {0}").format(mine["name"]), GREEN, tr("备选席里没有明显更好的")
         else:
-            tip = tr('★ 推荐 {0}').format(best["name"])
-        tip_lbls[0].config(text=tip)
-        tip_lbls[0].pack(fill="x", pady=(0, 1))
+            tip, col, sub = tr("推荐 {0}").format(best["name"]), GOLD, ""
+        fr = panel(stage, bg=PANEL2)
+        L(fr, tip, "hero", col).pack(fill="x")
+        if sub:
+            L(fr, sub, "small", SUB, wrap=40).pack(fill="x")
+        needs = sel.get("needs") or []
+        if needs:
+            L(stage, tr('队伍缺：{0}').format(tr("、").join(needs)), "small", ORANGE, wrap=40).pack(fill="x")
         rows = cands[:4]
         if mine and mine not in rows:          # 你自己的英雄一定要看得到（备选席很多时会被挤出前 4）
             rows = cands[:3] + [mine]
-        fill_rows(item_rows, rows)
-        if st["tab"] != "items":
-            select_tab("items")
-        mini.config(text=tip, fg=GOLD)
-        st["hold_until"] = time.time() + 8
-        set_expanded(True)
-        fit()
+        for c in rows:
+            card(stage, c, star=c is best and c is not mine)
+        return tip
+
+    def scene_review(rv):
+        fr = panel(stage, bg=PANEL2)
+        L(fr, "📋 " + rv["text"], "name", GOLD, wrap=40).pack(fill="x")
+        if rv.get("detail"):
+            L(fr, rv["detail"], "small", SUB, wrap=40).pack(fill="x", pady=(px(3), 0))
+
+    def scene_wait():
+        L(stage, tr("等待对局…"), "hero", SUB).pack(fill="x")
+        L(stage, tr("进入选英雄或对局后会自动显示"), "small", DIM, wrap=40).pack(fill="x")
+
+    def fill_drawer(rec):
+        clear(drawer)
+        if not st["drawer"] or not rec:
+            drawer.pack_forget()
+            return
+        drawer.pack(fill="x", padx=px(10), before=footer)
+        tips = rec.get("tips", [])
+        if tips:
+            section(drawer, tr("战术"))
+            for _, txt, urgent in tips:
+                L(drawer, ("⚠" if urgent else "▸") + txt, "small", ORANGE if urgent else FG, wrap=40).pack(fill="x")
+        if rec.get("items"):
+            section(drawer, tr("装备"))
+            compact(drawer, rec["items"], 5)
+        if rec.get("augs") and not rec.get("cand_mode"):
+            section(drawer, tr("增幅（现在拿哪种好）"))
+            compact(drawer, rec["augs"], 4)
+        mine = rec.get("my_augs", [])
+        section(drawer, tr("已选增幅"))
+        L(drawer, tr("、").join(mine) if mine else tr("（还没有）"), "small", SUB, wrap=40).pack(fill="x")
+        ea = rec.get("enemy_augs") or []
+        if ea:
+            section(drawer, tr("敌方增幅"), ORANGE)
+            for x in ea[:6]:
+                L(drawer, tr("{0}「{1}」").format(x["who"], x["aug"]) + (" → " + x["fix"] if x["fix"] else ""),
+                  "small", FG, wrap=40).pack(fill="x")
+        elif not rec.get("eaug_visible") and rec.get("game_time", 0) > 420:
+            section(drawer, tr("敌方增幅"))
+            L(drawer, tr("游戏没提供敌方增幅：可在 ⋯ → 手动输入增幅 填写"), "small", DIM, wrap=40).pack(fill="x")
+        g = rec.get("guide") or {}
+        lines = [x for x in (g.get("habit"), g.get("balance"), g.get("skills"), g.get("spells")) if x]
+        lines += [f"{c}\n   {note}" for c, note in g.get("combos", [])]
+        if g.get("style"):
+            lines.append(g["style"])
+        if lines:
+            section(drawer, tr("玩法"))
+            for x in lines:
+                L(drawer, x, "small", FG, wrap=40).pack(fill="x", pady=(0, px(2)))
 
     def choose(i):
         rec = current["rec"]
@@ -5110,137 +5171,133 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         engine.set_manual("cand", "")
         engine.set_auto([])
 
-    for i, r in enumerate(aug_rows):
-        for w in (r["fr"], r["nm"], r["sc"], r["rs"], r["meta"]):
-            w.bind("<Button-1>", lambda e, i=i: choose(i))
+    def scene_of(rec):
+        if rec is None:
+            return "wait"
+        if rec.get("cand_mode"):
+            return "pick"
+        if rec.get("shop"):
+            return "dead"
+        return "fight"
 
-    def show(rec, flash=True):
-        current["rec"] = rec
-        mine_names = rec.get("my_augs", [])
-        manual_vals["mine"] = tr("，").join(mine_names)
-        summary.config(text=rec.get("summary", "").replace(tr("｜"), " · ").replace(tr("网上 "), ""))
-        has_brief = show_brief(rec.get("brief"))
-        if has_brief:                              # 战况条已含局势，摘要行收起来省空间
-            summary.pack_forget()
+    def chip_text(scene):
+        rec = current["rec"]
+        if scene == "fight" and rec:
+            t = int(rec.get("game_time", 0))
+            return tr("对局 {0}:{1:02d}").format(t // 60, t % 60)
+        if scene == "dead":
+            return tr("阵亡 {0}s").format(max(0, int(st["dead_until"] - time.time())))
+        return {"pick": tr("三选一"), "select": tr("选英雄"), "review": tr("已结束"), "wait": tr("等待")}.get(scene, "")
+
+    def mini_text(scene):
+        rec = current["rec"]
+        if scene == "select" and st["select"]:
+            return st.get("select_tip", tr("选英雄中")), GOLD
+        if scene == "review" and st["review"]:
+            return "📋 " + st["review"][0]["text"], GOLD
+        if not rec:
+            return tr("等待对局…"), SUB
+        if scene == "pick" and rec.get("augs"):
+            return tr('★ 选 {0}（{1}）').format(rec['augs'][0]['name'], rec['augs'][0]['score']), GOLD
+        if scene == "dead":
+            return "💰 " + " → ".join((rec.get("shop") or {}).get("names", [])) + \
+                "  " + chip_text("dead"), ORANGE
+        bf = {x[0]: x for x in rec.get("brief") or []}
+        state = bf.get(tr("战局"))
+        hot_aug = bf.get(tr("敌增幅"))
+        its = [x for x in rec.get("items", []) if not x.get("boots")]
+        line1 = (f"▶ {its[0]['name']}  " + (tr("可以买了 ✓") if rec.get("gold", 0) >= (its[0].get("remain") or 1e9)
+                                            else its[0].get("hint", ""))) if its else tr("等待推荐…")
+        if state and state[2]:
+            return "⚠ " + state[1] + "\n" + line1, ORANGE
+        if hot_aug and hot_aug[2]:
+            return "⚠ " + hot_aug[1] + "\n" + line1, ORANGE
+        thr = (bf.get(tr("威胁")) or ("", "", False))[1].split(" · ")[0]
+        combo = (bf.get(tr("连招")) or ("", "", False))[1]
+        extra = "   ".join(x for x in (combo, "⚠" + thr if thr else "") if x)
+        return line1 + ("\n" + extra if extra else ""), FG
+
+    def rerender():
+        """按目前的情境重画舞台、详情、收起时的文字"""
+        scene = st["scene"]
+        rec = current["rec"]
+        clear(stage)
+        accent.config(bg=SCENE_COLOR.get(scene, GREY))
+        if scene == "select" and st["select"]:
+            st["select_tip"] = scene_select(st["select"]) or ""
+        elif scene == "review" and st["review"]:
+            scene_review(st["review"][0])
+        elif scene == "pick":
+            scene_pick(rec)
+        elif scene == "dead":
+            scene_dead(rec)
+        elif scene == "fight":
+            scene_fight(rec)
         else:
-            summary.pack(fill="x", pady=(5, 0), before=tabs_bar)
-        # 紧急提示（人数差、残血…）；战况条已经显示了就不重复
-        tips = rec.get("tips", [])
-        urgent = [x for x in tips if x[2]]
-        if urgent and not has_brief:
-            alert.config(text="⚠ " + urgent[0][1])
-            alert.pack(fill="x", padx=8, pady=(4, 0), after=summary)
+            scene_wait()
+        in_game = scene in ("fight", "pick", "dead") and rec is not None
+        if in_game:
+            drawer_btn.config(text=(tr("收起详情 ▴") if st["drawer"] else tr("详情：战术 · 装备 · 增幅 · 玩法 ▾")))
+            drawer_btn.pack(fill="x", before=footer)
+            fill_drawer(rec)
         else:
-            alert.pack_forget()
-        # 阵亡购物清单（复活前买什么）
-        shop = rec.get("shop")
-        shop_text = shop_line(shop)
-        rv = st.get("review")
-        if shop_text:
-            shop_lbl.config(text=shop_text)
-            shop_lbl.pack(fill="x", pady=(0, 3), before=tips_box)
-        elif rv and time.time() < rv[1]:
-            pass                                   # 赛后复盘还在显示
-        else:
-            shop_lbl.pack_forget()
-        # 出装页
-        normal = [] if has_brief else [x for x in tips if not x[2]][:2]
-        for i, lb in enumerate(tip_lbls):
-            lb.pack_forget()
-            if i < len(normal):
-                lb.config(text="▸" + normal[i][1])
-                lb.pack(fill="x", pady=(0, 1))
-        fill_rows(item_rows, rec.get("items", [])[:4])
-        # 增幅页
-        cand = rec.get("cand_mode")
-        aug_head.config(text=(tr("识别到三选一 · ★ 推荐 · 点卡片记为已选") if rec.get("auto_cand") else
-                              tr("三选一评分 · ★ 推荐 · 点卡片记为已选")) if cand else tr("当前局势推荐的增幅"),
-                        fg=GOLD if cand else SUB)
-        mine_lbl.config(text=tr("已选增幅：") + (tr("、").join(mine_names) if mine_names else tr("（还没有）")))
-        mine_lbl.pack(fill="x", pady=(2, 0))
-        ea = rec.get("enemy_augs") or []
-        if ea:
-            enemy_lbl.config(text=tr("敌方增幅：") + "\n" + "\n".join(
-                tr("{0}「{1}」").format(x["who"], x["aug"]) + (" → " + x["fix"] if x["fix"] else "") for x in ea[:6]))
-            enemy_lbl.pack(fill="x", pady=(2, 0), after=mine_lbl)
-        elif not rec.get("eaug_visible") and rec.get("game_time", 0) > 420:
-            enemy_lbl.config(text=tr("游戏没提供敌方增幅：可在 ⋯ → 手动输入增幅 填写"), fg=DIM)
-            enemy_lbl.pack(fill="x", pady=(2, 0), after=mine_lbl)
-        else:
-            enemy_lbl.pack_forget()
-        if ea:
-            enemy_lbl.config(fg=ORANGE)
-        fill_rows(aug_rows, rec.get("augs", [])[:3 if cand else 4], cand, before=mine_lbl)
-        # 玩法页
-        g = rec.get("guide") or {}
-        lines = [x for x in (g.get("habit"), g.get("balance"), g.get("skills"), g.get("spells")) if x]
-        lines += [tr('连招  {0}\n        {1}').format(c, note) for c, note in g.get("combos", [])]
-        if g.get("style"):
-            lines.append(tr("玩法  ") + g["style"])
-        guide_lbl.config(text="\n".join(lines) or tr("（暂无这个英雄的玩法数据）"))
-        # 分段 / 数据来源
+            drawer_btn.pack_forget()
+            fill_drawer(None)
+        set_chip(chip_text(scene), SCENE_COLOR.get(scene, GREY))
+        txt, col = mini_text(scene)
+        mini.config(text=txt, fg=col, wraplength=W() - px(20))
         so = S()
         gv = ".".join(str(engine.gd.version).split(".")[:2])
         if so is not None:
             ver = (so.version or {}).get("version", "")
             tier = tr("高分段") if so.dataset == "high" else tr("全部分段")
-            footer.config(text=tr('游戏 {0} · ARAMKit {1} · {2} ⇄').format(gv, ver, tier) if ver else tr('游戏 {0} · {1} ⇄').format(gv, tier))
+            footer.config(text=tr('游戏 {0} · ARAMKit {1} · {2} ⇄').format(gv, ver, tier) if ver else
+                          tr('游戏 {0} · {1} ⇄').format(gv, tier))
         else:
             footer.config(text=tr('游戏 {0}').format(gv))
-        # 自动选分页：出现新的三选一（或重骰）时切到增幅一次；你自己切走就不再拉回来
-        cand_key = tuple(a["name"] for a in rec.get("augs", [])[:3]) if cand else None
-        if cand:
-            if cand_key != st.get("cand_jumped"):
-                st["cand_jumped"] = cand_key
-                if st["tab"] != "augs":
-                    st["tab_before_cand"] = st["tab"]
-                    select_tab("augs")
-        elif st["tab_before_cand"]:
-            if st["tab"] == "augs":                # 只有还停在增幅页时才切回原来那页
-                select_tab(st["tab_before_cand"])
-            st["tab_before_cand"] = None
-            st["cand_jumped"] = None
-        elif shop_text:
-            if st["tab"] != "items":
-                select_tab("items")
-        elif not st["user_tab"]:
-            select_tab("guide" if rec.get("game_time", 999) < 90 else "items")
-        # 单行模式
+        fit()
+
+    def show(rec, flash=True):
+        current["rec"] = rec
+        manual_vals["mine"] = tr("，").join(rec.get("my_augs", []))
+        if st["review"] and time.time() > st["review"][1]:
+            st["review"] = None
+        scene = scene_of(rec)
+        shop = rec.get("shop")
+        if scene == "dead" and st["scene"] != "dead":      # 刚阵亡：展开到复活为止
+            rs = (shop or {}).get("respawn", 8)
+            st["dead_until"] = time.time() + rs
+            st["hold_until"] = time.time() + min(30, max(5, rs))
+            set_expanded(True)
+        st["scene"] = scene
+        st["select"] = None
+        # 只有和你有关的推荐真的变了才弹开（别人买装备、升级不弹）
         its = [x for x in rec.get("items", []) if not x.get("boots")]
         boots = next((x for x in rec.get("items", []) if x.get("boots")), None)
-        if shop_text and not cand:
-            mini.config(text=shop_text, fg=GOLD)
-        elif urgent:
-            mini.config(text="⚠ " + urgent[0][1], fg=ORANGE)
-        elif cand and rec.get("augs"):
-            mini.config(text=tr('★ 选 {0}（{1}）').format(rec['augs'][0]['name'], rec['augs'][0]['score']), fg=GOLD)
-        else:
-            parts = []
-            if its:
-                parts.append(f"▶ {its[0]['name']} {its[0]['score']}")
-            if boots:
-                parts.append(boots["name"])
-            line = "   ".join(parts) or tr("等待推荐…")
-            bf = dict((x[0], x[1]) for x in rec.get("brief") or [])
-            thr = bf.get(tr("威胁"), "").split(" · ")[0]
-            hot_aug = next((x[1] for x in rec.get("brief") or [] if x[0] == tr("敌增幅") and x[2]), None)
-            extra = "⚠" + hot_aug if hot_aug else \
-                "   ".join(x for x in (bf.get(tr("连招")), "⚠" + thr if thr else "") if x)
-            mini.config(text=line + ("\n" + extra if st["brief"] and extra else ""), fg=FG)
-        # 只有和你有关的推荐真的变了才弹开（别人买装备、升级不弹）
-        its_key = tuple(x["name"] for x in its[:2])
-        key = (its_key, boots["name"] if boots else None, bool(cand),
-               tuple(x["name"] for x in rec.get("augs", [])[:3]) if cand else None,
-               tuple(sorted(x["key"] for x in rec.get("enemy_augs") or [])))     # 敌方拿到新增幅也弹开
-        if shop_text and not st.get("shop_shown"):       # 刚阵亡：展开到复活为止
-            st["hold_until"] = time.time() + min(30, max(5, shop.get("respawn", 8)))
-            set_expanded(True)
-        st["shop_shown"] = bool(shop_text)
+        hot = tuple(x[1] for x in rec.get("brief") or [] if x[2])
+        key = (tuple(x["name"] for x in its[:1]), boots["name"] if boots else None, scene,
+               tuple(x["name"] for x in rec.get("augs", [])[:3]) if scene == "pick" else None,
+               tuple(sorted(x["key"] for x in rec.get("enemy_augs") or [])), hot)
         if flash and key != st["last_key"]:
             st["hold_until"] = max(st["hold_until"], time.time() + 5)
             set_expanded(True)
         st["last_key"] = key
-        fit()
+        rerender()
+
+    def show_select(sel):
+        current["rec"] = None
+        st["scene"], st["select"] = "select", sel
+        st["hold_until"] = time.time() + 8
+        set_expanded(True)
+        rerender()
+
+    def tick():
+        """每秒：阵亡倒数、对局时间"""
+        if st["scene"] == "dead":
+            set_chip(chip_text("dead"), ORANGE)
+            txt, col = mini_text("dead")
+            mini.config(text=txt, fg=col)
+        root.after(1000, tick)
 
     def poll():
         try:
@@ -5266,14 +5323,11 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                     set_status("")
             elif kind == "review":         # 赛后复盘
                 st["review"] = (payload, time.time() + 25)
-                shop_lbl.config(text="📋 " + payload["text"] + ("\n" + payload["detail"] if payload.get("detail") else ""))
-                shop_lbl.pack(fill="x", pady=(0, 3), before=tips_box)
-                if st["tab"] != "items":
-                    select_tab("items")
-                mini.config(text="📋 " + payload["text"], fg=GOLD)
+                st["scene"] = "review"
+                current["rec"] = None
                 st["hold_until"] = time.time() + 20
                 set_expanded(True)
-                fit()
+                rerender()
             elif kind == "select":         # 选英雄阶段
                 dot.config(fg=GOLD)
                 show_select(payload)
@@ -5299,18 +5353,24 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             else:
                 if payload.startswith(tr("等待")):
                     dot.config(fg=GREY)
+                    if st["scene"] in ("fight", "pick", "dead", "select") and not st["review"]:
+                        st["scene"], current["rec"], st["select"] = "wait", None, None
+                        rerender()
+                    elif st["review"] and time.time() > st["review"][1]:
+                        st["review"], st["scene"] = None, "wait"
+                        rerender()
                 if not hold:               # 正在显示的重要消息（识别中、更新结果…）不被一般状态盖掉
-                    set_status("" if payload == tr("监控中") else short(payload, 14))
+                    set_status("" if payload in (tr("监控中"), tr("选英雄中")) else short(payload, 14))
         auto_collapse()
         root.after(60 if engine.scanning else 300, poll)     # 识别中刷新快一点
 
     set_scale(st["k"])
-    select_tab("items")
     st["hold_until"] = time.time() + 5
     stop = threading.Event()
     threading.Thread(target=engine.run, args=(stop,), daemon=True).start()
     start_scanner(engine, scanner, stop, scan_on)
     root.after(300, poll)
+    root.after(1000, tick)
     root.mainloop()
     stop.set()
 

@@ -7,6 +7,9 @@
 > 「语言 / Language」→ English (or run with `--ui-lang en`), then restart. English mode also uses English item/champion/augment
 > names (`en_US`) so augment-screen detection matches an English game client; use `--lang` to pick another client language.
 
+> **2.0 测试版（beta 分支）**：情境式界面——没有分页，按你当下在做什么只显示一件事（选英雄 / 对局 / 三选一 / 阵亡 / 复盘），其余收在底部「详情」。
+> 测试版只从 beta 分支更新，正式版（main）不受影响。两个版本共用习惯记录和设定，**不要同时开**。
+
 ## 使用
 1. 安装 Python 3.8+（python.org，安装时勾选 “Add python to PATH”）。
 2. 双击 `demo.bat` 先看效果（不用开游戏，会模拟一局装备变化、阵亡和一次三选一）。

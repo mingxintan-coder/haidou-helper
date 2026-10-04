@@ -1,13 +1,14 @@
 {
- "version": "1.18.0",
+ "version": "2.0.0-beta.1",
  "date": "2026-10-03",
  "notes": [
-  "新增敌方增幅预警：敌人拿到增幅时战况条显示「谁拿了什么 → 怎么应对」，浮窗自动弹开",
-  "New: enemy augment alerts with a one-line counter tip"
+  "2.0 测试版：全新情境式界面（选英雄 / 对局 / 三选一 / 阵亡 / 复盘），取消分页，详情收在底部",
+  "下一件装备显示金币进度条；阵亡时倒数复活",
+  "2.0 beta: new context-driven UI, no tabs; gold progress bar; respawn countdown"
  ],
  "files": {
-  "haidou_helper.py": "7eefa9580d9cc4f2b076a01dcb782bc83d255f264a6793aaf0bd5eb215ccfeea",
-  "lang_en.py": "bdbab94fdfb3e1d5f12d52640330a3f621686d049047d77191843f58a560811e",
-  "README.md": "385236296f4aadb55b2ca0a49b53f7d02ff8b28e07a270ca2600c3c7ed1b1440"
+  "haidou_helper.py": "ddadae076cdf1b6c642117ed69672708c714a8326bd32c583a517da7f640a65f",
+  "lang_en.py": "3eef1b5eaf7ee8d572cf37204973b749bc20ee54bf71e1dc7f8bd2a5367599d4",
+  "README.md": "eae363127855cea9af7d5c11a703b8b3573b086f444c6f39d7b3a7bfe59b6aa0"
  }
 }
