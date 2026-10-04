@@ -1,12 +1,13 @@
 {
- "version": "1.18.0",
+ "version": "1.18.1",
  "date": "2026-10-03",
  "notes": [
-  "新增敌方增幅预警：敌人拿到增幅时战况条显示「谁拿了什么 → 怎么应对」，浮窗自动弹开",
-  "New: enemy augment alerts with a one-line counter tip"
+  "修复：选英雄时认不出一开始分配给你的英雄（改问客户端「你现在的英雄」，也会读新的英雄卡片栏位）",
+  "选英雄资料会存一份 last_champselect.json（只在本机），认不出时发给开发者",
+  "Fix: initially assigned champion not detected in champ select"
  ],
  "files": {
-  "haidou_helper.py": "7eefa9580d9cc4f2b076a01dcb782bc83d255f264a6793aaf0bd5eb215ccfeea",
+  "haidou_helper.py": "2a6ab6200c5e0f878fce508104ae2be1347fc5ccd1d4d62bb8821bfb083f9c10",
   "lang_en.py": "bdbab94fdfb3e1d5f12d52640330a3f621686d049047d77191843f58a560811e",
   "README.md": "385236296f4aadb55b2ca0a49b53f7d02ff8b28e07a270ca2600c3c7ed1b1440"
  }
