@@ -1,14 +1,13 @@
 {
- "version": "2.0.0-beta.2",
+ "version": "2.0.0-beta.3",
  "date": "2026-10-03",
  "notes": [
-  "修复：选英雄时认不出一开始分配给你的英雄（改问客户端「你现在的英雄」，也会读新的英雄卡片栏位）",
-  "选英雄资料会存一份 last_champselect.json（只在本机），认不出时发给开发者",
-  "Fix: initially assigned champion not detected in champ select"
+  "浮窗出错时不会再整个卡住（错误记到 ui_error.log）",
+  "Overlay no longer freezes on a UI error; errors go to ui_error.log"
  ],
  "files": {
-  "haidou_helper.py": "212c36d297c22249a2ff396ceb6ccf481e54ea4193cad559df429049ca7fd730",
-  "lang_en.py": "3eef1b5eaf7ee8d572cf37204973b749bc20ee54bf71e1dc7f8bd2a5367599d4",
+  "haidou_helper.py": "a728187bfb25c4789478ba86d0c0e52e0d53a24e962fc5d44b4195879c912428",
+  "lang_en.py": "1b2240b3eb242a9336039f2202b5a10cc4938c74386edc2842351142e2d5843e",
   "README.md": "eae363127855cea9af7d5c11a703b8b3573b086f444c6f39d7b3a7bfe59b6aa0"
  }
 }

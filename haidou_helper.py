@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.0.0-beta.2"
+APP_VERSION = "2.0.0-beta.3"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/beta/version.json",
@@ -5318,13 +5318,31 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
 
     def tick():
         """每秒：阵亡倒数、对局时间"""
-        if st["scene"] == "dead":
+        if st["scene"] == "dead" and current["rec"]:
             set_chip(chip_text("dead"), ORANGE)
             txt, col = mini_text("dead")
             mini.config(text=txt, fg=col)
         root.after(1000, tick)
 
+    def log_ui_error():
+        """界面出错不能让整个浮窗停住：记到 ui_error.log（只在本机），继续跑"""
+        import traceback
+        try:
+            with open(os.path.join(APP_DIR, "ui_error.log"), "a", encoding="utf-8") as f:
+                f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + APP_VERSION + "\n" + traceback.format_exc() + "\n")
+        except OSError:
+            pass
+        set_status(tr("界面出错（已记录 ui_error.log）"))
+        st["status_hold"] = time.time() + 10
+
     def poll():
+        try:
+            poll_once()
+        except Exception:  # noqa
+            log_ui_error()
+        root.after(60 if engine.scanning else 300, poll)     # 识别中刷新快一点
+
+    def poll_once():
         try:
             engine.overlay_rect = (root.winfo_rootx(), root.winfo_rooty(),
                                    root.winfo_rootx() + root.winfo_width(), root.winfo_rooty() + root.winfo_height())
@@ -5387,7 +5405,6 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 if not hold:               # 正在显示的重要消息（识别中、更新结果…）不被一般状态盖掉
                     set_status("" if payload in (tr("监控中"), tr("选英雄中")) else short(payload, 14))
         auto_collapse()
-        root.after(60 if engine.scanning else 300, poll)     # 识别中刷新快一点
 
     set_scale(st["k"])
     st["hold_until"] = time.time() + 5
