@@ -1,13 +1,13 @@
 {
- "version": "1.18.2",
+ "version": "1.18.3",
  "date": "2026-10-03",
  "notes": [
-  "选了「拔剑吧」这类变近战的增幅：远程专属装备（芮兰飓风箭等）降分，九头蛇 / 黑切 / 斯特拉克等近战装加分",
-  "Melee-transform augments now reshape item recommendations"
+  "更多会改变出装的增幅：灵活转换、转换恶作剧、纯粹 - 法师、大绝电脑、基本功夫、溢流、因心成体、强化攻击、瞄准头部、毫发无伤（鞋子也会跟着变）",
+  "More augments now reshape item recs (conversions, mana scaling, crit cap…)"
  ],
  "files": {
-  "haidou_helper.py": "420ecb24cabc58927a935c82b83c5f63e4abb5c3a11e3bb1fcf65e61f120849f",
-  "lang_en.py": "4fe78e5f117d4b28b8fa326023124287706b0a2f3afd10f72c1f1bf79dd4a24f",
-  "README.md": "8238d52d870122a9910e806a0e6593fd8661e13a6bcbe6ef072900aa39b3a99b"
+  "haidou_helper.py": "e38131dbea3631f8ee2e42a73848ad9c33e4077dd2127a6e3b95c30c2ead143b",
+  "lang_en.py": "b6d9f109bbbc463070b363e4f2c9676cb9dad4650a6d0a8b5ab09c370feb973a",
+  "README.md": "a574223dbfa423635fa4d462a2b37b96b2ad35f98c66bcf79f2bdc73a931c039"
  }
 }
