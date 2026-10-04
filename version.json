@@ -1,13 +1,12 @@
 {
- "version": "2.0.0-beta.4",
+ "version": "2.0.0-beta.5",
  "date": "2026-10-03",
  "notes": [
-  "选了「拔剑吧」这类变近战的增幅：远程专属装备降分，近战装加分",
-  "浮窗出错时不会整个卡住（ui_error.log）"
+  "更多会改变出装的增幅：灵活转换、转换恶作剧、纯粹 - 法师、大绝电脑、基本功夫、溢流、因心成体、强化攻击、瞄准头部、毫发无伤"
  ],
  "files": {
-  "haidou_helper.py": "c8b5a54768804fedd91113b842c37c886a245d6731e6360288b4594b5315dd0f",
-  "lang_en.py": "7e2244efa3860e8c1be9b8274f74808ee7935949c5c7be24a743506cf9daab3d",
-  "README.md": "bce83e233e7399fe58e162a1f7a21442e4d3bffcb1a64590ed6f1cf6d5959cce"
+  "haidou_helper.py": "48574f3fd78ec83770bdfced7d36f0077124f3f33a07feba6f11f32f42698bb8",
+  "lang_en.py": "ed1ad4a6d7d5e348d0ace39b147235b79b9605ed3cfc8544f4d0ea380a2aa0aa",
+  "README.md": "8100d22c0b63112c23e6f0d8dccfbf74d6365e935c87d5eb15e520a02b40ff5f"
  }
 }
