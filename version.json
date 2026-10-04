@@ -1,13 +1,13 @@
 {
- "version": "1.16.4",
- "date": "2026-10-02",
+ "version": "1.17.0",
+ "date": "2026-10-03",
  "notes": [
-  "自建数据库：密钥过期后贴上新密钥并保存，会自动重新开始收集（不用再手动勾「启用」）",
-  "Riot DB: saving a new key after expiry re-enables collection automatically"
+  "新增战况条：连招 / 战局 / 威胁 / 玩法，四行字即时更新（⋯ 选单可关）",
+  "New status strip: combo / game state / threats / plan, updated live"
  ],
  "files": {
-  "haidou_helper.py": "076c537bb3ca35a5561c113704bb4fd5c8043ed89951b8d63cc83112dd6c2c79",
-  "lang_en.py": "3592a36107f4cb49f148ec370ae16e7151b67545f23b42cd311a32bce890371d",
-  "README.md": "cd149ec59f266a2c294fd2b044183806986ab179f1d09934425c4b6782726af9"
+  "haidou_helper.py": "51a78d1bffe2f4f574dc344d1095b7e02468370b53ea4d68995497fe3762ad65",
+  "lang_en.py": "9c059dc16f437e95c362aea891e3ddd73274bd2c1edae6cfd8a67ce4f6ec9630",
+  "README.md": "8b1ef2ab532200c3a96daf9d4c6ab0f06e3f833724630e1cb4685677dba40e97"
  }
 }

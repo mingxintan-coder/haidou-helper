@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.16.4"
+APP_VERSION = "1.17.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -2285,6 +2285,7 @@ class Advisor:
             tips.append((70, tr('集火 {0}').format(cn(target.cid)) + (tr('（{0}/{1}，装备 {2:.1f}k）').format(target.kills, target.deaths, val / 1000)
                                                         if val >= 1000 else tr("（最脆的输出位）")), False))
         tname = cn(target.cid) if target else tr("敌方后排")
+        self._focus = cn(target.cid) if target else ""
         protect = [cn(p.cid) for p in allies if self.role_of(p) in ("adc", "mage")]
         front = t["ally_tanks"] or [cn(p.cid) for p in allies if self.role_of(p) in ("tank", "fighter")]
         # 4) 你的打法
@@ -2329,6 +2330,50 @@ class Advisor:
             tips.append((44, tr("敌方有保命增幅 → 击杀要留一段伤害补刀"), False))
         tips.sort(key=lambda x: -x[0])
         return tips[:4]
+
+    # ---------- 战况条：连招 / 战局 / 威胁 / 玩法，每行几个字 ----------
+    def brief(self, me, allies, enemies, t, prof, guide):
+        """回传 [(标签, 文字, 是否紧急)]"""
+        cn = self.gd.champ_name
+        out = []
+        if guide.get("combo_keys"):
+            out.append((tr("连招"), guide["combo_keys"], False))
+        dead_e = sum(1 for e in enemies if e.is_dead)
+        dead_a = sum(1 for p in allies + [me] if p.is_dead)
+        s = me.stats or {}
+        if not me.is_dead and dead_e - dead_a >= 2:
+            state, hot = tr("敌少{0}人 → 推").format(dead_e - dead_a), True
+        elif dead_a - dead_e >= 2:
+            state, hot = tr("我少{0}人 → 退守").format(dead_a - dead_e), True
+        elif not me.is_dead and s.get("maxHealth") and s.get("currentHealth", 1e9) / s["maxHealth"] < 0.3:
+            state, hot = tr("残血 → 后撤"), True
+        elif not me.is_dead and t.get("carry") is not None and t["carry"].is_dead and t["carry"].respawn > 8:
+            state, hot = tr("{0}阵亡 → 开团").format(t["carry_name"]), True
+        else:
+            d = t["power_diff"]
+            lead = tr("领先{0:.1f}k").format(d / 1000) if d > 500 else tr("落后{0:.1f}k").format(-d / 1000) \
+                if d < -500 else tr("均势")
+            state, hot = lead + " · " + "{0}:{1}".format(t["kills_ally"], t["kills_enemy"]), False
+        out.append((tr("战局"), state, hot))
+        if enemies:
+            def pw(e):
+                return self.power(e) * (1 + self.bal(e.cid, "damageDealt")) * \
+                    (0.6 if "Tank" in (self.gd.champ(e.cid) or {}).get("tags", []) else 1.0)
+            tags = [(t["burst"], tr("爆发")), (t["enemy_engage"], tr("开团")), (t["cc"], tr("控制")),
+                    (t["healers"], tr("回复")), (t["enemy_poke"], tr("消耗"))]
+            role = {"tank": tr("坦"), "fighter": tr("战士"), "adc": tr("输出"), "mage": tr("输出"),
+                    "assassin": tr("刺客"), "support": tr("辅助")}
+            parts = []
+            for e in sorted(enemies, key=lambda e: (not e.is_dead, pw(e)), reverse=True)[:2]:   # 活着的优先
+                nm = cn(e.cid)
+                tag = next((lb for names, lb in tags if nm in names), role[self.role_of(e)])
+                parts.append(nm + " " + tag + (tr("(亡)") if e.is_dead else ""))
+            out.append((tr("威胁"), " · ".join(parts), False))
+        style = {"tank": tr("先手开团"), "fighter": tr("侧翼进场"), "adc": tr("躲前排后输出"),
+                 "mage": tr("远距消耗"), "assassin": tr("等控制交完再切"), "support": tr("保护主C")}[self.role_of(me, prof)]
+        focus = getattr(self, "_focus", "")
+        out.append((tr("玩法"), style + (" · " + tr("打{0}").format(focus) if focus else ""), False))
+        return out
 
     # ---------- 英雄玩法 / 连招 ----------
     MOBILITY = r"冲刺|突进|跳跃|跃向|跃起|跃至|闪烁|传送|位移|冲向|冲锋|飞向|瞬移|翻滚|(?i:dash|leap|lunge|blink|teleport|jump|charges?\b)"
@@ -2391,6 +2436,9 @@ class Advisor:
         else:
             combos = []
         g["combos"] = [(self.combo_text(c, kit), note) for c, note in combos[:2]]
+        if combos:
+            short = {"A": tr("平A"), "闪": tr("闪"), "草": tr("草")}
+            g["combo_keys"] = "→".join(short.get(x.strip(), x.strip()) for x in combos[0][0].split(">"))
         if self.stats and self.stats.balance:
             b = self.stats.balance.get(me.cid.lower()) or {}
             label = {"damageDealt": tr("造成伤害"), "damageTaken": tr("承受伤害"), "abilityHaste": tr("技能急速"),
@@ -2482,10 +2530,12 @@ class Advisor:
             shop = self.shopping_plan(me, gold, items)
             shop["respawn"] = me.respawn
             shop["names"] = [self.gd.item_name(i) for i, _ in shop["buy"]]
+        guide = self.champ_guide(me, cs, prof)
         return {"items": items, "augs": augs, "tips": tips, "cand_mode": bool(cands), "auto_cand": auto, "shop": shop,
+                "brief": self.brief(me, allies, enemies, t, prof, guide),
                 "stats_label": self.stats.label() if (self.stats and cs) else "",
                 "my_augs": [a["name"] for a in my_augs],
-                "guide": self.champ_guide(me, cs, prof), "game_time": me.game_time,
+                "guide": guide, "game_time": me.game_time,
                 "summary": summary, "gold": gold, "mode": mode}
 
 
@@ -4497,6 +4547,32 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     wraps.append(summary)
     alert = tk.Label(body, text="", bg="#3a2412", fg=ORANGE, font=F["tip"], anchor="w", justify="left", padx=8, pady=3)
     wraps.append(alert)
+    # 战况条：连招 / 战局 / 威胁 / 玩法（一直显示、即时更新）
+    st["brief"] = load_ui_cfg().get("brief", True)
+    brief_box = tk.Frame(body, bg=CARD, padx=8, pady=4)
+    brief_rows = []
+    for _ in range(4):
+        lb = tk.Label(brief_box, text="", bg=CARD, fg=GOLD, font=F["small"], anchor="w")
+        tx = tk.Label(brief_box, text="", bg=CARD, fg=FG, font=F["tip"], anchor="w", justify="left")
+        brief_rows.append((lb, tx))
+        wraps.append(tx)
+
+    def show_brief(items):
+        if not st["brief"] or not items:
+            brief_box.pack_forget()
+            return False
+        for i, (lb, tx) in enumerate(brief_rows):
+            if i < len(items):
+                label, text, hot = items[i]
+                lb.config(text=label)
+                tx.config(text=text, fg=ORANGE if hot else FG)
+                lb.grid(row=i, column=0, sticky="nw", padx=(0, 8))
+                tx.grid(row=i, column=1, sticky="w")
+            else:
+                lb.grid_forget()
+                tx.grid_forget()
+        brief_box.pack(fill="x", padx=8, pady=(5, 0), before=tabs_bar)
+        return True
 
     tabs_bar = tk.Frame(body, bg=BG)
     tabs_bar.pack(fill="x", padx=6, pady=(6, 2))
@@ -4706,6 +4782,16 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         br.add_radiobutton(label=tr("全部分段"), variable=bracket_var, value="all", command=lambda: switch_bracket("all"))
         br.add_radiobutton(label=tr("高分段"), variable=bracket_var, value="high", command=lambda: switch_bracket("high"))
         menu.add_cascade(label=tr("胜率数据分段"), menu=br)
+    brief_var = tk.BooleanVar(value=st["brief"])
+
+    def toggle_brief():
+        st["brief"] = brief_var.get()
+        c = load_ui_cfg()
+        c["brief"] = st["brief"]
+        save_ui_cfg(c)
+        if current.get("rec"):
+            show(current["rec"], flash=False)
+    menu.add_checkbutton(label=tr("显示战况条（连招 / 战局 / 威胁 / 玩法）"), variable=brief_var, command=toggle_brief)
     menu.add_checkbutton(label=tr("一直自动识别三选一（较耗 CPU）"), variable=auto_var, command=toggle_auto)
     menu.add_command(label=tr("手动输入增幅…"), command=lambda: open_manual())
     habits_var = tk.BooleanVar(value=engine.habits.enabled)
@@ -4923,6 +5009,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         needs = sel.get("needs") or []
         summary.config(text=tr("选英雄") + (" · " + tr('队伍缺：{0}').format(tr("、").join(needs)) if needs else ""))
         alert.pack_forget()
+        brief_box.pack_forget()
+        summary.pack(fill="x", pady=(5, 0), before=tabs_bar)
         shop_lbl.pack_forget()
         for lb in tip_lbls:
             lb.pack_forget()
@@ -4970,10 +5058,15 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         mine_names = rec.get("my_augs", [])
         manual_vals["mine"] = tr("，").join(mine_names)
         summary.config(text=rec.get("summary", "").replace(tr("｜"), " · ").replace(tr("网上 "), ""))
-        # 紧急提示（人数差、残血…）
+        has_brief = show_brief(rec.get("brief"))
+        if has_brief:                              # 战况条已含局势，摘要行收起来省空间
+            summary.pack_forget()
+        else:
+            summary.pack(fill="x", pady=(5, 0), before=tabs_bar)
+        # 紧急提示（人数差、残血…）；战况条已经显示了就不重复
         tips = rec.get("tips", [])
         urgent = [x for x in tips if x[2]]
-        if urgent:
+        if urgent and not has_brief:
             alert.config(text="⚠ " + urgent[0][1])
             alert.pack(fill="x", padx=8, pady=(4, 0), after=summary)
         else:
@@ -4990,7 +5083,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         else:
             shop_lbl.pack_forget()
         # 出装页
-        normal = [x for x in tips if not x[2]][:2]
+        normal = [] if has_brief else [x for x in tips if not x[2]][:2]
         for i, lb in enumerate(tip_lbls):
             lb.pack_forget()
             if i < len(normal):
@@ -5054,7 +5147,11 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 parts.append(f"▶ {its[0]['name']} {its[0]['score']}")
             if boots:
                 parts.append(boots["name"])
-            mini.config(text="   ".join(parts) or tr("等待推荐…"), fg=FG)
+            line = "   ".join(parts) or tr("等待推荐…")
+            bf = dict((x[0], x[1]) for x in rec.get("brief") or [])
+            thr = bf.get(tr("威胁"), "").split(" · ")[0]
+            extra = "   ".join(x for x in (bf.get(tr("连招")), "⚠" + thr if thr else "") if x)
+            mini.config(text=line + ("\n" + extra if st["brief"] and extra else ""), fg=FG)
         # 只有和你有关的推荐真的变了才弹开（别人买装备、升级不弹）
         its_key = tuple(x["name"] for x in its[:2])
         key = (its_key, boots["name"] if boots else None, bool(cand),
