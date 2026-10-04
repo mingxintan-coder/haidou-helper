@@ -1,14 +1,13 @@
 {
- "version": "1.18.1",
+ "version": "1.18.2",
  "date": "2026-10-03",
  "notes": [
-  "修复：选英雄时认不出一开始分配给你的英雄（改问客户端「你现在的英雄」，也会读新的英雄卡片栏位）",
-  "选英雄资料会存一份 last_champselect.json（只在本机），认不出时发给开发者",
-  "Fix: initially assigned champion not detected in champ select"
+  "选了「拔剑吧」这类变近战的增幅：远程专属装备（芮兰飓风箭等）降分，九头蛇 / 黑切 / 斯特拉克等近战装加分",
+  "Melee-transform augments now reshape item recommendations"
  ],
  "files": {
-  "haidou_helper.py": "2a6ab6200c5e0f878fce508104ae2be1347fc5ccd1d4d62bb8821bfb083f9c10",
-  "lang_en.py": "bdbab94fdfb3e1d5f12d52640330a3f621686d049047d77191843f58a560811e",
-  "README.md": "385236296f4aadb55b2ca0a49b53f7d02ff8b28e07a270ca2600c3c7ed1b1440"
+  "haidou_helper.py": "420ecb24cabc58927a935c82b83c5f63e4abb5c3a11e3bb1fcf65e61f120849f",
+  "lang_en.py": "4fe78e5f117d4b28b8fa326023124287706b0a2f3afd10f72c1f1bf79dd4a24f",
+  "README.md": "8238d52d870122a9910e806a0e6593fd8661e13a6bcbe6ef072900aa39b3a99b"
  }
 }
