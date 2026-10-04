@@ -1,13 +1,13 @@
 {
- "version": "1.17.0",
+ "version": "1.18.0",
  "date": "2026-10-03",
  "notes": [
-  "新增战况条：连招 / 战局 / 威胁 / 玩法，四行字即时更新（⋯ 选单可关）",
-  "New status strip: combo / game state / threats / plan, updated live"
+  "新增敌方增幅预警：敌人拿到增幅时战况条显示「谁拿了什么 → 怎么应对」，浮窗自动弹开",
+  "New: enemy augment alerts with a one-line counter tip"
  ],
  "files": {
-  "haidou_helper.py": "51a78d1bffe2f4f574dc344d1095b7e02468370b53ea4d68995497fe3762ad65",
-  "lang_en.py": "9c059dc16f437e95c362aea891e3ddd73274bd2c1edae6cfd8a67ce4f6ec9630",
-  "README.md": "8b1ef2ab532200c3a96daf9d4c6ab0f06e3f833724630e1cb4685677dba40e97"
+  "haidou_helper.py": "7eefa9580d9cc4f2b076a01dcb782bc83d255f264a6793aaf0bd5eb215ccfeea",
+  "lang_en.py": "bdbab94fdfb3e1d5f12d52640330a3f621686d049047d77191843f58a560811e",
+  "README.md": "385236296f4aadb55b2ca0a49b53f7d02ff8b28e07a270ca2600c3c7ed1b1440"
  }
 }

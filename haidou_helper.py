@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.17.0"
+APP_VERSION = "1.18.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -2331,8 +2331,44 @@ class Advisor:
         tips.sort(key=lambda x: -x[0])
         return tips[:4]
 
+    # ---------- 敌方增幅预警 ----------
+    EAUG_W = {"SURVIVE": 2.0, "SUSTAIN": 1.5, "HEALSHIELD": 1.5, "TRUE": 1.5, "MAXHP_DMG": 1.5, "ULT": 1.0,
+              "TENACITY": 1.0, "ARMOR": 1.0, "MR": 1.0, "HP": 0.8, "CRIT": 0.8, "AS": 0.8, "ONHIT": 0.8,
+              "AD": 0.6, "AP": 0.6, "LETHAL": 0.8, "MPEN": 0.8, "MS": 0.5, "HASTE": 0.5}
+
+    def enemy_aug_alerts(self, me, enemies, manual_enemy):
+        """敌方每个增幅：危险度 + 一句怎么应对。回传按危险度排序的 [{"who","aug","fix","danger","key"}]"""
+        ad_me = self.dmg_split(me) > 0.5
+        has_ah = any("ANTIHEAL" in self.gd.item_vec(i)[1] for i in me.items)
+        fixes = {
+            "SUSTAIN": tr("已有重伤") if has_ah else tr("出重伤"),
+            "HEALSHIELD": tr("已有重伤") if has_ah else tr("出重伤"),
+            "SURVIVE": tr("留伤害补刀"), "TRUE": tr("双抗没用，堆血"), "MAXHP_DMG": tr("别堆血，出双抗"),
+            "ULT": tr("躲他大招"), "TENACITY": tr("控制会变短"),
+            "ARMOR": tr("出破甲") if ad_me else tr("打别人"), "HP": tr("出百分比伤害"),
+            "MR": tr("出法穿") if not ad_me else tr("打别人"),
+            "CRIT": tr("出护甲"), "AS": tr("出护甲"), "ONHIT": tr("出护甲"), "AD": tr("出护甲"),
+            "LETHAL": tr("出护甲"), "AP": tr("出魔抗"), "MPEN": tr("出魔抗"),
+            "MS": tr("留控制给他"), "HASTE": tr("别站一起"),
+        }
+        pairs = [(p, n) for p in enemies for n in p.augments] + [(None, n) for n in manual_enemy]
+        out, seen = [], set()
+        for p, n in pairs:
+            a = self.find_aug(n)
+            if not a or (p and p.cid, a["name"]) in seen:
+                continue
+            seen.add((p and p.cid, a["name"]))
+            tags = a.get("tags", {})
+            ranked = sorted((k for k in tags if k in self.EAUG_W), key=lambda k: -self.EAUG_W[k] * tags[k])
+            danger = 0.7 * a.get("rarity", 0) + sum(self.EAUG_W.get(k, 0) * min(2, v) for k, v in tags.items())
+            out.append({"who": self.gd.champ_name(p.cid) if p else tr("敌方"), "aug": a["name"],
+                        "fix": fixes[ranked[0]] if ranked else "", "danger": danger,
+                        "key": (p.cid if p else "", a["name"])})
+        out.sort(key=lambda x: -x["danger"])
+        return out
+
     # ---------- 战况条：连招 / 战局 / 威胁 / 玩法，每行几个字 ----------
-    def brief(self, me, allies, enemies, t, prof, guide):
+    def brief(self, me, allies, enemies, t, prof, guide, ealerts=()):
         """回传 [(标签, 文字, 是否紧急)]"""
         cn = self.gd.champ_name
         out = []
@@ -2373,6 +2409,18 @@ class Advisor:
                  "mage": tr("远距消耗"), "assassin": tr("等控制交完再切"), "support": tr("保护主C")}[self.role_of(me, prof)]
         focus = getattr(self, "_focus", "")
         out.append((tr("玩法"), style + (" · " + tr("打{0}").format(focus) if focus else ""), False))
+        if ealerts:
+            now = time.time()
+            first = self.__dict__.setdefault("_eaug_seen", {})
+            for x in ealerts:
+                first.setdefault(x["key"], now)
+            # 刚出现的（30 秒内）排最前、标橙色
+            fresh = [x for x in ealerts if now - first[x["key"]] < 30]
+            top = (fresh or ealerts)[0]
+            txt = tr("{0}「{1}」").format(top["who"], top["aug"]) + (" → " + top["fix"] if top["fix"] else "")
+            if len(ealerts) > 1:
+                txt += " +{0}".format(len(ealerts) - 1)
+            out.append((tr("敌增幅"), txt, bool(fresh)))
         return out
 
     # ---------- 英雄玩法 / 连招 ----------
@@ -2531,8 +2579,10 @@ class Advisor:
             shop["respawn"] = me.respawn
             shop["names"] = [self.gd.item_name(i) for i, _ in shop["buy"]]
         guide = self.champ_guide(me, cs, prof)
+        ealerts = self.enemy_aug_alerts(me, enemies, manual.get("enemy", []))
         return {"items": items, "augs": augs, "tips": tips, "cand_mode": bool(cands), "auto_cand": auto, "shop": shop,
-                "brief": self.brief(me, allies, enemies, t, prof, guide),
+                "brief": self.brief(me, allies, enemies, t, prof, guide, ealerts), "enemy_augs": ealerts,
+                "eaug_visible": any(p.augments for p in allies + enemies),
                 "stats_label": self.stats.label() if (self.stats and cs) else "",
                 "my_augs": [a["name"] for a in my_augs],
                 "guide": guide, "game_time": me.game_time,
@@ -3431,10 +3481,19 @@ class Engine:
         self.fails = 0
         if not self.connected or self.last_state is None:
             self.advisor._ema_cid = None                # 新的一局：平滑从头开始
+            self.advisor._eaug_seen = {}
+            self._dumped = False
         self.connected = True
         if state[2] is None:
             return ("status", tr("已连接，等待玩家数据…"))
         self.check_game_end(raw)
+        if state[2].game_time > 420 and not getattr(self, "_dumped", False) and not isinstance(self.source, MockGame):
+            self._dumped = True             # 存一份这局的游戏资料（只在本机），方便查游戏有没有提供敌方增幅
+            try:
+                with open(os.path.join(APP_DIR, "last_live.json"), "w", encoding="utf-8") as f:
+                    json.dump(raw, f, ensure_ascii=False)
+            except OSError:
+                pass
         # 三选一超过 20 秒没再被识别看到（画面早就关了、但没确认到关闭）：自动清掉，免得一直停在增幅页
         if self.manual.get("auto") and time.time() - getattr(self, "_auto_t", 0) > 20:
             self.set_auto([])
@@ -4551,7 +4610,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     st["brief"] = load_ui_cfg().get("brief", True)
     brief_box = tk.Frame(body, bg=CARD, padx=8, pady=4)
     brief_rows = []
-    for _ in range(4):
+    for _ in range(5):
         lb = tk.Label(brief_box, text="", bg=CARD, fg=GOLD, font=F["small"], anchor="w")
         tx = tk.Label(brief_box, text="", bg=CARD, fg=FG, font=F["tip"], anchor="w", justify="left")
         brief_rows.append((lb, tx))
@@ -4650,6 +4709,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     aug_rows = make_rows(pages["augs"], 4)
     mine_lbl = tk.Label(pages["augs"], text="", bg=BG, fg=DIM, font=F["small"], anchor="w", justify="left")
     wraps.append(mine_lbl)
+    enemy_lbl = tk.Label(pages["augs"], text="", bg=BG, fg=ORANGE, font=F["small"], anchor="w", justify="left")
+    wraps.append(enemy_lbl)
 
     # 玩法页
     guide_lbl = tk.Label(pages["guide"], text="", bg=CARD, fg=FG, font=F["tip"], anchor="w", justify="left",
@@ -5097,6 +5158,18 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                         fg=GOLD if cand else SUB)
         mine_lbl.config(text=tr("已选增幅：") + (tr("、").join(mine_names) if mine_names else tr("（还没有）")))
         mine_lbl.pack(fill="x", pady=(2, 0))
+        ea = rec.get("enemy_augs") or []
+        if ea:
+            enemy_lbl.config(text=tr("敌方增幅：") + "\n" + "\n".join(
+                tr("{0}「{1}」").format(x["who"], x["aug"]) + (" → " + x["fix"] if x["fix"] else "") for x in ea[:6]))
+            enemy_lbl.pack(fill="x", pady=(2, 0), after=mine_lbl)
+        elif not rec.get("eaug_visible") and rec.get("game_time", 0) > 420:
+            enemy_lbl.config(text=tr("游戏没提供敌方增幅：可在 ⋯ → 手动输入增幅 填写"), fg=DIM)
+            enemy_lbl.pack(fill="x", pady=(2, 0), after=mine_lbl)
+        else:
+            enemy_lbl.pack_forget()
+        if ea:
+            enemy_lbl.config(fg=ORANGE)
         fill_rows(aug_rows, rec.get("augs", [])[:3 if cand else 4], cand, before=mine_lbl)
         # 玩法页
         g = rec.get("guide") or {}
@@ -5150,12 +5223,15 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             line = "   ".join(parts) or tr("等待推荐…")
             bf = dict((x[0], x[1]) for x in rec.get("brief") or [])
             thr = bf.get(tr("威胁"), "").split(" · ")[0]
-            extra = "   ".join(x for x in (bf.get(tr("连招")), "⚠" + thr if thr else "") if x)
+            hot_aug = next((x[1] for x in rec.get("brief") or [] if x[0] == tr("敌增幅") and x[2]), None)
+            extra = "⚠" + hot_aug if hot_aug else \
+                "   ".join(x for x in (bf.get(tr("连招")), "⚠" + thr if thr else "") if x)
             mini.config(text=line + ("\n" + extra if st["brief"] and extra else ""), fg=FG)
         # 只有和你有关的推荐真的变了才弹开（别人买装备、升级不弹）
         its_key = tuple(x["name"] for x in its[:2])
         key = (its_key, boots["name"] if boots else None, bool(cand),
-               tuple(x["name"] for x in rec.get("augs", [])[:3]) if cand else None)
+               tuple(x["name"] for x in rec.get("augs", [])[:3]) if cand else None,
+               tuple(sorted(x["key"] for x in rec.get("enemy_augs") or [])))     # 敌方拿到新增幅也弹开
         if shop_text and not st.get("shop_shown"):       # 刚阵亡：展开到复活为止
             st["hold_until"] = time.time() + min(30, max(5, shop.get("respawn", 8)))
             set_expanded(True)
