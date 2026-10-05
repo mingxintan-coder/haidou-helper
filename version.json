@@ -1,14 +1,13 @@
 {
- "version": "1.20.3",
+ "version": "1.21.0",
  "date": "2026-10-04",
  "notes": [
-  "修复：选英雄时认不出分给你挑的 1~3 个英雄（海斗的「子集选英雄」，改问客户端你能选哪几个）",
-  "选英雄画面一定显示你能挑的英雄，并标出「分给你的」/「备选席」",
-  "Fix: champ select now reads the 1–3 champions offered to you in Mayhem"
+  "练习模式新增「向高手学」：每局找出比你打得好的玩家（全场最强 + 同定位最强），总结出装顺序、强势期、少死，变成练习题",
+  "Practice mode: learn from the game's best players (build order, power spikes, deaths) as drills"
  ],
  "files": {
-  "haidou_helper.py": "05cedb3b0b800bb2e6912d61cf6c49d26793c84e6bf14d79cdfb3ce9c6e8af66",
-  "lang_en.py": "2300ac49cee48a3e767a3ba7994344e083d31a768329ab0b6bc783ae67e52586",
-  "README.md": "2a390dc87c76b79ef65c2e4f8ec74f7c05eec3c51dfaa544d47d062182f6e3b7"
+  "haidou_helper.py": "11db2fec6757d1a5b7c31d18fc1030151c0d22216d3cf719ecc24ee8ab257981",
+  "lang_en.py": "59d2950fcbcd762e7807805f4bfca9e85e5aa40391c73449947982b102dae3af",
+  "README.md": "138755555ac851fc07e6d17115b24e2a145ad0e003e87511afdc4e7f7fd8c018"
  }
 }

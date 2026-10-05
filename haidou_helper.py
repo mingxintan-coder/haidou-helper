@@ -35,7 +35,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.20.3"
+APP_VERSION = "1.21.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -3581,6 +3581,10 @@ class Engine:
             g = self.cur_game = {"champ": champ, "t": time.strftime("%Y-%m-%d %H:%M"), "ts": time.time(), "items": [],
                                  "augs": [], "offered": [], "win": None, "len": 0}
         g["len"] = int(me.game_time)
+        try:
+            self.track_roster(g, raw, [me] + state[3] + state[4], me)
+        except Exception:  # noqa
+            pass
         if me.is_dead and not g.get("was_dead"):        # 教学：带着保命主动装备（中娅之类）阵亡几次
             sv = self.advisor.stasis_key(me)
             if sv:
@@ -3634,12 +3638,39 @@ class Engine:
                 if a not in g["offered"]:
                     g["offered"].append(a)
 
+    def track_roster(self, g, raw, players, me):
+        """高手经验用：记下每个玩家的成品装备（第几分钟出的）、K/D/A，以及击杀事件"""
+        ros = g.setdefault("roster", {})
+        minute = int(me.game_time // 60)
+        for p in players:
+            key = (p.name or "").split("#")[0]
+            r = ros.setdefault(key, {"champ": (self.gd.champ(p.cid) or {}).get("id", p.cid), "team": str(p.team),
+                                     "ally": p.team == me.team, "me": p is me, "items": []})
+            have = {i for i, _ in r["items"]}
+            for i in p.items:
+                if self.gd.is_completed(i) and not self.gd.is_boots(i) and i not in have:
+                    r["items"].append((i, minute))
+            r.update({"k": p.kills, "d": p.deaths, "a": p.assists, "lv": p.level})
+        kills = []
+        for ev in ((raw.get("events") or {}).get("Events") or []):
+            if ev.get("EventName") == "ChampionKill":
+                kills.append((int(ev.get("EventTime", 0)), ev.get("KillerName", ""), ev.get("VictimName", ""),
+                              list(ev.get("Assisters") or [])))
+        if kills:
+            g["kills"] = kills
+
     def check_game_end(self, raw):
         """每次读取都看有没有 GameEnd 事件（不管推荐有没有变化）"""
         if self._ended or self.cur_game is None:
             return
         for ev in ((raw.get("events") or {}).get("Events") or []):
             if ev.get("EventName") == "GameEnd":
+                try:                       # 结束那一刻的最终 K/D/A 和装备
+                    st0 = parse_live(raw)
+                    if st0[2] is not None:
+                        self.track_roster(self.cur_game, raw, [st0[2]] + st0[3] + st0[4], st0[2])
+                except Exception:  # noqa
+                    pass
                 self.finish_game(str(ev.get("Result", "")).lower().startswith("win"))
                 self._ended = True
                 break
@@ -3649,13 +3680,81 @@ class Engine:
         self._last_top = self._last_offer = self._items_snap = self._offer_snap = None
         if g and g["len"] >= 300:           # 打了 5 分钟以上的才算（重开、掉线不记）
             g["win"] = win
-            self.habits.add_game(g)
+            try:
+                g["mvp"] = self.mvp_lessons(g)
+            except Exception:  # noqa
+                g["mvp"] = []
             try:
                 g["practice_new"] = self.practice.add_from_game(g, self.gd)
             except Exception:  # noqa
                 g["practice_new"] = 0
-            self.q.put(("review", self.review(g)))
+            rv = self.review(g)
+            for k in ("roster", "kills", "was_dead"):   # 只在这局分析用，不存进习惯记录（太大）
+                g.pop(k, None)
+            g["mvp"] = [{k: m[k] for k in ("champ", "k", "d", "a", "lines")} for m in g.get("mvp") or []]
+            self.habits.add_game(g)
+            self.q.put(("review", rv))
             self.import_history_async(delay=60)    # 客户端结算后会更新对局记录，补上编号以免重复
+
+    def mvp_lessons(self, g):
+        """这局表现比你好的玩家：全场最强 + 和你同定位里最强（最多 2 个），他们做对了什么。回传 [dict]
+           表现分 = (K + 0.7A) / (D + 1) × (0.5 + 参团率)；要比你高 10% 以上、而且 K+A ≥ 8 才算"""
+        ros = g.get("roster") or {}
+        if len(ros) < 4:
+            return []
+        team_k = {}
+        for r in ros.values():
+            team_k[r["team"]] = team_k.get(r["team"], 0) + r.get("k", 0)
+
+        def perf(r):
+            kp = min(1.0, (r.get("k", 0) + r.get("a", 0)) / max(1, team_k.get(r["team"], 0)))
+            return (r.get("k", 0) + 0.7 * r.get("a", 0)) / (r.get("d", 0) + 1) * (0.5 + kp), kp
+        me_name = next((n for n, r in ros.items() if r.get("me")), None)
+        my_perf = perf(ros[me_name])[0] if me_name else 0
+        others = [(n, r) for n, r in ros.items() if not r.get("me") and r.get("k", 0) + r.get("a", 0) >= 8
+                  and perf(r)[0] > my_perf * 1.1]           # 比你打得好（差不多的不算）
+        if not others:
+            return []
+
+        def role(r):
+            return self.advisor.role_of(Player("", r["champ"], [], ""))
+        picks = [max(others, key=lambda x: perf(x[1])[0])]          # 全场最强
+        if me_name:                                                 # 再加和你同定位里最强的（出装更能照抄）
+            mine_role = role(ros[me_name])
+            same = [x for x in others if role(x[1]) == mine_role and x[0] != picks[0][0]]
+            if same and role(picks[0][1]) != mine_role:
+                picks.append(max(same, key=lambda x: perf(x[1])[0]))
+        return [self._mvp_desc(n, r, perf(r)[1], g, ros, me_name, same_role=(i == 1)) for i, (n, r) in enumerate(picks)]
+
+    def _mvp_desc(self, name, best, kp, g, ros, me_name, same_role=False):
+        gd = self.gd
+        mins = max(1.0, g.get("len", 0) / 60)
+        champ = gd.champ_name(best["champ"])
+        kills = g.get("kills") or []
+        lines = [(tr("和你同定位：") if same_role else "") + tr("{0}（{1}）{2}/{3}/{4}，参团率 {5:.0f}%").format(
+            champ, tr("队友") if best.get("ally") else tr("对手"), best.get("k", 0), best.get("d", 0), best.get("a", 0), kp * 100)]
+        build = best.get("items", [])
+        if build:
+            lines.append(tr("出装：") + " → ".join("{0}（{1}′）".format(gd.item_name(i), m) for i, m in build[:6]))
+        # 强势期：出了哪件之后 5 分钟内拿最多人头
+        spike = None
+        for i, m in build:
+            n = sum(1 for t, k, _, _ in kills if k == name and m * 60 <= t < (m + 5) * 60)
+            if n >= 3 and (spike is None or n > spike[2]):
+                spike = (i, m, n)
+        if spike:
+            lines.append(tr("强势期：第 {0} 分钟出了{1}之后，5 分钟内拿了 {2} 个人头").format(spike[1], gd.item_name(spike[0]), spike[2]))
+        d10 = best.get("d", 0) / mins * 10
+        if me_name:
+            my_d10 = ros[me_name].get("d", 0) / mins * 10
+            if my_d10 - d10 >= 1.0:
+                lines.append(tr("死得少：每 10 分钟死 {0:.1f} 次（你 {1:.1f} 次）— 活着才能输出").format(d10, my_d10))
+            hit_me = sum(1 for t, k, v, _ in kills if k == name and v == me_name)
+            if not best.get("ally") and hit_me >= 2:
+                lines.append(tr("他杀了你 {0} 次：他出了{1}之后要避开正面").format(
+                    hit_me, gd.item_name(spike[0]) if spike else (gd.item_name(build[0][0]) if build else tr("核心装"))))
+        return {"name": name, "champ": best["champ"], "champ_name": champ, "k": best.get("k", 0), "d": best.get("d", 0),
+                "a": best.get("a", 0), "build": build, "spike": spike, "lines": lines}
 
     def review(self, g):
         """赛后复盘的一段文字"""
@@ -3689,6 +3788,8 @@ class Engine:
                     break
         if practice:
             detail = (detail + "\n" if detail else "") + tr("下局练习：") + practice
+        for mv in g.get("mvp") or []:
+            detail = (detail + "\n" if detail else "") + tr("值得学：") + mv["lines"][0]
         if g.get("practice_new"):
             detail = (detail + "\n" if detail else "") + tr("这局的失误变成了 {0} 道练习题：点这里或 ⋯ → 练习模式").format(g["practice_new"])
         return {"text": head + (" · " + " · ".join(parts) if parts else ""), "detail": detail,
@@ -4011,6 +4112,18 @@ class PracticeStore:
             new.append({"type": "item", "champ": champ, "t": q["t"], "you": q["bought"], "owned": q.get("owned", []),
                         "options": opts, "answer": q["opts"][0]["name"],
                         "explain": {o["name"]: o.get("reason", "") for o in q["opts"]}})
+        for mv in [m for m in (g.get("mvp") or []) if m.get("build")]:
+            # 高手题：他关键的那件（强势期那件，没有就第一件）是什么？干扰选项＝属性最像、他没出的成品装
+            i, m = (mv["spike"][0], mv["spike"][1]) if mv.get("spike") else tuple(mv["build"][0])
+            idx = [x for x, _ in mv["build"]].index(i) + 1
+            vi = norm({d: v for d, v in gd.item_vec(i)[0].items() if d in BUILD_DIMS})
+            pool = [x for x in gd.candidate_items(ITEM_MAP["aram"]) if x not in {y for y, _ in mv["build"]}
+                    and not gd.is_boots(x)]
+            pool.sort(key=lambda x: -cosine(vi, norm({d: v for d, v in gd.item_vec(x)[0].items() if d in BUILD_DIMS})))
+            opts = [gd.item_name(i)] + [gd.item_name(x) for x in pool[:2]]
+            new.append({"type": "mvp", "champ": champ, "t": m, "options": opts, "answer": gd.item_name(i),
+                        "q_champ": mv["champ_name"], "kda": "{0}/{1}/{2}".format(mv["k"], mv["d"], mv["a"]), "nth": idx,
+                        "lessons": mv["lines"], "explain": {}})
         da = g.get("died_active") or {}
         if da:
             name, n = max(da.items(), key=lambda x: x[1])
@@ -5358,7 +5471,10 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             if c["type"] == "react":
                 react_drill(c, c.get("key", "2"), c.get("item", ""))
                 return
-            if c["type"] == "aug":
+            if c["type"] == "mvp":
+                q = tr("向高手学：这局最强的是{0}（{1}）。他第 {2} 件成品（第 {3} 分钟）出了什么？").format(
+                    c["q_champ"], c["kda"], c["nth"], c["t"])
+            elif c["type"] == "aug":
                 q = tr("{0} · 第 {1} 分钟的三选一：哪张最好？").format(c["champ"], c["t"])
             else:
                 q = tr("{0} · 第 {1} 分钟，你身上有 {2}。下一件买什么？").format(
@@ -5378,8 +5494,13 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 for name, b in btns.items():
                     b.unbind("<Button-1>")
                     b.config(cursor="", bg="#1d3b2a" if name == c["answer"] else "#3b1d1d" if name == o else CARD)
-                res = tr("✓ 答对了") if ok else tr("✗ 推荐是「{0}」").format(c["answer"])
+                res = tr("✓ 答对了") if ok else (tr("✗ 他出的是「{0}」") if c["type"] == "mvp" else tr("✗ 推荐是「{0}」")).format(c["answer"])
                 lab(body_f, res, "name", GREEN if ok else ORANGE, pady=(8, 2))
+                if c["type"] == "mvp":           # 高手经验：整局的出装、强势期、少死…
+                    for ln in c.get("lessons", []):
+                        lab(body_f, "·" + ln, "small", FG)
+                    button(body_f, tr("下一题 →"), next_card)
+                    return
                 for name in [c["answer"]] + [x for x in c["options"] if x != c["answer"]]:
                     why = (c.get("explain") or {}).get(name) or (tr("不在当时推荐的前 3 名") if name == c.get("you") else "")
                     mark = "★" if name == c["answer"] else "·"     # 不留空格：中文换行才不会把符号单独切一行
