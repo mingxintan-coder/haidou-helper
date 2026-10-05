@@ -1,13 +1,13 @@
 {
- "version": "1.21.0",
+ "version": "1.21.1",
  "date": "2026-10-04",
  "notes": [
-  "练习模式新增「向高手学」：每局找出比你打得好的玩家（全场最强 + 同定位最强），总结出装顺序、强势期、少死，变成练习题",
-  "Practice mode: learn from the game's best players (build order, power spikes, deaths) as drills"
+  "「向高手学」改用每 10 分钟净贡献：击杀逐笔分功劳（击杀 0.5、助攻平分 0.5）减去死亡，再做信度修正；不再被大乱斗里廉价的助攻灌水",
+  "MVP score is now fair-share net contribution per 10 min with credibility shrinkage"
  ],
  "files": {
-  "haidou_helper.py": "11db2fec6757d1a5b7c31d18fc1030151c0d22216d3cf719ecc24ee8ab257981",
-  "lang_en.py": "59d2950fcbcd762e7807805f4bfca9e85e5aa40391c73449947982b102dae3af",
-  "README.md": "138755555ac851fc07e6d17115b24e2a145ad0e003e87511afdc4e7f7fd8c018"
+  "haidou_helper.py": "c7666a3f0de081071c5adbd946128d026c585d64201396ca8ce51bd48d3eefcb",
+  "lang_en.py": "a753622da0d9138487044aaacff4cf133e5d374360e15864b34cb2cfe57c7a01",
+  "README.md": "30b86ecfc92337e0cef91a529f4058084ae280bfd10a14addefc78266ce3d692"
  }
 }

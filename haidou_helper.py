@@ -35,7 +35,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.21.0"
+APP_VERSION = "1.21.1"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -3696,43 +3696,79 @@ class Engine:
             self.q.put(("review", rv))
             self.import_history_async(delay=60)    # 客户端结算后会更新对局记录，补上编号以免重复
 
+    @staticmethod
+    def net_scores(ros, kills, minutes):
+        """每个玩家的「净贡献」（用击杀事件逐笔分功劳）：
+             每一次击杀算 1 分：单杀＝击杀者拿 1；有助攻＝击杀者 0.5、其余 0.5 由助攻者平分
+             净贡献 N = 分到的功劳 − 死亡次数          → 一队人的 N 加起来正好等于这队的人头差
+             每 10 分钟 r = N / 分钟 × 10
+             信度修正 r* = Z·r，Z = n/(n+8)，n = 参与的击杀 + 死亡次数（一局样本少，往 0 拉）
+           没有击杀事件时：功劳 ≈ 0.5K + 0.5A / (这队平均每次击杀的助攻人数)"""
+        cred = {n: 0.0 for n in ros}
+        if kills:
+            for _, k, _, ass in kills:
+                ass = [x for x in ass if x in ros]
+                if k in ros:
+                    cred[k] += 1.0 if not ass else 0.5
+                for x in ass:
+                    cred[x] += 0.5 / len(ass)
+        else:
+            tk, ta = {}, {}
+            for r in ros.values():
+                tk[r["team"]] = tk.get(r["team"], 0) + r.get("k", 0)
+                ta[r["team"]] = ta.get(r["team"], 0) + r.get("a", 0)
+            for n, r in ros.items():
+                per = max(1.0, ta[r["team"]] / max(1, tk[r["team"]]))
+                cred[n] = 0.5 * r.get("k", 0) + 0.5 * r.get("a", 0) / per
+        out = {}
+        for n, r in ros.items():
+            net = cred[n] - r.get("d", 0)
+            rate = net / max(1.0, minutes) * 10
+            involve = r.get("k", 0) + r.get("a", 0) + r.get("d", 0)
+            z = involve / (involve + 8)
+            out[n] = {"credit": cred[n], "net": net, "rate": rate, "score": z * rate, "z": z}
+        return out
+
     def mvp_lessons(self, g):
         """这局表现比你好的玩家：全场最强 + 和你同定位里最强（最多 2 个），他们做对了什么。回传 [dict]
-           表现分 = (K + 0.7A) / (D + 1) × (0.5 + 参团率)；要比你高 10% 以上、而且 K+A ≥ 8 才算"""
+           排名用信度修正后的「每 10 分钟净贡献」r*（见 net_scores）；要比你高 1 以上（每 10 分钟多赚一个人头）才算"""
         ros = g.get("roster") or {}
         if len(ros) < 4:
             return []
+        minutes = g.get("len", 0) / 60
+        sc = self.net_scores(ros, g.get("kills") or [], minutes)
         team_k = {}
         for r in ros.values():
             team_k[r["team"]] = team_k.get(r["team"], 0) + r.get("k", 0)
-
-        def perf(r):
-            kp = min(1.0, (r.get("k", 0) + r.get("a", 0)) / max(1, team_k.get(r["team"], 0)))
-            return (r.get("k", 0) + 0.7 * r.get("a", 0)) / (r.get("d", 0) + 1) * (0.5 + kp), kp
         me_name = next((n for n, r in ros.items() if r.get("me")), None)
-        my_perf = perf(ros[me_name])[0] if me_name else 0
-        others = [(n, r) for n, r in ros.items() if not r.get("me") and r.get("k", 0) + r.get("a", 0) >= 8
-                  and perf(r)[0] > my_perf * 1.1]           # 比你打得好（差不多的不算）
+        my = sc[me_name]["score"] if me_name else 0.0
+        others = [(n, r) for n, r in ros.items() if not r.get("me") and sc[n]["score"] - my >= 1.0]
         if not others:
             return []
 
         def role(r):
             return self.advisor.role_of(Player("", r["champ"], [], ""))
-        picks = [max(others, key=lambda x: perf(x[1])[0])]          # 全场最强
+        picks = [max(others, key=lambda x: sc[x[0]]["score"])]          # 全场最强
         if me_name:                                                 # 再加和你同定位里最强的（出装更能照抄）
             mine_role = role(ros[me_name])
             same = [x for x in others if role(x[1]) == mine_role and x[0] != picks[0][0]]
             if same and role(picks[0][1]) != mine_role:
-                picks.append(max(same, key=lambda x: perf(x[1])[0]))
-        return [self._mvp_desc(n, r, perf(r)[1], g, ros, me_name, same_role=(i == 1)) for i, (n, r) in enumerate(picks)]
+                picks.append(max(same, key=lambda x: sc[x[0]]["score"]))
+        out = []
+        for i, (n, r) in enumerate(picks):
+            kp = min(1.0, (r.get("k", 0) + r.get("a", 0)) / max(1, team_k.get(r["team"], 0)))
+            out.append(self._mvp_desc(n, r, kp, g, ros, me_name, same_role=(i == 1), sc=sc))
+        return out
 
-    def _mvp_desc(self, name, best, kp, g, ros, me_name, same_role=False):
+    def _mvp_desc(self, name, best, kp, g, ros, me_name, same_role=False, sc=None):
         gd = self.gd
         mins = max(1.0, g.get("len", 0) / 60)
         champ = gd.champ_name(best["champ"])
         kills = g.get("kills") or []
         lines = [(tr("和你同定位：") if same_role else "") + tr("{0}（{1}）{2}/{3}/{4}，参团率 {5:.0f}%").format(
             champ, tr("队友") if best.get("ally") else tr("对手"), best.get("k", 0), best.get("d", 0), best.get("a", 0), kp * 100)]
+        if sc and me_name in sc:
+            lines.append(tr("净贡献：每 10 分钟 {0:+.1f} 个人头（你 {1:+.1f}）").format(sc[name]["rate"], sc[me_name]["rate"]))
         build = best.get("items", [])
         if build:
             lines.append(tr("出装：") + " → ".join("{0}（{1}′）".format(gd.item_name(i), m) for i, m in build[:6]))
@@ -3751,7 +3787,7 @@ class Engine:
                 lines.append(tr("死得少：每 10 分钟死 {0:.1f} 次（你 {1:.1f} 次）— 活着才能输出").format(d10, my_d10))
             hit_me = sum(1 for t, k, v, _ in kills if k == name and v == me_name)
             if not best.get("ally") and hit_me >= 2:
-                lines.append(tr("他杀了你 {0} 次：他出了{1}之后要避开正面").format(
+                lines.append(tr("杀了你 {0} 次：出了{1}之后要避开正面").format(
                     hit_me, gd.item_name(spike[0]) if spike else (gd.item_name(build[0][0]) if build else tr("核心装"))))
         return {"name": name, "champ": best["champ"], "champ_name": champ, "k": best.get("k", 0), "d": best.get("d", 0),
                 "a": best.get("a", 0), "build": build, "spike": spike, "lines": lines}
@@ -5472,7 +5508,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 react_drill(c, c.get("key", "2"), c.get("item", ""))
                 return
             if c["type"] == "mvp":
-                q = tr("向高手学：这局最强的是{0}（{1}）。他第 {2} 件成品（第 {3} 分钟）出了什么？").format(
+                q = tr("向高手学：这局最强的是{0}（{1}）。{0}第 {2} 件成品（第 {3} 分钟）出了什么？").format(
                     c["q_champ"], c["kda"], c["nth"], c["t"])
             elif c["type"] == "aug":
                 q = tr("{0} · 第 {1} 分钟的三选一：哪张最好？").format(c["champ"], c["t"])
@@ -5494,7 +5530,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 for name, b in btns.items():
                     b.unbind("<Button-1>")
                     b.config(cursor="", bg="#1d3b2a" if name == c["answer"] else "#3b1d1d" if name == o else CARD)
-                res = tr("✓ 答对了") if ok else (tr("✗ 他出的是「{0}」") if c["type"] == "mvp" else tr("✗ 推荐是「{0}」")).format(c["answer"])
+                res = tr("✓ 答对了") if ok else (tr("✗ 出的是「{0}」") if c["type"] == "mvp" else tr("✗ 推荐是「{0}」")).format(c["answer"])
                 lab(body_f, res, "name", GREEN if ok else ORANGE, pady=(8, 2))
                 if c["type"] == "mvp":           # 高手经验：整局的出装、强势期、少死…
                     for ln in c.get("lessons", []):

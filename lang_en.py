@@ -353,6 +353,8 @@ EN.update({'练习模式': 'Practice mode', '练习模式…': 'Practice mode…
 EN.update({'分给你的': 'offered to you', '备选席': 'bench', '★ 推荐 {0}（{1}）': '★ Pick {0} ({1})'})
 EN.update({'{0}（{1}）{2}/{3}/{4}，参团率 {5:.0f}%': '{0} ({1}) {2}/{3}/{4}, kill participation {5:.0f}%', '对手': 'enemy', '出装：': 'Build: ', '强势期：第 {0} 分钟出了{1}之后，5 分钟内拿了 {2} 个人头': 'Power spike: after {1} at {0} min, {2} kills within 5 min', '死得少：每 10 分钟死 {0:.1f} 次（你 {1:.1f} 次）— 活着才能输出': 'Dies less: {0:.1f} deaths per 10 min (you {1:.1f}) — you can only deal damage alive', '他杀了你 {0} 次：他出了{1}之后要避开正面': 'Killed you {0}×: avoid fighting him head-on after {1}', '核心装': 'core item', '本局最强：': 'MVP: ', '向高手学：这局最强的是{0}（{1}）。他第 {2} 件成品（第 {3} 分钟）出了什么？': 'Learn from the best: the MVP was {0} ({1}). What was his item #{2} (at {3} min)?', '✗ 他出的是「{0}」': '✗ He built [{0}]'})
 EN.update({'和你同定位：': 'Same role as you: ', '值得学：': 'Worth learning from: '})
+EN.update({'净贡献：每 10 分钟 {0:+.1f} 个人头（你 {1:+.1f}）': 'Net contribution: {0:+.1f} kills per 10 min (you {1:+.1f})'})
+EN.update({'杀了你 {0} 次：出了{1}之后要避开正面': 'Killed you {0}×: avoid fighting head-on after {1}', '向高手学：这局最强的是{0}（{1}）。{0}第 {2} 件成品（第 {3} 分钟）出了什么？': 'Learn from the best: the MVP was {0} ({1}). What was {0}\'s item #{2} (at {3} min)?', '✗ 出的是「{0}」': '✗ It was [{0}]'})
 COMBOS_EN = {'Aatrox': {'notes': ['Use E to adjust so all three Q casts land with the sweet spot (outer edge)',
                       'R for speed to stick to targets; heals more the lower you get'],
             'style': "Frontline fighter: go in after they burn CC, don't back off with R up"},
