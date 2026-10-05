@@ -1,13 +1,15 @@
 {
- "version": "1.21.4",
- "date": "2026-10-04",
+ "version": "2.0.0",
+ "date": "2026-10-05",
  "notes": [
-  "装备卡片不再显示「可直接买 / 先买零件 / 差多少钱」，推荐只看装备本身",
-  "Item cards no longer show gold / component hints"
+  "2.0：推荐改成用胜率说话——每件装备 / 每个增幅显示「网上数据 +1.4%（±1.1）」和「本局调整 +1.0%」，两者分开",
+  "网上数据用同一件 / 同一次选择比较（减少滚雪球偏差），经验贝叶斯收缩，样本少的自动往 0 拉；附误差范围和样本数",
+  "本局调整（对面阵容、增幅规则、你的习惯）单独显示；鼠标移到卡片上看完整算式",
+  "2.0: recommendations now show data-backed win-rate effects (±CI, sample size) separately from this-game adjustments"
  ],
  "files": {
-  "haidou_helper.py": "eda30379487c8075456089d38305a3502940d0dc3b1c0434794e728c929a8fe0",
-  "lang_en.py": "dd7c6ab6998ab35c76a1cb89a6b5c1d8ef8eb0314e53ae4da946f66065c97090",
-  "README.md": "fea3ca9c6e904e7d9bad02ab7e23b80ed93b432a21529a8e9f41e2df7907d1c8"
+  "haidou_helper.py": "f3dc59d265808323cd12b539de953aa04b54c550542e0cd1908e74ebba9fb273",
+  "lang_en.py": "eadf0dbb54adef93199c604bab6d6e59037c9ac2442d69148f0242758033f216",
+  "README.md": "88b0655edcb2ded8585238ddec68630ca4849eb3bdf15334714afc2f20bc2328"
  }
 }

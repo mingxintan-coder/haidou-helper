@@ -35,7 +35,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.21.4"
+APP_VERSION = "2.0.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -1361,13 +1361,6 @@ def mode_kind(mode, map_id):
 
 
 ITEM_MAP = {"aram": 12, "arena": 30, "sr": 11}
-# 装备推荐权重（契合度 F, 热门度 P, 胜率 W, 本局针对 S），按你已有的大件数：0~1 件 / 2~3 件 / 4 件以上
-# 第二个数是本局针对因素的阶段倍数（后期针对更重要）
-ITEM_WEIGHTS = [((0.35, 0.30, 0.20, 0.15), 0.75),
-                ((0.30, 0.30, 0.20, 0.20), 1.0),
-                ((0.25, 0.25, 0.20, 0.30), 1.3)]   # 装备「地图可用」判断用的地图编号
-
-
 def parse_live(raw):
     """把 allgamedata 解析成 (mode, map_id, me, allies, enemies, gold)"""
     ap = raw.get("activePlayer", {}) or {}
@@ -1504,90 +1497,130 @@ class Advisor:
         c = self.gd.champ(cid)
         return self.stats.get(c.get("key")) if c else None
 
-    @staticmethod
-    def _wmean(rows):
-        """按样本量加权的平均胜率"""
-        tot = sum(r["n"] for r in rows.values())
-        return sum(r["wr"] * r["n"] for r in rows.values()) / tot if tot else None
+    # ---------- 2.0：网上数据的效果（胜率差 ± 误差） ----------
+    SYS_ERR = 0.005        # 汇总数据的系统误差（滚雪球等偏差，抽样误差之外再加的下限）
+    NO_DATA_ITEM = -0.01   # 这个英雄几乎没人出（没数据）的装备：先当作比平均低 1%
 
     @staticmethod
-    def _shrink(diff, n, k):
-        """小样本收缩：样本越少越不可信（几百场的 +3% 多半是噪声，或是本来就领先才出的）"""
-        return diff * n / (n + k)
+    def fmt_n(n):
+        if LANG == "en":
+            return "{0:.0f}k".format(n / 1000) if n >= 10000 else str(int(n))
+        return tr("{0:.1f} 万局").format(n / 10000) if n >= 10000 else tr("{0} 局").format(int(n))
 
-    def item_stat_factor(self, iid, cs, nslot, owned_core=(), my_aug_ids=()):
-        """这件装在「这个英雄 + 第几件 + 已选增幅 + 已出路线」下的网上数据。
-        回传 {"lift": 收缩后的胜率差, "raw": 实际胜率差, "text": 说明, "wr": 显示用胜率, "pop": 热门度}；没有数据回传 None。
-        胜率差都是和「同一条件下的平均」比（同一件数 / 同一增幅 / 同样已出核心时的其他选择），
-        再按样本量收缩：lift = (胜率 − 平均) × n / (n + K)。"""
-        if not cs:
+    def _eb(self, cs, key, rows):
+        """经验贝叶斯（同一张表里所有选项一起看）：
+             base = 按样本加权的平均胜率
+             τ²  = Σ n·(Δ² − 抽样方差) / Σ n（样本 ≥500 的选项、按样本加权）＝常见选项之间「真正的效果」有多分散，
+                   限制在 0.3%～5% 之间"""
+        cache = cs.setdefault("_eb", {})
+        if key in cache:
+            return cache[key]
+        rs = [((r["wr"], r["n"]) if isinstance(r, dict) else (r[0], r[1])) for r in rows.values()]
+        rs = [(w, n) for w, n in rs if n and n > 0]
+        tot = sum(n for _, n in rs)
+        if not tot:
+            cache[key] = None
             return None
-        cache = cs.setdefault("_base", {})
-        parts = []   # (收缩后的胜率差, 实际胜率差, 说明, 胜率)
-        # 1) 第几件时出它（ARAMKit 的第几件包含鞋子）：和这一件的平均比
-        tbl = cs["item_slots"].get(nslot) or {}
-        slot = tbl.get(iid)
-        over = cs["items"].get(iid)
-        if ("slot", nslot) not in cache:
-            cache[("slot", nslot)] = self._wmean(tbl)
-        if "all" not in cache:
-            cache["all"] = self._wmean(cs["items"])
-        if slot and slot["n"] >= 300 and cache[("slot", nslot)]:
-            r, base = slot, cache[("slot", nslot)]
-        elif over and over["n"] >= 300 and cache["all"]:
-            r, base = over, cache["all"]
+        base = sum(w * n for w, n in rs) / tot
+        big = [(w, n) for w, n in rs if n >= 500]
+        if len(big) >= 3:
+            # 按样本量加权：代表「大家真的会出的那些选项」之间差多少（冷门选项的极端胜率多半是选择偏差，不该拉大 τ）
+            nb = sum(n for _, n in big)
+            tau2 = sum(n * ((w - base) ** 2 - base * (1 - base) / n) for w, n in big) / nb
+            tau2 = min(0.05 ** 2, max(0.003 ** 2, tau2))
         else:
-            r, base = None, None
-        if r:
-            parts.append((self._shrink(r["wr"] - base, r["n"], 20000), r["wr"] - base,
-                          tr('网上胜率 {0:.1f}%').format(r['wr'] * 100), r["wr"]))
-        # 2) 你已选的增幅：带这个增幅时出这件的胜率，对比带这个增幅时所有装备的平均
-        for aid in my_aug_ids:
-            table = cs.get("by_aug", {}).get(aid, {})
-            row = table.get(iid)
-            bases = cs.setdefault("_aug_item_base", {})
-            if aid not in bases and table:
-                tot = sum(n for _, n in table.values())
-                bases[aid] = sum(w * n for w, n in table.values()) / tot if tot else None
-            aug_base = bases.get(aid)
-            if row and aug_base and row[1] >= 300:
-                name = self.aug_name_by_id(aid)
-                parts.append((self._shrink(row[0] - aug_base, row[1], 3000), row[0] - aug_base,
-                              tr('带「{0}」时胜率 {1:.1f}%').format(name, row[0] * 100), row[0]))
-        # 3) 出装路线：和你已出核心相符的路线里，「下一件是它」的对比「这些路线的平均」；
-        #    三件核心都齐了：核心后的常见后续，对比这条路线本身
-        routes = cs.get("routes", [])
-        owned = set(owned_core)
-        match = [rt for rt in routes if rt["order"] and owned.issubset(rt["order"]) and len(owned) < len(rt["order"])]
-        mtot = sum(rt["n"] for rt in match)
-        nxt = [rt for rt in match if next((i for i in rt["order"] if i not in owned), None) == iid]
-        nxt_n = sum(rt["n"] for rt in nxt)
-        later = None
-        for rt in routes:
-            if rt["order"] and set(rt["order"]).issubset(owned) and iid in rt["later"]:
-                wr, n = rt["later"][iid]
-                if n >= 300 and (later is None or n > later[2]):
-                    later = (wr - rt["wr"], wr, n)
-        if nxt_n >= 500 and mtot:
-            wr = sum(rt["wr"] * rt["n"] for rt in nxt) / nxt_n
-            mbase = sum(rt["wr"] * rt["n"] for rt in match) / mtot
-            parts.append((self._shrink(wr - mbase, nxt_n, 20000), wr - mbase,
-                          tr('{0}，胜率 {1:.1f}%').format(tr("主流路线的下一件"), wr * 100), wr))
-        elif later:
-            parts.append((self._shrink(later[0], later[2], 5000), later[0],
-                          tr('{0}，胜率 {1:.1f}%').format(tr("你这套核心后的常见选择"), later[1] * 100), later[1]))
-        # 热门度：这一件时的购买占比 / 整局购买率的一半 / 相符路线里下一件是它的比例，取最高
-        pop = max(slot["pick"] if slot else 0.0, 0.5 * over["pick"] if over else 0.0,
-                  nxt_n / mtot if mtot else 0.0)
-        if not parts:
-            return {"lift": 0.0, "raw": 0.0, "text": tr("这个英雄在海斗几乎没人出") if pop < 0.005 else "",
-                    "wr": None, "pop": pop}
-        lift = sum(x[0] for x in parts) / len(parts)
-        # 显示的那一项要和总分同方向（总分低于平均就不要拿某一项「比平均高」来当理由）
-        same = [x for x in parts if (x[0] >= 0) == (lift >= 0)] or parts
-        main = max(same, key=lambda x: abs(x[0]))
-        return {"lift": lift, "raw": main[1], "wr": main[3], "pop": pop,
-                "text": tr('{0}（比平均{1:+.1f}%）').format(main[2], main[1] * 100)}
+            tau2 = 0.015 ** 2
+        cache[key] = (base, tau2)
+        return cache[key]
+
+    def _eb_est(self, cs, key, rows, rid, min_n=100):
+        """一个选项的效果：Δ = 胜率 − 平均；抽样方差 v = p(1−p)/n；
+           收缩后 Δ* = Δ × τ²/(τ²+v)，误差方差 = τ²v/(τ²+v)（信度修正，样本越少越往 0 拉）"""
+        r = rows.get(rid)
+        if r is None:
+            return None
+        wr, n, pick = (r["wr"], r["n"], r.get("pick", 0)) if isinstance(r, dict) else (r[0], r[1], 0)
+        if not n or n < min_n:
+            return None
+        eb = self._eb(cs, key, rows)
+        if not eb:
+            return None
+        base, tau2 = eb
+        v = base * (1 - base) / n
+        k = tau2 / (tau2 + v)
+        return {"d": (wr - base) * k, "var": tau2 * v / (tau2 + v), "raw": wr - base, "n": n, "wr": wr, "pick": pick}
+
+    def _combine(self, ests, empty_d, empty_text):
+        """几个来源（第几件 / 带某增幅 / 组合）按精度加权平均；误差取最小的那个来源（来源彼此相关，不叠加）＋系统误差"""
+        if not ests:
+            return {"d": empty_d, "ci": None, "n": 0, "text": empty_text, "wr": None, "has": False, "pick": 0}
+        w = [1 / max(e["var"], 1e-9) for e, _ in ests]
+        d = sum(wi * e["d"] for wi, (e, _) in zip(w, ests)) / sum(w)
+        var = min(e["var"] for e, _ in ests)
+        ci = 1.96 * math.sqrt(var + self.SYS_ERR ** 2)
+        main = max(ests, key=lambda x: x[0]["n"])
+        text = tr("{0} {1:+.1f}%（±{2:.1f}），{3}").format(main[1], main[0]["d"] * 100, ci * 100, self.fmt_n(main[0]["n"]))
+        for e, lab in ests:
+            if e is not main[0]:
+                text += tr("；{0} {1:+.1f}%").format(lab, e["d"] * 100)
+        return {"d": d, "ci": ci, "n": main[0]["n"], "text": text, "wr": main[0]["wr"], "has": True,
+                "pick": main[0].get("pick", 0)}
+
+    def data_effect_item(self, iid, cs, nslot, my_aug_ids):
+        """网上数据：这件装在「这个英雄、第几件」时比同一件的平均高 / 低多少（同一件比较，减少滚雪球偏差）；
+           带你已选的增幅时另外比一次；都没有就用整局的数据"""
+        ests = []
+        if cs:
+            tbl = cs["item_slots"].get(nslot) or {}
+            e = self._eb_est(cs, ("slot", nslot), tbl, iid)
+            if e:
+                ests.append((e, tr("第 {0} 件出它").format(nslot)))
+            else:
+                e = self._eb_est(cs, "all", cs["items"], iid)
+                if e:
+                    ests.append((e, tr("整局出它")))
+            for aid in my_aug_ids:
+                tb = cs.get("by_aug", {}).get(aid) or {}
+                e = self._eb_est(cs, ("aug", aid), tb, iid, 300)
+                if e:
+                    ests.append((e, tr("带「{0}」时").format(self.aug_name_by_id(aid))))
+        return self._combine(ests, self.NO_DATA_ITEM if cs else 0.0,
+                             tr("这个英雄几乎没人出（没数据）") if cs else tr("网上数据还没载入"))
+
+    def data_effect_aug(self, a, cs, stage, my_aug_ids):
+        """网上数据：这个增幅在这个英雄第几次选时比平均高 / 低多少；和你已选增幅的组合另外比一次"""
+        aid = a.get("id")
+        ests = []
+        if cs and aid:
+            tbl = cs["aug_stages"].get(stage) or {}
+            e = self._eb_est(cs, ("stage", stage), tbl, aid, 300)
+            if e:
+                ests.append((e, tr("第 {0} 次选它").format(stage)))
+            else:
+                e = self._eb_est(cs, "augs", cs["augs"], aid, 300)
+                if e:
+                    ests.append((e, tr("拿它")))
+            eb = self._eb(cs, "augs", cs["augs"])
+            for m in my_aug_ids:
+                combo = cs.get("combos", {}).get(frozenset((m, aid)))
+                m_base = (cs["augs"].get(m) or {}).get("wr")
+                if combo and m_base and combo[1] >= 500 and eb:
+                    v = m_base * (1 - m_base) / combo[1]
+                    k = eb[1] / (eb[1] + v)
+                    ests.append(({"d": (combo[0] - m_base) * k, "var": eb[1] * v / (eb[1] + v), "raw": combo[0] - m_base,
+                                  "n": combo[1], "wr": combo[0]},
+                                 tr("和「{0}」一起").format(self.aug_name_by_id(m))))
+                    break
+        return self._combine(ests, 0.0, tr("没有这个英雄的数据") if cs else tr("网上数据还没载入"))
+
+    @staticmethod
+    def situ_pct(factors, fit, gate_fit=True, fit_w=2.0, fit_mid=0.6, cap=3.0):
+        """本局调整（单位：胜率百分点，跟数据分开）：
+             = 6 × Σ 本局因素（正面因素按契合度打折）+ fit_w × (契合度 − fit_mid)，限制在 ±cap
+           （和数据同一个量级：常见装备之间真正的差距大约 ±2%）"""
+        g = min(1.0, max(0.0, (fit - 0.3) / 0.4)) if gate_fit else 1.0
+        v = 6 * sum(f * (g if f > 0 else 1) for f, _ in factors) + fit_w * (fit - fit_mid)
+        return max(-cap, min(cap, v))
 
     def bal(self, cid, key):
         """海斗平衡调整（例如 damageDealt -0.1 表示造成伤害 -10%）"""
@@ -1603,31 +1636,6 @@ class Advisor:
             if a.get("id") == aid:
                 return a["name"]
         return str(aid)
-
-    @staticmethod
-    def aug_stat_factor(a, cs, stage, my_aug_ids=()):
-        """这个增幅在「这个英雄 + 第几次选」下的胜率；若和你已选的增幅有组合数据，一并算入"""
-        aid = a.get("id")
-        if not cs or not aid:
-            return None
-        r = cs["aug_stages"].get(stage, {}).get(aid)
-        if not r or r["n"] < 500:
-            r = cs["augs"].get(aid)
-        if not r or r["n"] < 500:
-            return None
-        raw_lift = r["wr"] - cs["wr"]
-        lift = Advisor._shrink(raw_lift, r["n"], 5000)         # 小样本收缩
-        text, shown = tr('网上胜率 {0:.1f}%').format(r['wr'] * 100), r["wr"]
-        for m in my_aug_ids:
-            combo = cs.get("combos", {}).get(frozenset((m, aid)))
-            m_base = cs["augs"].get(m, {}).get("wr")
-            if combo and m_base and combo[1] >= 500:
-                clift = combo[0] - m_base          # 已有 m 的情况下再拿它，比只有 m 高多少
-                lift = (lift + 2 * Advisor._shrink(clift, combo[1], 3000)) / 3
-                raw_lift = clift
-                text, shown = tr('和已选增幅组合胜率 {0:.1f}%').format(combo[0] * 100), combo[0]
-                break
-        return (max(-0.45, min(0.45, lift * 9)), tr('{0}（比平均{1:+.1f}%）').format(text, raw_lift * 100), shown)
 
     def resolve_seen(self, name, desc):
         """屏幕识别到的增幅：优先用库里的数据，库里没有就用识别到的描述打分"""
@@ -1940,10 +1948,6 @@ class Advisor:
         return [tr(DIM_LABEL[d]) for s, d in both[:k] if s > 0.02]
 
     @staticmethod
-    def to_score(raw):
-        return max(1, min(99, int(round(100 * (1 - math.exp(-2.1 * max(raw, 0)))))))
-
-    @staticmethod
     def reason(fit_text, factors):
         pos = sorted([f for f in factors if f[0] > 0], reverse=True)
         neg = sorted([f for f in factors if f[0] < 0], key=lambda f: f[0])     # 最严重的扣分放前面
@@ -1964,12 +1968,10 @@ class Advisor:
         role = self.role_of(me, prof)
         owned_names = {gd.item_name(i) for i in me.items}
         legend = sum(1 for i in me.items if gd.is_completed(i) and not gd.is_boots(i))
-        owned_core = [i for i in me.items if gd.is_completed(i) and not gd.is_boots(i)]
         # ARAMKit 的「第几件」包含二级鞋
         nslot = 1 + legend + sum(1 for i in me.items if gd.is_boots(i) and gd.item_price(i) >= 900)
         my_aug_ids = [a["id"] for a in my_augs if a.get("id")]
-        # 阶段权重（契合度 F / 热门度 P / 胜率 W / 本局针对 S）：前期看核心，后期看针对
-        wts, phase = ITEM_WEIGHTS[0 if legend <= 1 else 1 if legend <= 3 else 2]
+        phase = 0.75 if legend <= 1 else 1.0 if legend <= 3 else 1.3      # 本局针对因素：后期更重要
         s = me.stats or {}
         rules = self.aug_rules(me, my_augs)          # 会改变出装的已选增幅（转换属性、变近战…）
         crit_now = float(s.get("critChance", 0) or 0)
@@ -2003,36 +2005,39 @@ class Advisor:
                    and cosine(norm((AUG_RULES.get(a.get("id")) or {}).get("prof") or a["tags"]), nv) > 0.5]
             if syn:
                 factors.append((0.08, tr('与增幅「{0}」联动').format(syn[0])))
-            sf = self.item_stat_factor(iid, cs, nslot, owned_core, my_aug_ids)
-            if neutral and sf is not None and sf["pop"] < 0.05:
-                sf = None           # 你的英雄平时的出装数据不适用（平时没人这样出）：热门度 / 胜率改用中性值
+            de = self.data_effect_item(iid, cs, nslot, my_aug_ids)
+            if neutral and (not de["has"] or de["pick"] < 0.05):
+                # 你的英雄平时的出装数据不适用（例如拔剑吧变近战）：数据当 0，只看本局
+                de = dict(de, d=0.0, ci=None, has=False, text=tr("已选增幅改变了出装，平时的数据不适用"))
             dmg_item = vec.get("AD", 0) + vec.get("AP", 0) + vec.get("CRIT", 0) > 0.8
             if t["power_diff"] > 2000 and dmg_item and role not in ("tank", "support"):
                 factors.append((0.05, tr("我方领先，堆伤害滚雪球")))
             if t["power_diff"] < -2000 and ("SURVIVE" in special or (ehp and ehp[0] > 0.1)):
                 factors.append((0.06, tr("我方落后，先保命再反打")))
-            raw, parts_txt = self.item_formula(fit, sf, factors, wts)
             dbf = self.db_factor(me, "items", iid, 0.08)
-            if dbf:                         # 自建数据库：±最多 0.08
-                raw += dbf[0]
-                parts_txt += " {0:+.2f}D".format(dbf[0])
+            if dbf:                         # 自建数据库：±最多 0.8%
                 factors = factors + [dbf]
             hab = self.habit_item(me, iid)
-            if hab:                         # 你的习惯：+最多 0.10（熟悉而且赢得多的更多）
-                raw += hab[0]
-                parts_txt += " + U{0:.2f}".format(hab[0])
+            if hab:                         # 你的习惯：+最多 1%
                 factors = factors + [hab]
-            dims = self.top_dims(prof, nv)
-            fit_text = tr('契合你的{0}路线').format('/'.join(dims)) if dims else ""
-            rf = [f for f in factors if f[0] > 0 or f[0] <= -0.05]
-            if sf and sf["text"] and (abs(sf["raw"]) >= 0.01 or sf["pop"] < 0.005):
-                rf.append((0.1 if sf["lift"] > 0 else -0.1, sf["text"]))
-            out.append({"name": gd.item_name(iid), "id": iid, "score": self.item_score(raw),
-                        "raw": raw, "price": gd.item_price(iid), "reason": self.reason(fit_text, rf),
-                        "wr": sf["wr"] if sf else None, "stat_text": (sf["text"] if sf else "") + "\n" + parts_txt})
+            out.append(self.pack_item(iid, de, factors, fit, self.top_dims(prof, nv)))
         out = self.smooth(me, out)          # 推荐只看装备本身好不好，不看你现在身上有多少钱（也不显示差多少钱）
         boots = self.recommend_boots(me, t, prof, role, cs, gold, legend, phase, rules)
         return ([boots] if boots else []) + out[:k], prof
+
+    def pack_item(self, iid, de, factors, fit, dims, boots=False):
+        """一件装的推荐：总分 = 网上数据 Δ* + 本局调整（都是胜率百分点）"""
+        adj = self.situ_pct(factors, fit)
+        total = de["d"] * 100 + adj
+        fit_text = tr('契合你的{0}路线').format('/'.join(dims)) if dims else ""
+        rf = [f for f in factors if f[0] > 0 or f[0] <= -0.05]
+        why = self.reason(fit_text, rf)
+        detail = tr("网上数据：") + de["text"] + "\n" + tr("本局调整 {0:+.1f}%：").format(adj) + why
+        return {"name": ("👟 " if boots else "") + self.gd.item_name(iid), "id": iid, "score": self.item_score(total),
+                "raw": total, "total": total, "d": de["d"] * 100, "ci": de["ci"] * 100 if de["ci"] else None,
+                "n": de["n"], "adj": adj, "has_data": de["has"], "data_text": de["text"],
+                "price": self.gd.item_price(iid), "reason": why, "wr": de["wr"], "stat_text": detail,
+                "boots": boots, "hint": ""}
 
     def db_factor(self, me, kind, key, cap):
         """自建数据库（你用 Riot 密钥收集的海斗对局）：这个英雄出这件 / 拿这个增幅时的胜率，
@@ -2223,39 +2228,9 @@ class Advisor:
         return {"buy": plan, "left": left, "targets": targets, "done": done}
 
     @staticmethod
-    def item_score(raw):
-        """装备分数 = 100 × raw / 0.85（raw 是 0~1 的加权和；0.85 以上即满分，让好装备落在 70~90）"""
-        return max(1, min(99, int(round(100 * raw / 0.85))))
-
-    @staticmethod
-    def item_formula(fit, sf, factors, wts):
-        """装备推荐公式（详见 README「推荐公式」）：
-            raw = wF·F + wP·P + wW·W + wS·S + N
-            F 契合度 = 装备属性与你的出装方向的余弦相似度（< 0.35 的不推荐）
-            P 热门度 = √(min(pop, 40%) / 40%)，pop = 这一件时的购买占比 / 整局购买率×½ / 路线里下一件是它的比例 取最高
-            W 胜率   = clamp(0.5 + 6·lift, 0, 1)，lift = 收缩后的胜率差（见 item_stat_factor）
-            S 本局针对 = min(1, Σ正面因素 / 0.4) × 契合闸门 × 热门闸门
-            N 扣分   = Σ负面因素（暴击已满、重伤重复、对面重伤多时的吸血…）；pop < 0.5% 再 −0.10
-          没有网上数据时 P=0.4、W=0.5（中性），热门闸门=0.6。"""
-        wF, wP, wW, wS = wts
-        pos = sum(v for v, _ in factors if v > 0)
-        neg = sum(v for v, _ in factors if v < 0)
-        gate_fit = min(1.0, max(0.0, (fit - 0.3) / 0.4))       # 不合定位的装备，针对加分打折
-        if sf is not None:
-            pop = sf["pop"]
-            P = math.sqrt(min(pop, 0.4) / 0.4)
-            W = max(0.0, min(1.0, 0.5 + 6 * sf["lift"]))
-            gate_pop = min(1.0, 0.3 + pop / 0.03)             # 这个英雄几乎没人出的装备，针对加分打折
-            if pop < 0.005:
-                neg -= 0.10
-        else:              # 网上数据还没载入 / 连不上：热门度、胜率取中性值，针对加分打六折
-            P, W = 0.4, 0.5
-            gate_pop = 0.6
-        S = min(1.0, pos / 0.4) * gate_fit * gate_pop
-        raw = wF * fit + wP * P + wW * W + wS * S + neg
-        txt = "F{0:.2f}×{1:.2f} + P{2:.2f}×{3:.2f} + W{4:.2f}×{5:.2f} + S{6:.2f}×{7:.2f} {8:+.2f} = {9:.2f}".format(
-            fit, wF, P, wP, W, wW, S, wS, neg, raw)
-        return raw, txt
+    def item_score(total):
+        """旧版相容的 0~99 分（只给配色用）：50 + 10 × 总分（胜率百分点）；+3% 以上绿色、+1.5% 以上黄色"""
+        return max(1, min(99, int(round(50 + 10 * total))))
 
     def smooth(self, me, out):
         """让推荐平滑：分数随时间渐变（不因一次阵亡/买装就大跳），
@@ -2271,7 +2246,7 @@ class Advisor:
         out.sort(key=lambda x: -x["raw"])
         if out and self._top is not None and out[0]["id"] != self._top:
             keep = next((i for i, x in enumerate(out) if x["id"] == self._top), None)
-            if keep is not None and out[keep]["raw"] >= out[0]["raw"] - 0.03:
+            if keep is not None and out[keep]["raw"] >= out[0]["raw"] - 0.5:     # 差不到 0.5% 就不换第一
                 out.insert(0, out.pop(keep))
         if out:
             self._top = out[0]["id"]
@@ -2298,34 +2273,20 @@ class Advisor:
             rfac, neutral = self.rule_factors(rules, rv, self.rule_vec(rv, rules), iid % 10000 if iid >= 100000 else iid,
                                               float((me.stats or {}).get("critChance", 0) or 0))
             factors += rfac
-            sf = None
-            if cs:          # 鞋子：和所有鞋子的平均比；热门度＝整局购买率（一局只买一双）
+            # 鞋子：和所有二级鞋的平均比（一局只买一双）
+            if cs:
                 boots_rows = {i: r for i, r in cs["items"].items() if gd.is_boots(i) and gd.item_price(i) >= 900}
-                r = boots_rows.get(iid)
-                base = self._wmean(boots_rows)
-                if r and base:
-                    sf = {"lift": self._shrink(r["wr"] - base, r["n"], 20000), "raw": r["wr"] - base,
-                          "wr": r["wr"], "pop": r["pick"],
-                          "text": tr('网上胜率 {0:.1f}%（比平均{1:+.1f}%）').format(r["wr"] * 100, (r["wr"] - base) * 100) +
-                          (tr('，{0:.0f}% 的人买').format(r["pick"] * 100) if r["pick"] >= 0.1 else "")}
-                else:
-                    sf = {"lift": 0.0, "raw": 0.0, "wr": None, "pop": 0.0, "text": ""}
-            if neutral and sf is not None and sf["pop"] < 0.05:
-                sf = None
-            raw, parts_txt = self.item_formula(fit, sf, factors, ITEM_WEIGHTS[0][0])
-            if best is None or raw > best[0]:
-                rf = [f for f in factors if f[0] > 0 or f[0] <= -0.05] + \
-                    ([(0.1, sf["text"])] if sf and sf["text"] else [])
-                best = (raw, iid, rf, sf, parts_txt)
-        if not best:
-            return None
-        raw, iid, rf, sf, parts_txt = best
-        dims = self.top_dims(prof, norm({d: v for d, v in gd.item_vec(iid)[0].items() if d != "MS"}))
-        return {"name": "👟 " + gd.item_name(iid), "id": iid, "score": self.item_score(raw), "raw": raw,
-                "stat_text": (sf["text"] if sf else "") + "\n" + parts_txt,
-                "price": gd.item_price(iid), "boots": True, "wr": sf["wr"] if sf else None,
-                "reason": self.reason(tr('契合你的{0}路线').format('/'.join(dims)) if dims else "", rf),
-                "hint": ""}
+                e = self._eb_est(cs, "boots", boots_rows, iid)
+                de = self._combine([(e, tr("出这双鞋"))] if e else [], self.NO_DATA_ITEM, tr("这个英雄几乎没人买（没数据）"))
+            else:
+                de = self._combine([], 0.0, tr("网上数据还没载入"))
+            if neutral and (not de["has"] or de["pick"] < 0.05):
+                de = dict(de, d=0.0, ci=None, has=False, text=tr("已选增幅改变了出装，平时的数据不适用"))
+            dims = self.top_dims(prof, norm({d: v for d, v in vec.items() if d in BUILD_DIMS and d != "MS"}))
+            cand = self.pack_item(iid, de, factors, fit, dims, boots=True)
+            if best is None or cand["total"] > best["total"]:
+                best = cand
+        return best
 
     # ---------- augments ----------
     def score_aug(self, a, prof, t, my_augs, me, cs=None, stage=1):
@@ -2356,7 +2317,7 @@ class Advisor:
             (-0.2, tr("arammayhem.com 标注为这个英雄的陷阱组合")) if combo == "bad" else None
         gate = 0.6 if not bv else min(1.0, max(0.2, (fit - 0.2) / 0.4))
         situ = sum(v * (gate if v > 0 else 1) for v, _ in factors)
-        sf = self.aug_stat_factor(a, cs, stage, [m["id"] for m in my_augs if m.get("id")])
+        de = self.data_effect_aug(a, cs, stage, [m["id"] for m in my_augs if m.get("id")])
         # 国服整体选取率（arammayhem.com）：大家常拿的增幅小幅加分，冷门的小幅扣分；
         # 编辑整理的「这个英雄 + 这个增幅」强力 / 陷阱组合不受契合度打折（是针对这个英雄的）
         am_pick = a.get("am_pick")
@@ -2372,17 +2333,21 @@ class Advisor:
         if hab:                          # 你的习惯：+最多 0.15
             situ += hab[0]
             factors.insert(0, hab)
-        if sf:
-            # 有这个英雄的实战胜率：以胜率为主，本局分析做修正（通用型增幅不会因为「不挑英雄」吃亏）
-            raw = 0.2 + 0.35 * fit + situ + 0.03 * a.get("rarity", 0) + min(0.55, sf[0] * 1.3) + pop
-        else:
-            raw = 0.12 + 0.55 * fit + situ + 0.05 * a.get("rarity", 0) + 1.5 * pop
-        rf = factors + ([(sf[0], sf[1])] if sf and abs(sf[0]) >= 0.08 else [])
+        # 本局调整（百分点）：本局因素 + 契合度（没数据时契合度更重要）+ 国服选取率（小幅）+ 稀有度（没数据时）
+        adj = 6 * situ + (1.5 if de["has"] else 4.0) * (fit - 0.5) + 10 * pop * (0.5 if de["has"] else 1.0)
+        if not de["has"]:
+            adj += 0.5 * a.get("rarity", 0)
+        adj = max(-4.0, min(4.0, adj))
+        total = de["d"] * 100 + adj
+        rf = list(factors)
         if am_pick is not None and (am_pick >= 0.3 or am_pick < 0.03):
             rf.append((0.05 if am_pick >= 0.3 else -0.05, tr('国服选取率 {0:.0f}%').format(am_pick * 100)))
-        return {"name": a["name"], "score": self.to_score(raw), "raw": raw,
-                "rarity": a.get("rarity", 0), "reason": self.reason(fit_text, rf),
-                "known": bool(a.get("desc")), "wr": sf[2] if sf else None, "stat_text": sf[1] if sf else ""}
+        why = self.reason(fit_text, rf)
+        return {"name": a["name"], "score": self.item_score(total), "raw": total, "total": total,
+                "d": de["d"] * 100, "ci": de["ci"] * 100 if de["ci"] else None, "n": de["n"], "adj": adj,
+                "has_data": de["has"], "data_text": de["text"],
+                "rarity": a.get("rarity", 0), "reason": why, "known": bool(a.get("desc")), "wr": de["wr"],
+                "stat_text": tr("网上数据：") + de["text"] + "\n" + tr("本局调整 {0:+.1f}%：").format(adj) + why}
 
     def recommend_augs(self, me, my_augs, t, candidates, k=5, cs=None):
         prof = self.my_profile(me, my_augs)
@@ -5131,6 +5096,20 @@ def shop_line(shop, gd_names=None):
     return tr('💰 复活前买：{0}（剩 {1}g · {2:.0f} 秒后复活）').format(" → ".join(names), int(left), rs)
 
 
+def fmt_total(d):
+    """推荐卡片左边的大数字：有 total（胜率百分点）就显示 +2.5，旧格式（选英雄）就显示分数"""
+    return "{0:+.1f}".format(d["total"]) if "total" in d else str(d.get("score", ""))
+
+
+def fmt_data(d):
+    """卡片右上：网上数据 +1.4 ±1.1（没数据就说没数据）"""
+    if "total" not in d:
+        return ""
+    if not d.get("has_data"):
+        return tr("数据载入中") if d.get("data_text") == tr("网上数据还没载入") else tr("没数据")
+    return tr("数据 {0:+.1f}").format(d["d"]) + ((" ±{0:.1f}".format(d["ci"])) if d.get("ci") else "")
+
+
 def format_rec(rec):
     lines = [tr('\n==== {0} ｜ ').format(rec['time']) + tr("；").join(rec["changes"]) + " ====", rec["summary"]]
     if shop_line(rec.get("shop")):
@@ -5155,14 +5134,13 @@ def format_rec(rec):
         lines.append((" ⚠ " if urgent else " • ") + txt)
     lines.append(tr("【推荐装备】"))
     for i, it in enumerate(rec["items"], 1):
-        wr = tr('胜率{0:.1f}% ').format(it['wr'] * 100) if it.get("wr") else ""
-        lines.append(tr(' {0}. {1:<10} {2:>3}分  [{3}{4}] {5}').format(i, it['name'], it['score'], wr, it.get('hint', ''), it['reason'])
-                     .replace(" [] ", " "))
+        lines.append(tr(' {0}. {1:<10} {2:>5}%  [{3}｜本局 {4:+.1f}] {5}').format(
+            i, it['name'], fmt_total(it), fmt_data(it), it.get('adj', 0), it['reason']))
     lines.append(tr("【三选一评分】") if rec["cand_mode"] else tr("【推荐增幅】"))
     for i, a in enumerate(rec["augs"], 1):
         mark = tr(" ←选它") if rec["cand_mode"] and i == 1 else ""
-        wr = tr('[胜率{0:.1f}%] ').format(a['wr'] * 100) if a.get("wr") else ""
-        lines.append(tr(' {0}. {1:<10} {2:>3}分  {3}{4}{5}').format(i, a['name'], a['score'], wr, a['reason'], mark))
+        lines.append(tr(' {0}. {1:<10} {2:>5}%  [{3}｜本局 {4:+.1f}] {5}{6}').format(
+            i, a['name'], fmt_total(a), fmt_data(a), a.get('adj', 0), a['reason'], mark))
     return "\n".join(lines)
 
 
@@ -5474,7 +5452,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             fr = tk.Frame(parent, bg=CARD, cursor="arrow")
             top = tk.Frame(fr, bg=CARD)
             top.pack(fill="x")
-            sc = tk.Label(top, text="", bg=CARD_HI, fg=FG, font=F["score"], width=3)
+            sc = tk.Label(top, text="", bg=CARD_HI, fg=FG, font=F["score"], width=4)
             sc.pack(side="left", padx=(0, 6), fill="y")
             nm = tk.Label(top, text="", bg=CARD, fg=FG, font=F["name"], anchor="w")
             nm.pack(side="left")
@@ -6064,17 +6042,22 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 continue
             d = data[i]
             star = "★ " if cand and i == 0 else ""
-            r["sc"].config(text=str(d["score"]), fg=score_color(d["score"]))
+            r["sc"].config(text=fmt_total(d), fg=score_color(d["score"]))
             r["nm"].config(text=star + d["name"], fg=GOLD if cand and i == 0 else FG)
             meta = []
-            if d.get("wr"):
+            if "total" in d:                    # 2.0：网上数据（胜率差 ± 误差），跟本局调整分开
+                meta.append(fmt_data(d))
+            elif d.get("wr"):
                 meta.append(f"{d['wr'] * 100:.1f}%")
             if d.get("hint"):
                 meta.append(d["hint"])
             elif not d.get("known", True):
                 meta.append(tr("未收录"))
             r["meta"].config(text=" · ".join(meta))
-            r["rs"].config(text=short(brief(d["reason"]), 26))
+            why = brief(d["reason"])
+            if "adj" in d and abs(d["adj"]) >= 0.1:
+                why = tr("本局 {0:+.1f}：").format(d["adj"]) + why
+            r["rs"].config(text=short(why, 26))
             r["full"]["text"] = d["reason"] + (f"\n{d['stat_text']}" if d.get("stat_text") else "")
             if before is not None:
                 r["fr"].pack(fill="x", pady=2, before=before)
@@ -6250,11 +6233,11 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         elif urgent:
             mini.config(text="⚠ " + urgent[0][1], fg=ORANGE)
         elif cand and rec.get("augs"):
-            mini.config(text=tr('★ 选 {0}（{1}）').format(rec['augs'][0]['name'], rec['augs'][0]['score']), fg=GOLD)
+            mini.config(text=tr('★ 选 {0}（{1}%）').format(rec['augs'][0]['name'], fmt_total(rec['augs'][0])), fg=GOLD)
         else:
             parts = []
             if its:
-                parts.append(f"▶ {its[0]['name']} {its[0]['score']}")
+                parts.append(f"▶ {its[0]['name']} {fmt_total(its[0])}%")
             if boots:
                 parts.append(boots["name"])
             line = "   ".join(parts) or tr("等待推荐…")
@@ -6411,10 +6394,11 @@ def start_web(engine, port=8765):
             for i, d in enumerate(data[:5]):
                 col = "#4ade80" if d["score"] >= 80 else "#facc15" if d["score"] >= 60 else "#94a3b8"
                 star = "★ " if cand and i == 0 else ""
-                bits = ([tr('胜率{0:.1f}%').format(d['wr'] * 100)] if d.get("wr") else []) + ([d["hint"]] if d.get("hint") else [])
+                bits = ([fmt_data(d)] if "total" in d else
+                        [tr('胜率{0:.1f}%').format(d['wr'] * 100)] if d.get("wr") else []) + ([d["hint"]] if d.get("hint") else [])
                 hint = f' <small style="color:#9aa4b5">{esc(" · ".join(bits))}</small>' if bits else ""
                 out.append(f'<div class="c"><div class="t"><b>{star}{esc(d["name"])}{hint}</b>'
-                           f'<span style="color:{col}">{d["score"]}</span></div><p>{esc(d["reason"])}</p></div>')
+                           f'<span style="color:{col}">{esc(fmt_total(d))}</span></div><p>{esc(d["reason"])}</p></div>')
             return "".join(out)
         if not rec:
             content = tr("<p class='s'>等待对局…</p>")
