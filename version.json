@@ -1,13 +1,14 @@
 {
- "version": "1.18.3",
- "date": "2026-10-03",
+ "version": "1.19.0",
+ "date": "2026-10-04",
  "notes": [
-  "更多会改变出装的增幅：灵活转换、转换恶作剧、纯粹 - 法师、大绝电脑、基本功夫、溢流、因心成体、强化攻击、瞄准头部、毫发无伤（鞋子也会跟着变）",
-  "More augments now reshape item recs (conversions, mana scaling, crit cap…)"
+  "学最优解：每个推荐增幅附「怎么用」；玩法页列出主动装备按几号键、什么时候按",
+  "残血时提醒「按 2 中娅」；赛后给一个「下局练习」",
+  "Learn the optimal play: how-to for augments, active item key reminders, one practice point per game"
  ],
  "files": {
-  "haidou_helper.py": "e38131dbea3631f8ee2e42a73848ad9c33e4077dd2127a6e3b95c30c2ead143b",
-  "lang_en.py": "b6d9f109bbbc463070b363e4f2c9676cb9dad4650a6d0a8b5ab09c370feb973a",
-  "README.md": "a574223dbfa423635fa4d462a2b37b96b2ad35f98c66bcf79f2bdc73a931c039"
+  "haidou_helper.py": "b467ba69f0dee8d8f0115e9683e4cbe22744e8a12a8635fd9503b2c26426f7ea",
+  "lang_en.py": "1660dbe7da76f8b23ab2cb9e3ff922545a7a9e5991bed11eb18203fe2c5fe18c",
+  "README.md": "11c2970ad41fccc95c07ccbff578d8f936c5be319be5a145f1f133a3771bb5a8"
  }
 }

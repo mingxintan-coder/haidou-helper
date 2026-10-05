@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.18.3"
+APP_VERSION = "1.19.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -907,6 +907,58 @@ class GameData:
         return out
 
 
+# ---------- 教学：装备 / 增幅怎么用 ----------
+SLOT_KEY = {0: "1", 1: "2", 2: "3", 3: "5", 4: "6", 5: "7", 6: "4"}     # 游戏默认的装备按键
+# 主动装备：(一句用法, 提醒时机)；时机 lowhp＝残血时提醒按
+ACTIVE_TIPS = {
+    3157: ("残血或被集火时按：2.5 秒无敌，等对面技能落空", "lowhp"),
+    2420: ("残血时按：2.5 秒无敌（只能用一次）", "lowhp"),
+    3140: ("被晕、被定住时马上按：解控", None), 3139: ("被晕、被定住时马上按：解控", None),
+    3107: ("团战时对准人多处按：全队回血、对敌人造成伤害", None),
+    3222: ("队友被控时对他按：解控加回血", None),
+    3190: ("开团或被开时按：全队护盾", None),
+    3074: ("普攻后马上按：重置普攻、范围伤害", None), 3748: ("普攻后马上按：重置普攻、多打一下", None),
+    6698: ("贴脸按：范围伤害", None),
+    3142: ("开团或追人前按：大幅加速", None),
+    3152: ("按了往前冲：开团或追残血", None),
+    6631: ("贴近敌人按：伤害加缓速，追人用", None),
+    2065: ("开团或撤退时按：全队加速", None),
+    6656: ("按了往前扔：缓速再禁锢", None),
+}
+# 增幅怎么触发：按描述关键词判断，排前面的优先
+AUG_HOWTO = [
+    (r"成为近战|变成近战|(?i:become[s]? (a )?melee)", "你变近战了：贴脸打，靠吸血和血量站得住，别在外面晃"),
+    (r"所选技能", "绑在你选的那个技能上：多按那个技能"),
+    (r"冲刺|位移|突进|跃向|闪现|(?i:dash|flash)", "靠位移触发：多用位移技能穿进穿出"),
+    (r"第一次死亡|死亡时(不会|改为)|(?i:instead of dying)", "死了也有效果：残局敢拼"),
+    (r"硬控|禁锢|晕眩|控场|(?i:immobiliz|stun)", "命中控制才触发：先控住再打"),
+    (r"参与击杀|击杀.{0,6}(英雄|敌军)|(?i:takedown)", "参与击杀才叠层：多跟团、补残血"),
+    (r"处决|(?i:execute)", "能处决低血敌人：优先打残血的"),
+    (r"(友军|友方).{0,30}(治疗|护盾)|(治疗|护盾).{0,12}(友军|友方)|(?i:ally)", "对队友放治疗 / 护盾才有效"),
+    (r"(?<!\()死亡时(?!重置)|(?i:on death|when you die)", "死了也有效果：残局敢拼"),
+    (r"生命低于|低于\s*\d+%.{0,6}生命|(?i:below \d+% health)", "残血才触发：别太早撤，残血再拼一下"),
+    (r"大绝|(?i:ultimate)", "围绕大绝：大绝好了再开团"),
+    (r"燃烧|持续伤害|流血|(?i:burn|damage over time)", "持续伤害：先挂上伤害再拉开"),
+    (r"普攻(?!吸血)|命中效果|攻击命中|(?i:basic attack|on-hit)", "靠普攻触发：技能空档多 A"),
+    (r"技能命中|技能造成伤害|(?i:ability damage)", "靠技能命中：多放技能消耗"),
+]
+
+
+def aug_howto(a):
+    """一句话：这个增幅要怎么打才有效果"""
+    d = (a or {}).get("desc", "")
+    for pat, tip in AUG_HOWTO:
+        if re.search(pat, d):
+            return tr(tip)
+    return tr("拿了就生效，不用特别操作")
+
+
+def active_tip(iid):
+    base = iid % 10000 if iid >= 100000 else iid
+    t = ACTIVE_TIPS.get(base)
+    return (tr(t[0]), t[1]) if t else (tr("有主动效果：记得按"), None)
+
+
 # 「变成近战」类增幅（例如拔剑吧）：远程专属效果失效、近战装备效果全额（以装备基础编号判断，海斗复制品取后 4 位）
 RANGED_ONLY_ITEMS = {3085, 3094}                    # 芮兰飓风箭（分裂箭只有远程有）、冲击火炮（加攻击距离）
 MELEE_GOOD_ITEMS = {3074, 3748, 6631, 3071, 3053, 6333, 3078, 6692, 6610, 3181}
@@ -1280,6 +1332,8 @@ class Player:
         self.kills = self.deaths = self.assists = self.cs = 0
         self.is_dead, self.respawn = False, 0.0
         self.stats = {}          # 只有自己有：championStats（实际属性）
+        self.slots = {}          # 装备编号 → 格子（0~6），用来提示「按几号键」
+        self.usable = set()      # 有主动效果、现在能按的装备
         self.game_time = 0.0
 
 
@@ -1341,6 +1395,11 @@ def parse_live(raw):
         pl.kills, pl.deaths = sc.get("kills", 0), sc.get("deaths", 0)
         pl.assists, pl.cs = sc.get("assists", 0), sc.get("creepScore", 0)
         pl.is_dead, pl.respawn = bool(p.get("isDead")), float(p.get("respawnTimer", 0) or 0)
+        for it in p.get("items", []) or []:
+            if it.get("itemID") is not None and it.get("slot") is not None:
+                pl.slots[it["itemID"]] = int(it["slot"])
+                if it.get("canUse"):
+                    pl.usable.add(it["itemID"])
         players.append(pl)
     full = {i for i in my_ids if "#" in i}
     me = next((p for p in players if full and p.ids & full), None) or \
@@ -2370,7 +2429,9 @@ class Advisor:
             tips.append((98, tr('我方少 {0} 人 → 退塔下守，等队友复活别接团').format(len(dead_a) - len(dead_e)), True))
         s = me.stats or {}
         if not me.is_dead and s.get("maxHealth") and s.get("currentHealth", 1e9) / s["maxHealth"] < 0.3:
-            tips.append((90, tr("血量低于 30% → 先吃血包或退后，别硬接团"), True))
+            sv = self.stasis_key(me)
+            tips.append((90, tr("血量低于 30% → 按 {0} {1}，等技能落空").format(*sv) if sv else
+                         tr("血量低于 30% → 先吃血包或退后，别硬接团"), True))
         # 2) 整体实力
         diff = t["power_diff"]
         if diff > 2500:
@@ -2438,6 +2499,27 @@ class Advisor:
         tips.sort(key=lambda x: -x[0])
         return tips[:4]
 
+    # ---------- 教学：怎么打出效果 ----------
+    def stasis_key(self, me):
+        """你有能保命的主动装备（中娅之类）而且现在能按：回传 (按键, 名称)"""
+        for iid in me.items:
+            base = iid % 10000 if iid >= 100000 else iid
+            if ACTIVE_TIPS.get(base, ("", None))[1] == "lowhp" and (not me.usable or iid in me.usable):
+                key = SLOT_KEY.get(me.slots.get(iid))
+                if key:
+                    return key, self.gd.item_name(iid)
+        return None
+
+    def coach(self, me, my_augs):
+        """装备按键用法 + 已选增幅怎么触发"""
+        items = []
+        for iid in me.items:
+            base = iid % 10000 if iid >= 100000 else iid
+            if iid in me.usable or base in ACTIVE_TIPS:
+                key = SLOT_KEY.get(me.slots.get(iid), "?")
+                items.append((key, self.gd.item_name(iid), active_tip(iid)[0]))
+        return {"items": items, "augs": [(a["name"], aug_howto(a)) for a in my_augs]}
+
     # ---------- 敌方增幅预警 ----------
     EAUG_W = {"SURVIVE": 2.0, "SUSTAIN": 1.5, "HEALSHIELD": 1.5, "TRUE": 1.5, "MAXHP_DMG": 1.5, "ULT": 1.0,
               "TENACITY": 1.0, "ARMOR": 1.0, "MR": 1.0, "HP": 0.8, "CRIT": 0.8, "AS": 0.8, "ONHIT": 0.8,
@@ -2489,7 +2571,8 @@ class Advisor:
         elif dead_a - dead_e >= 2:
             state, hot = tr("我少{0}人 → 退守").format(dead_a - dead_e), True
         elif not me.is_dead and s.get("maxHealth") and s.get("currentHealth", 1e9) / s["maxHealth"] < 0.3:
-            state, hot = tr("残血 → 后撤"), True
+            sv = self.stasis_key(me)
+            state, hot = (tr("残血 → 按 {0} {1}").format(*sv) if sv else tr("残血 → 后撤")), True
         elif not me.is_dead and t.get("carry") is not None and t["carry"].is_dead and t["carry"].respawn > 8:
             state, hot = tr("{0}阵亡 → 开团").format(t["carry_name"]), True
         else:
@@ -2687,8 +2770,12 @@ class Advisor:
             shop["names"] = [self.gd.item_name(i) for i, _ in shop["buy"]]
         guide = self.champ_guide(me, cs, prof)
         ealerts = self.enemy_aug_alerts(me, enemies, manual.get("enemy", []))
+        for a in augs:                               # 每个推荐的增幅附一句「怎么用」
+            fa = self.all_index.get(a.get("name"))
+            a["howto"] = aug_howto(fa) if fa else ""
         return {"items": items, "augs": augs, "tips": tips, "cand_mode": bool(cands), "auto_cand": auto, "shop": shop,
                 "brief": self.brief(me, allies, enemies, t, prof, guide, ealerts), "enemy_augs": ealerts,
+                "coach": self.coach(me, my_augs),
                 "eaug_visible": any(p.augments for p in allies + enemies),
                 "stats_label": self.stats.label() if (self.stats and cs) else "",
                 "my_augs": [a["name"] for a in my_augs],
@@ -3445,6 +3532,13 @@ class Engine:
             g = self.cur_game = {"champ": champ, "t": time.strftime("%Y-%m-%d %H:%M"), "ts": time.time(), "items": [],
                                  "augs": [], "offered": [], "win": None, "len": 0}
         g["len"] = int(me.game_time)
+        if me.is_dead and not g.get("was_dead"):        # 教学：带着保命主动装备（中娅之类）阵亡几次
+            sv = self.advisor.stasis_key(me)
+            if sv:
+                g.setdefault("died_active", {})
+                g["died_active"][sv[1]] = g["died_active"].get(sv[1], 0) + 1
+                g["active_key"] = sv[0]
+        g["was_dead"] = me.is_dead
         items = [i for i in me.items if self.gd.is_completed(i)]
         # 复盘用：新买的成品装备，是不是在「买之前那次」推荐的前 3 名里
         top = getattr(self, "_last_top", None)
@@ -3510,6 +3604,21 @@ class Engine:
             parts.append(tr('这个英雄 {0} 局 {1} 胜').format(hp["games"], hp["wins"]))
         off = [gd.item_name(i) for i, ok in f if ok is False]
         detail = tr('没照推荐的：{0}').format(tr("、").join(off)) if off else ""
+        # 下局练习一件事：带着中娅之类死了好几次 → 练按键；否则练你最主要增幅的触发方式
+        practice = ""
+        da = g.get("died_active") or {}
+        if da and max(da.values()) >= 2:
+            name, n = max(da.items(), key=lambda x: x[1])
+            practice = tr("带着{0}阵亡 {1} 次：残血先按 {2}，等对面技能落空再走").format(name, n, g.get("active_key", "?"))
+        else:
+            for an in g.get("augs", []):
+                a = self.advisor.find_aug(an)
+                tip = aug_howto(a) if a else ""
+                if tip and tip != tr("拿了就生效，不用特别操作"):
+                    practice = tr("「{0}」：{1}").format(an, tip)
+                    break
+        if practice:
+            detail = (detail + "\n" if detail else "") + tr("下局练习：") + practice
         return {"text": head + (" · " + " · ".join(parts) if parts else ""), "detail": detail,
                 "items": [gd.item_name(i) for i in g.get("items", [])], "augs": g.get("augs", [])}
 
@@ -4487,6 +4596,11 @@ def format_rec(rec):
             lines.append(tr(' 连招：{0}｜{1}').format(c, note))
         if g.get("style"):
             lines.append(tr(" 玩法：") + g["style"])
+    co = rec.get("coach") or {}
+    if co.get("items") or co.get("augs"):
+        lines.append(tr("【怎么打出效果】"))
+        lines += [" " + tr("按 {0} {1}：{2}").format(k, n, tip) for k, n, tip in co.get("items", [])]
+        lines += [" " + tr("「{0}」：{1}").format(n, tip) for n, tip in co.get("augs", [])]
     lines.append(tr("【战术建议】"))
     for _, txt, urgent in rec.get("tips", []):
         lines.append((" ⚠ " if urgent else " • ") + txt)
@@ -4839,6 +4953,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     aug_head = tk.Label(pages["augs"], text="", bg=BG, fg=SUB, font=F["small"], anchor="w")
     aug_head.pack(fill="x", pady=(0, 2))
     aug_rows = make_rows(pages["augs"], 4)
+    howto_lbl = tk.Label(pages["augs"], text="", bg="#1f2a1c", fg=GREEN, font=F["small"], anchor="w", justify="left",
+                         padx=6, pady=3)
+    wraps.append(howto_lbl)
     mine_lbl = tk.Label(pages["augs"], text="", bg=BG, fg=DIM, font=F["small"], anchor="w", justify="left")
     wraps.append(mine_lbl)
     enemy_lbl = tk.Label(pages["augs"], text="", bg=BG, fg=ORANGE, font=F["small"], anchor="w", justify="left")
@@ -5303,9 +5420,22 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         if ea:
             enemy_lbl.config(fg=ORANGE)
         fill_rows(aug_rows, rec.get("augs", [])[:3 if cand else 4], cand, before=mine_lbl)
+        top_aug = (rec.get("augs") or [{}])[0]
+        if cand and top_aug.get("howto"):           # 教学：推荐的那张要怎么打出效果
+            howto_lbl.config(text=tr("★ {0} 怎么用：{1}").format(top_aug["name"], top_aug["howto"]))
+            howto_lbl.pack(fill="x", pady=(2, 0), before=mine_lbl)
+        else:
+            howto_lbl.pack_forget()
         # 玩法页
         g = rec.get("guide") or {}
-        lines = [x for x in (g.get("habit"), g.get("balance"), g.get("skills"), g.get("spells")) if x]
+        co = rec.get("coach") or {}
+        lines = []
+        if co.get("items") or co.get("augs"):        # 教学：怎么打出效果
+            lines.append(tr("【怎么打出效果】"))
+            lines += [tr("按 {0} {1}：{2}").format(k, n, tip) for k, n, tip in co.get("items", [])]
+            lines += [tr("「{0}」：{1}").format(n, tip) for n, tip in co.get("augs", [])]
+            lines.append("")
+        lines += [x for x in (g.get("habit"), g.get("balance"), g.get("skills"), g.get("spells")) if x]
         lines += [tr('连招  {0}\n        {1}').format(c, note) for c, note in g.get("combos", [])]
         if g.get("style"):
             lines.append(tr("玩法  ") + g["style"])
