@@ -35,7 +35,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.21.3"
+APP_VERSION = "1.21.4"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -1934,41 +1934,6 @@ class Advisor:
         who = tr('{0}等').format(t['carry_name']) if t.get("carry_name") else tr("敌方")
         return (val, tr('对{0}{1}伤害有效生命 +{2}%').format(who, kind, round(gain * 100)))
 
-    def craft_cost(self, iid, own):
-        """合成 iid 还要花多少钱：已有的零件（含零件的零件、重复零件）都扣掉；own 是 Counter，会被用掉"""
-        gd = self.gd
-        if own[iid] > 0:
-            own[iid] -= 1
-            return 0
-        g = gd.items.get(iid, {}).get("gold", {})
-        return g.get("base", g.get("total", 0)) + sum(
-            self.craft_cost(int(c), own) for c in gd.items.get(iid, {}).get("from", []) if str(c).isdigit())
-
-    def buy_hint(self, iid, gold, owned):
-        gd = self.gd
-        own = Counter(owned)
-        remain = self.craft_cost(iid, Counter(own))
-        if gold >= remain:
-            return tr("可直接买")
-        # 下一步能买的最贵零件（包含零件的零件；已有的不算）
-        pool, cand = [iid], []
-        while pool:
-            c = pool.pop()
-            for x in gd.items.get(c, {}).get("from", []):
-                if not str(x).isdigit():
-                    continue
-                x = int(x)
-                if own[x] > 0:
-                    own[x] -= 1
-                    continue
-                cand.append(x)
-                pool.append(x)
-        afford = [c for c in cand if self.craft_cost(c, Counter(owned)) <= gold]
-        if afford:
-            c = max(afford, key=gd.item_price)
-            return tr('先买{0}').format(gd.item_name(c))
-        return tr('差{0}g').format(int(math.ceil(remain - gold)))
-
     @staticmethod
     def top_dims(prof, vec, k=2):
         both = sorted(((prof.get(d, 0) * vec.get(d, 0), d) for d in vec if d in DIM_LABEL), reverse=True)
@@ -2065,9 +2030,7 @@ class Advisor:
             out.append({"name": gd.item_name(iid), "id": iid, "score": self.item_score(raw),
                         "raw": raw, "price": gd.item_price(iid), "reason": self.reason(fit_text, rf),
                         "wr": sf["wr"] if sf else None, "stat_text": (sf["text"] if sf else "") + "\n" + parts_txt})
-        out = self.smooth(me, out)
-        for it in out[:k]:
-            it["hint"] = self.buy_hint(it["id"], gold, me.items)
+        out = self.smooth(me, out)          # 推荐只看装备本身好不好，不看你现在身上有多少钱（也不显示差多少钱）
         boots = self.recommend_boots(me, t, prof, role, cs, gold, legend, phase, rules)
         return ([boots] if boots else []) + out[:k], prof
 
@@ -2362,7 +2325,7 @@ class Advisor:
                 "stat_text": (sf["text"] if sf else "") + "\n" + parts_txt,
                 "price": gd.item_price(iid), "boots": True, "wr": sf["wr"] if sf else None,
                 "reason": self.reason(tr('契合你的{0}路线').format('/'.join(dims)) if dims else "", rf),
-                "hint": self.buy_hint(iid, gold, me.items)}
+                "hint": ""}
 
     # ---------- augments ----------
     def score_aug(self, a, prof, t, my_augs, me, cs=None, stage=1):
@@ -5193,7 +5156,8 @@ def format_rec(rec):
     lines.append(tr("【推荐装备】"))
     for i, it in enumerate(rec["items"], 1):
         wr = tr('胜率{0:.1f}% ').format(it['wr'] * 100) if it.get("wr") else ""
-        lines.append(tr(' {0}. {1:<10} {2:>3}分  [{3}{4}] {5}').format(i, it['name'], it['score'], wr, it.get('hint', ''), it['reason']))
+        lines.append(tr(' {0}. {1:<10} {2:>3}分  [{3}{4}] {5}').format(i, it['name'], it['score'], wr, it.get('hint', ''), it['reason'])
+                     .replace(" [] ", " "))
     lines.append(tr("【三选一评分】") if rec["cand_mode"] else tr("【推荐增幅】"))
     for i, a in enumerate(rec["augs"], 1):
         mark = tr(" ←选它") if rec["cand_mode"] and i == 1 else ""
