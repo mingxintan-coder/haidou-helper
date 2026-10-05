@@ -24,6 +24,7 @@ import json
 import math
 import os
 import queue
+import random
 import re
 import ssl
 import sys
@@ -34,7 +35,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.19.0"
+APP_VERSION = "1.20.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -3393,6 +3394,7 @@ class Engine:
         self.updater = None
         self.scanning = False          # 正在识别三选一（界面这时刷新得快一点）
         self.habits = HabitStore()
+        self.practice = PracticeStore()
         self.advisor.habits_store = self.habits
         self.riotdb = RiotCollector(gd)
         self.advisor.riotdb = self.riotdb
@@ -3547,6 +3549,13 @@ class Engine:
         for i in items:
             if i not in known and i not in g["items"] and top is not None:
                 follow.append((i, i in top))
+        snap = getattr(self, "_items_snap", None)
+        for i in items:
+            if i not in g["items"] and snap and i not in {o["id"] for o in snap["opts"]} and top is not None \
+                    and not self.gd.is_boots(i):
+                # 练习题：买了不在推荐前 3 的装备 → 记下当时的局面和推荐
+                g.setdefault("buy_quiz", []).append({"t": snap["t"], "owned": snap["owned"], "bought": self.gd.item_name(i),
+                                                     "opts": [{k: o[k] for k in ("name", "reason")} for o in snap["opts"]]})
         g["items"] = items
         for i in items:
             if i not in {x for x, _ in follow} and top is None:
@@ -3554,6 +3563,10 @@ class Engine:
         nonboots = [x["id"] for x in rec.get("items", []) if not x.get("boots")][:3]
         boots = [x["id"] for x in rec.get("items", []) if x.get("boots")]
         self._last_top = set(nonboots + boots)
+        top3 = [x for x in rec.get("items", []) if not x.get("boots")][:3]
+        if top3:
+            self._items_snap = {"t": int(me.game_time // 60), "owned": [self.gd.item_name(i) for i in items],
+                                "opts": [{"id": x["id"], "name": x["name"], "reason": x.get("reason", "")} for x in top3]}
         # 增幅：选的是不是 ★ 那张
         offer = getattr(self, "_last_offer", None)
         for n in rec.get("my_augs", []):
@@ -3561,9 +3574,15 @@ class Engine:
                 g["augs"].append(n)
                 if offer and n in offer[0]:
                     g.setdefault("aug_follow", []).append((n, n == offer[1]))
+                    osnap = getattr(self, "_offer_snap", None)
+                    if n != offer[1] and osnap:           # 练习题：没选 ★ 的那次三选一
+                        g.setdefault("aug_quiz", []).append(dict(osnap, picked=n))
         if rec.get("cand_mode") and rec.get("augs"):
             names = [a["name"] for a in rec["augs"]]
             self._last_offer = (names, names[0])
+            self._offer_snap = {"t": int(me.game_time // 60),
+                                "opts": [{"name": a["name"], "reason": a.get("reason", ""), "howto": a.get("howto", "")}
+                                         for a in rec["augs"][:3]]}
             for a in names:
                 if a not in g["offered"]:
                     g["offered"].append(a)
@@ -3580,10 +3599,14 @@ class Engine:
 
     def finish_game(self, win):
         g, self.cur_game = self.cur_game, None
-        self._last_top = self._last_offer = None
+        self._last_top = self._last_offer = self._items_snap = self._offer_snap = None
         if g and g["len"] >= 300:           # 打了 5 分钟以上的才算（重开、掉线不记）
             g["win"] = win
             self.habits.add_game(g)
+            try:
+                g["practice_new"] = self.practice.add_from_game(g, self.gd)
+            except Exception:  # noqa
+                g["practice_new"] = 0
             self.q.put(("review", self.review(g)))
             self.import_history_async(delay=60)    # 客户端结算后会更新对局记录，补上编号以免重复
 
@@ -3619,6 +3642,8 @@ class Engine:
                     break
         if practice:
             detail = (detail + "\n" if detail else "") + tr("下局练习：") + practice
+        if g.get("practice_new"):
+            detail = (detail + "\n" if detail else "") + tr("这局的失误变成了 {0} 道练习题：点这里或 ⋯ → 练习模式").format(g["practice_new"])
         return {"text": head + (" · " + " · ".join(parts) if parts else ""), "detail": detail,
                 "items": [gd.item_name(i) for i in g.get("items", [])], "augs": g.get("augs", [])}
 
@@ -3898,6 +3923,81 @@ def load_arammayhem(log=print):
 # 每局海斗结束时记下：英雄、出了哪些成品装备、拿了哪些增幅、三选一里出现过哪些增幅、输赢。
 # 推荐时偏向你熟悉、而且你用了赢得多的装备 / 增幅（加分有上限，网上数据仍是主要依据）。
 # --------------------------------------------------------------------------------------
+class PracticeStore:
+    """练习题库（APP_DIR/practice.json）：每局结束把失误变成题目，用间隔重复（Leitner 盒子）反复练
+       盒子 0＝新题，答对往上一格、答错回到 1；下次出现：1 格马上、2 格 1 天、3 格 3 天、4 格 7 天、5 格 21 天，过了 5 格算学会"""
+    GAP_DAYS = {1: 0, 2: 1, 3: 3, 4: 7, 5: 21}
+    MAX_CARDS = 300
+
+    def __init__(self, path=None):
+        self.path = path or os.path.join(APP_DIR, "practice.json")
+        data = read_json(self.path) if os.path.exists(self.path) else None
+        self.cards = data.get("cards", []) if isinstance(data, dict) else []
+
+    def save(self):
+        self.cards = self.cards[-self.MAX_CARDS:]
+        try:
+            write_json(self.path, {"version": 1, "cards": self.cards})
+        except OSError:
+            pass
+
+    def add_from_game(self, g, gd):
+        """这局的失误 → 题目；回传新增几题"""
+        champ = gd.champ_name(g["champ"])
+        new = []
+        for q in g.get("aug_quiz", []):
+            new.append({"type": "aug", "champ": champ, "t": q["t"], "you": q["picked"],
+                        "options": [o["name"] for o in q["opts"]], "answer": q["opts"][0]["name"],
+                        "explain": {o["name"]: o.get("reason", "") for o in q["opts"]},
+                        "howto": {o["name"]: o.get("howto", "") for o in q["opts"]}})
+        for q in g.get("buy_quiz", []):
+            opts = [o["name"] for o in q["opts"]]
+            if q["bought"] not in opts:
+                opts.append(q["bought"])
+            new.append({"type": "item", "champ": champ, "t": q["t"], "you": q["bought"], "owned": q.get("owned", []),
+                        "options": opts, "answer": q["opts"][0]["name"],
+                        "explain": {o["name"]: o.get("reason", "") for o in q["opts"]}})
+        da = g.get("died_active") or {}
+        if da:
+            name, n = max(da.items(), key=lambda x: x[1])
+            new.append({"type": "react", "champ": champ, "item": name, "key": g.get("active_key", "2"), "deaths": n})
+        have = {c["id"] for c in self.cards}
+        added = 0
+        for c in new:
+            c["id"] = hashlib.md5(json.dumps({k: c.get(k) for k in ("type", "champ", "t", "options", "item")},
+                                             ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
+            if c["id"] in have:
+                continue
+            c.update({"box": 0, "due": 0.0, "game": g.get("ts") or time.time(), "seen": 0, "right": 0})
+            self.cards.append(c)
+            added += 1
+        if added:
+            self.save()
+        return added
+
+    def session(self, n=10):
+        """这次要练的题：最近一局的新题优先，再来到期的旧题"""
+        now = time.time()
+        live = [c for c in self.cards if c["box"] <= 5]
+        newest = max((c["game"] for c in live), default=0)
+        fresh = [c for c in live if c["box"] == 0 and c["game"] == newest]
+        due = [c for c in live if c not in fresh and c["due"] <= now]
+        due.sort(key=lambda c: (c["box"], c["due"]))
+        return (fresh + due)[:n]
+
+    def grade(self, card, ok):
+        card["seen"] = card.get("seen", 0) + 1
+        card["right"] = card.get("right", 0) + (1 if ok else 0)
+        card["box"] = min(6, max(1, card["box"]) + 1) if ok else 1
+        card["due"] = time.time() + 86400 * self.GAP_DAYS.get(card["box"], 0)
+        self.save()
+
+    def stats(self):
+        live = [c for c in self.cards if c["box"] <= 5]
+        return {"total": len(live), "due": len(self.session(999)),
+                "learned": sum(1 for c in self.cards if c["box"] > 5)}
+
+
 class HabitStore:
     MAX_GAMES = 400
 
@@ -5138,6 +5238,204 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         st["hold_until"] = time.time() + 3
     menu.add_command(label=tr("我的战绩…"), command=open_stats)
 
+    # ---------- 练习模式：把这局的失误变成题目，反复练 ----------
+    practice_win = {"w": None}
+
+    def open_practice(_e=None):
+        if practice_win["w"] is not None and practice_win["w"].winfo_exists():
+            practice_win["w"].lift()
+            return
+        store = engine.practice
+        cards = store.session(10)
+        w = tk.Toplevel(root)
+        practice_win["w"] = w
+        w.title(tr("练习模式"))
+        w.attributes("-topmost", True)
+        w.configure(bg=BG, padx=14, pady=10)
+        WW = int(380 * dpi * st["k"])
+        st["hold_until"] = time.time() + 3
+        state = {"i": 0, "right": 0, "done": False}
+        head = tk.Label(w, text="", bg=BG, fg=GOLD, font=F["title"], anchor="w")
+        head.pack(fill="x")
+        body_f = tk.Frame(w, bg=BG)
+        body_f.pack(fill="both", expand=True, pady=(6, 0))
+
+        def lab(parent, text, font="tip", fg=FG, pady=0):
+            lb = tk.Label(parent, text=text, bg=parent.cget("bg"), fg=fg, font=F[font], anchor="w",
+                          justify="left", wraplength=WW - 20)
+            lb.pack(fill="x", pady=pady)
+            return lb
+
+        def button(parent, text, cmd, bg="#26324a", fg=FG):
+            b = tk.Label(parent, text=text, bg=bg, fg=fg, font=F["name"], padx=10, pady=6, anchor="w",
+                         justify="left", wraplength=WW - 30, cursor="hand2")
+            b.pack(fill="x", pady=3)
+            b.bind("<Button-1>", lambda e: cmd())
+            return b
+
+        def clear():
+            for c in body_f.winfo_children():
+                c.destroy()
+            w.unbind("<Key>")
+
+        def next_card():
+            state["i"] += 1
+            show_card()
+
+        def finish():
+            clear()
+            sts = store.stats()
+            head.config(text=tr("练习完成"))
+            if cards:
+                lab(body_f, tr("答对 {0}/{1}").format(state["right"], len(cards)), "name", GREEN)
+            lab(body_f, tr("题库：{0} 题要复习（答错的会马上再出，答对的隔 1、3、7、21 天再考），已学会 {1} 题").format(
+                sts["total"], sts["learned"]), "small", SUB)
+            button(body_f, tr("再练一次残血按键反应"), lambda: react_drill(None, "2", tr("中娅沙漏")))
+            button(body_f, tr("关闭"), w.destroy, bg=CARD)
+
+        def show_card():
+            clear()
+            if state["i"] >= len(cards):
+                finish()
+                return
+            c = cards[state["i"]]
+            head.config(text=tr("练习 {0}/{1}").format(state["i"] + 1, len(cards)) +
+                        ("  · " + tr("新题") if c["box"] == 0 else "  · " + tr("复习")))
+            if c["type"] == "react":
+                react_drill(c, c.get("key", "2"), c.get("item", ""))
+                return
+            if c["type"] == "aug":
+                q = tr("{0} · 第 {1} 分钟的三选一：哪张最好？").format(c["champ"], c["t"])
+            else:
+                q = tr("{0} · 第 {1} 分钟，你身上有 {2}。下一件买什么？").format(
+                    c["champ"], c["t"], tr("、").join(c.get("owned") or []) or tr("（还没有成品装）"))
+            lab(body_f, q, "name")
+            opts = list(c["options"])
+            random.shuffle(opts)
+            btns = {}
+
+            def pick(o):
+                if state.get("answered"):
+                    return
+                state["answered"] = True
+                ok = o == c["answer"]
+                state["right"] += ok
+                store.grade(c, ok)
+                for name, b in btns.items():
+                    b.unbind("<Button-1>")
+                    b.config(cursor="", bg="#1d3b2a" if name == c["answer"] else "#3b1d1d" if name == o else CARD)
+                res = tr("✓ 答对了") if ok else tr("✗ 推荐是「{0}」").format(c["answer"])
+                lab(body_f, res, "name", GREEN if ok else ORANGE, pady=(8, 2))
+                for name in [c["answer"]] + [x for x in c["options"] if x != c["answer"]]:
+                    why = (c.get("explain") or {}).get(name) or (tr("不在当时推荐的前 3 名") if name == c.get("you") else "")
+                    mark = "★" if name == c["answer"] else "·"     # 不留空格：中文换行才不会把符号单独切一行
+                    lab(body_f, mark + name + (tr("（你当时选的）") if name == c.get("you") else "") + "：" + why,
+                        "small", FG if name == c["answer"] else SUB)
+                ht = (c.get("howto") or {}).get(c["answer"])
+                if ht:
+                    lab(body_f, tr("怎么用：") + ht, "small", GREEN, pady=(4, 0))
+                button(body_f, tr("下一题 →"), next_card)
+
+            state["answered"] = False
+            for o in opts:
+                btns[o] = button(body_f, o, lambda o=o: pick(o))
+
+        def react_drill(card, key, item):
+            """残血按键反应：血条会被打掉，掉到 30% 以下（红线）时马上按键；太早按＝浪费，掉到 0＝阵亡"""
+            clear()
+            head.config(text=tr("反应练习：残血按 {0} {1}").format(key, item))
+            lab(body_f, tr("血条掉到红线（30%）以下时，马上按键盘 {0}。太早按算浪费，掉到 0 算阵亡。共 5 次。").format(key),
+                "small", SUB)
+            cv = tk.Canvas(body_f, width=WW - 20, height=int(34 * dpi * st["k"]), bg=CARD, highlightthickness=0)
+            cv.pack(pady=8)
+            msg = lab(body_f, tr("准备…"), "name", FG)
+            log = lab(body_f, "", "small", SUB)
+            R = {"round": 0, "hp": 100.0, "cross": None, "live": False, "res": [], "job": None}
+            bw, bh = WW - 20, int(34 * dpi * st["k"])
+
+            def draw():
+                cv.delete("all")
+                col = ORANGE if R["hp"] <= 30 else GREEN
+                cv.create_rectangle(0, 0, int(bw * R["hp"] / 100), bh, fill=col, width=0)
+                x30 = int(bw * 0.3)
+                cv.create_line(x30, 0, x30, bh, fill="#ff4d4d", width=2)
+                cv.create_text(bw - 6, bh // 2, text=f"{int(R['hp'])}%", fill=FG, anchor="e", font=F["name"])
+
+            def end_round(ok, text):
+                R["live"] = False
+                if R["job"]:
+                    w.after_cancel(R["job"])
+                    R["job"] = None
+                R["res"].append(ok)
+                msg.config(text=text, fg=GREEN if ok else ORANGE)
+                log.config(text="  ".join("✓" if x else "✗" for x in R["res"]))
+                w.after(1100, start_round)
+
+            def tick():
+                if not R["live"]:
+                    return
+                drop = random.uniform(2.5, 7) if R["hp"] < 50 else random.uniform(6, 14)
+                R["hp"] = max(0.0, R["hp"] - drop)
+                if R["hp"] <= 30 and R["cross"] is None:
+                    R["cross"] = time.time()
+                draw()
+                if R["hp"] <= 0:
+                    end_round(False, tr("✗ 阵亡了：掉到红线就要按"))
+                    return
+                R["job"] = w.after(int(random.uniform(180, 340)), tick)
+
+            def on_key(e):
+                if not R["live"] or (e.char or "").lower() != key.lower():
+                    return
+                if R["cross"] is None:
+                    end_round(False, tr("✗ 太早了：还没到残血，中娅浪费了"))
+                else:
+                    dt = time.time() - R["cross"]
+                    R.setdefault("rt", []).append(dt)
+                    end_round(True, tr("✓ {0:.2f} 秒").format(dt))
+
+            def start_round():
+                if R["round"] >= 5:
+                    w.unbind("<Key>")
+                    ok_n = sum(1 for x in R["res"] if x)
+                    rts = R.get("rt", [])
+                    avg = sum(rts) / len(rts) if rts else 9
+                    passed = ok_n >= 4 and avg <= 0.8
+                    msg.config(text=tr("{0}/5 成功，平均反应 {1:.2f} 秒").format(ok_n, avg) +
+                               ("  " + (tr("✓ 过关") if passed else tr("再练一次"))), fg=GREEN if passed else ORANGE)
+                    if card is not None:
+                        state["right"] += passed
+                        store.grade(card, passed)
+                        button(body_f, tr("下一题 →"), next_card)
+                    else:
+                        button(body_f, tr("再来一次"), lambda: react_drill(None, key, item))
+                        button(body_f, tr("关闭"), w.destroy, bg=CARD)
+                    return
+                R.update({"round": R["round"] + 1, "hp": 100.0, "cross": None, "live": True})
+                msg.config(text=tr("第 {0}/5 次").format(R["round"]), fg=FG)
+                draw()
+                R["job"] = w.after(int(random.uniform(500, 1200)), tick)
+
+            w.bind("<Key>", on_key)
+            w.focus_force()
+            draw()
+            w.after(900, start_round)
+
+        def on_close():
+            practice_win["w"] = None
+            w.destroy()
+        w.protocol("WM_DELETE_WINDOW", on_close)
+        if cards:
+            show_card()
+        else:
+            head.config(text=tr("练习模式"))
+            lab(body_f, tr("现在没有要练的题。打完一局，失误（没选 ★ 的增幅、不在推荐里的装备、带着中娅阵亡）会自动变成题目。"),
+                "tip", SUB)
+            button(body_f, tr("先练残血按键反应"), lambda: react_drill(None, "2", tr("中娅沙漏")))
+        w.minsize(WW, int(260 * dpi))
+        w.geometry(f"+{max(0, root.winfo_rootx() - WW - 12)}+{root.winfo_rooty()}")
+    menu.add_command(label=tr("练习模式…"), command=open_practice)
+
     def open_riotdb():
         db = engine.riotdb
         w = tk.Toplevel(root)
@@ -5386,7 +5684,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         shop_text = shop_line(shop)
         rv = st.get("review")
         if shop_text:
-            shop_lbl.config(text=shop_text)
+            shop_lbl.config(text=shop_text, cursor="")
+            shop_lbl.unbind("<Button-1>")
             shop_lbl.pack(fill="x", pady=(0, 3), before=tips_box)
         elif rv and time.time() < rv[1]:
             pass                                   # 赛后复盘还在显示
@@ -5533,6 +5832,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 if st["tab"] != "items":
                     select_tab("items")
                 mini.config(text="📋 " + payload["text"], fg=GOLD)
+                if engine.practice.session(1):              # 点复盘就开练习模式
+                    shop_lbl.config(cursor="hand2")
+                    shop_lbl.bind("<Button-1>", open_practice)
                 st["hold_until"] = time.time() + 20
                 set_expanded(True)
                 fit()

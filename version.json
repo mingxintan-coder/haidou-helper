@@ -1,14 +1,14 @@
 {
- "version": "1.19.0",
+ "version": "1.20.0",
  "date": "2026-10-04",
  "notes": [
-  "学最优解：每个推荐增幅附「怎么用」；玩法页列出主动装备按几号键、什么时候按",
-  "残血时提醒「按 2 中娅」；赛后给一个「下局练习」",
-  "Learn the optimal play: how-to for augments, active item key reminders, one practice point per game"
+  "新增练习模式：每局的失误（没选 ★ 的增幅、不在推荐里的装备、带着中娅阵亡）自动变成题目，间隔重复反复练",
+  "残血按键反应练习：血条掉到红线时按键，测反应时间",
+  "New practice mode: your mistakes become spaced-repetition drills, plus a low-HP key reaction drill"
  ],
  "files": {
-  "haidou_helper.py": "b467ba69f0dee8d8f0115e9683e4cbe22744e8a12a8635fd9503b2c26426f7ea",
-  "lang_en.py": "1660dbe7da76f8b23ab2cb9e3ff922545a7a9e5991bed11eb18203fe2c5fe18c",
-  "README.md": "11c2970ad41fccc95c07ccbff578d8f936c5be319be5a145f1f133a3771bb5a8"
+  "haidou_helper.py": "b5290865b84c76d7d6666e91ae199bdbd9aa6e3935f2babfd475532abf0ec7f2",
+  "lang_en.py": "83e82daea92d94ad3e434e46ec9863d2409ec9d1fe8b2967caae0927f9388879",
+  "README.md": "2a390dc87c76b79ef65c2e4f8ec74f7c05eec3c51dfaa544d47d062182f6e3b7"
  }
 }
