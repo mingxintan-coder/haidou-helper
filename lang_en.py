@@ -356,6 +356,8 @@ EN.update({'和你同定位：': 'Same role as you: ', '值得学：': 'Worth le
 EN.update({'净贡献：每 10 分钟 {0:+.1f} 个人头（你 {1:+.1f}）': 'Net contribution: {0:+.1f} kills per 10 min (you {1:+.1f})'})
 EN.update({'杀了你 {0} 次：出了{1}之后要避开正面': 'Killed you {0}×: avoid fighting head-on after {1}', '向高手学：这局最强的是{0}（{1}）。{0}第 {2} 件成品（第 {3} 分钟）出了什么？': 'Learn from the best: the MVP was {0} ({1}). What was {0}\'s item #{2} (at {3} min)?', '✗ 出的是「{0}」': '✗ It was [{0}]'})
 EN.update({'承伤': 'tanked', '占全队：': 'Share of team: ', '（你 {0:.0f}%）': ' (you {0:.0f}%)', ' · 已用结算数据更新': ' · updated with end-of-game stats', '高手出装（{0} 局里当过最强）：{1}': 'Pro build (MVP in {0} games): {1}'})
+EN.update({'比队友多赚：每 10 分钟 {0:+.1f} 个人头（你 {1:+.1f}）': 'Above teammates: {0:+.1f} kills per 10 min (you {1:+.1f})', '复盘出错：{0}': 'Review error: {0}'})
+EN.update({'伤害输出': 'damage'})
 COMBOS_EN = {'Aatrox': {'notes': ['Use E to adjust so all three Q casts land with the sweet spot (outer edge)',
                       'R for speed to stick to targets; heals more the lower you get'],
             'style': "Frontline fighter: go in after they burn CC, don't back off with R up"},

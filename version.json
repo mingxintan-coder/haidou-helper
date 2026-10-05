@@ -1,13 +1,15 @@
 {
- "version": "1.21.2",
+ "version": "1.21.3",
  "date": "2026-10-04",
  "notes": [
-  "「向高手学」表现分再改进：扣掉团队效应（赢方不再人人好看）；结算后读客户端的伤害、承伤、治疗护盾、控制数据，坦克辅助的贡献算得进来；同英雄跨局累积「高手出装」",
-  "MVP score: team-effect adjustment, end-of-game stats for tanks/supports, cross-game pro builds"
+  "全面检查修正约 30 个问题：上一局手动输入的增幅不再带到下一局；游戏当掉重连不再记成两局；浮窗拖到屏幕下方不再卡死；界面出错不会停住（记到 ui_error.log）",
+  "「可直接买 / 先买零件 / 差多少钱」改用完整合成计算；没读到敌人时不再当成全魔法伤害；一两个字不会被硬配成增幅",
+  "没读到输赢的局不算输；更新中途失败会完整还原；胜率数据下载失败会重试；英文模式几处文字修正",
+  "Full audit: ~30 bug fixes (manual inputs reset per game, reconnect no longer double-records, overlay no longer freezes, buy hints, update rollback, and more)"
  ],
  "files": {
-  "haidou_helper.py": "6ac69803019550341376a1b8e5d126aa65c3a4f8e49b6989d0139afebd551038",
-  "lang_en.py": "62a7908956c838d2f1fc22bebe983f28353a933de88ceb4ac8efc25fe906a2cc",
+  "haidou_helper.py": "ad163615be850e167a71b06e11eaa91e54426320f8e28509212c0d6a4fb27347",
+  "lang_en.py": "dd7c6ab6998ab35c76a1cb89a6b5c1d8ef8eb0314e53ae4da946f66065c97090",
   "README.md": "fea3ca9c6e904e7d9bad02ab7e23b80ed93b432a21529a8e9f41e2df7907d1c8"
  }
 }

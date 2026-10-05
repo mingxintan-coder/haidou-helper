@@ -35,7 +35,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.21.2"
+APP_VERSION = "1.21.3"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -420,7 +420,7 @@ KEYWORDS = [
 ]
 
 # 英文数据（英文客户端）的属性关键词：追加到上面各类后面（中文模式下不会匹配到）
-KEYWORDS_EN = {'MAXHP_DMG': ['(?i)max(imum)? health (as )?damage', "(?i)% (of )?(the target's |their )?max(imum)? health", '(?i)missing health'], 'LETHAL': ['(?i)lethality', '(?i)armor penetration', '(?i)armor pen'], 'MPEN': ['(?i)magic penetration', '(?i)magic pen'], 'ANTIHEAL': ['(?i)grievous wounds', '(?i)reduc\\w* healing'], 'HEALSHIELD': ['(?i)heal (and|&) shield power', '(?i)heals? and shields?', '(?i)allies?.{0,20}(shield|heal)', '(?i)\\bshield'], 'SURVIVE': ['(?i)revive', '(?i)stasis', '(?i)untargetable', '(?i)invulnerab', '(?i)below \\d+% (max(imum)? )?health', '(?i)would die'], 'SUSTAIN': ['(?i)life ?steal', '(?i)omnivamp', '(?i)restore.{0,12}health', '(?i)\\bheal'], 'ANTICRIT': ['(?i)damage taken from critical strikes'], 'CRIT': ['(?i)critical strike', '(?i)\\bcrit'], 'AS': ['(?i)attack speed'], 'ONHIT': ['(?i)on-hit', '(?i)basic attacks?', '(?i)\\battacks? (deal|apply)'], 'ARMOR': ['(?i)\\barmor\\b'], 'MR': ['(?i)magic resist'], 'AD': ['(?i)attack damage', '(?i)\\bAD\\b', '(?i)physical damage'], 'AP': ['(?i)ability power', '(?i)\\bAP\\b', '(?i)magic damage'], 'HP': ['(?i)\\bhealth\\b', '(?i)\\bHP\\b'], 'HASTE': ['(?i)ability haste', '(?i)cooldowns?'], 'ULT': ['(?i)ultimate'], 'MANA': ['(?i)\\bmana\\b'], 'TRUE': ['(?i)true damage'], 'TENACITY': ['(?i)tenacity', '(?i)crowd control.{0,12}(reduc|immun)'], 'MS': ['(?i)move(ment)? speed']}
+KEYWORDS_EN = {'MAXHP_DMG': ['(?i)max(imum)? health (as )?damage', "(?i)% (of )?(the target's |their )?max(imum)? health", '(?i)missing health'], 'LETHAL': ['(?i)lethality', '(?i)armor penetration', '(?i)armor pen'], 'MPEN': ['(?i)magic penetration', '(?i)magic pen'], 'ANTIHEAL': ['(?i)grievous wounds', '(?i)reduc\\w* healing'], 'HEALSHIELD': ['(?i)heal (and|&) shield power', '(?i)heals? and shields?', '(?i)\\b(ally|allies)\\b.{0,20}(shield|heal)', '(?i)\\bshield'], 'SURVIVE': ['(?i)revive', '(?i)stasis', '(?i)untargetable', '(?i)invulnerab', '(?i)below \\d+% (max(imum)? )?health', '(?i)would die'], 'SUSTAIN': ['(?i)life ?steal', '(?i)omnivamp', '(?i)restore.{0,12}health', '(?i)\\bheal'], 'ANTICRIT': ['(?i)damage taken from critical strikes'], 'CRIT': ['(?i)critical strike', '(?i)\\bcrit'], 'AS': ['(?i)attack speed'], 'ONHIT': ['(?i)on-hit', '(?i)basic attacks?', '(?i)\\battacks? (deal|apply)'], 'ARMOR': ['(?i)\\barmor\\b'], 'MR': ['(?i)magic resist'], 'AD': ['(?i)attack damage', '(?i)\\bAD\\b', '(?i)physical damage'], 'AP': ['(?i)ability power', '(?i)\\bAP\\b', '(?i)magic damage'], 'HP': ['(?i)\\bhealth\\b', '(?i)\\bHP\\b'], 'HASTE': ['(?i)ability haste', '(?i)cooldowns?'], 'ULT': ['(?i)ultimate'], 'MANA': ['(?i)\\bmana\\b'], 'TRUE': ['(?i)true damage'], 'TENACITY': ['(?i)tenacity', '(?i)crowd control.{0,12}(reduc|immun)'], 'MS': ['(?i)move(ment)? speed']}
 _kw = dict(KEYWORDS)
 for _d, _pats in KEYWORDS_EN.items():
     if _d in _kw:
@@ -485,7 +485,7 @@ def add_into(dst, src, w=1.0):
 # --------------------------------------------------------------------------------------
 def write_json(path, data):
     """先写临时文件再换上：程序被关掉或断电时不会留下写了一半的缓存"""
-    tmp = path + ".tmp"
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"     # 每个执行绪自己的暂存档，同时写也不会互相盖掉
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
     os.replace(tmp, path)
@@ -568,6 +568,8 @@ class GameData:
             raise RuntimeError(tr("没有装备/英雄数据：请确认能访问 ddragon.leagueoflegends.com 后重试"))
         if need_dl and fresh["ok"]:
             open(os.path.join(APP_DIR, f"ver_{version}_{lang}"), "w").close()
+        elif need_dl:
+            version = None     # 新版本没下载完整、用的还是旧缓存：版本号也照旧（下次检查会再下载）
 
         items = {int(k): v for k, v in items_raw.get("data", {}).items() if k.isdigit()}
         champs = {v["id"].lower(): v for v in champ_raw.get("data", {}).values()}
@@ -773,13 +775,10 @@ class GameData:
         if c and self.version not in ("?", "cache"):
             path = os.path.join(APP_DIR, f"kit_{self.version}_{self.lang}_{c['id']}.json")
             try:
-                if os.path.exists(path):
-                    with open(path, encoding="utf-8") as f:
-                        raw = json.load(f)
-                else:
+                raw = read_json(path) if os.path.exists(path) else None
+                if not isinstance(raw, dict):      # 没有缓存，或缓存坏了（写到一半被关掉）：重新下载
                     raw = http_json(f"{DDRAGON}/cdn/{self.version}/data/{self.lang}/champion/{c['id']}.json", timeout=8)
-                    with open(path, "w", encoding="utf-8") as f:
-                        json.dump(raw, f, ensure_ascii=False)
+                    write_json(path, raw)
                 d = next(iter(raw.get("data", {}).values()))
                 kit = {k: {"name": simp(sp.get("name", "")), "desc": simp(clean_desc(sp.get("description", "")))}
                        for k, sp in zip("QWER", d.get("spells", []))}
@@ -939,7 +938,7 @@ AUG_HOWTO = [
     (r"硬控|禁锢|晕眩|控场|(?i:immobiliz|stun)", "命中控制才触发：先控住再打"),
     (r"参与击杀|击杀.{0,6}(英雄|敌军)|(?i:takedown)", "参与击杀才叠层：多跟团、补残血"),
     (r"处决|(?i:execute)", "能处决低血敌人：优先打残血的"),
-    (r"(友军|友方).{0,30}(治疗|护盾)|(治疗|护盾).{0,12}(友军|友方)|(?i:ally)", "对队友放治疗 / 护盾才有效"),
+    (r"(友军|友方).{0,30}(治疗|护盾)|(治疗|护盾).{0,12}(友军|友方)|(?i:\b(ally|allies|allied)\b)", "对队友放治疗 / 护盾才有效"),
     (r"(?<!\()死亡时(?!重置)|(?i:on death|when you die)", "死了也有效果：残局敢拼"),
     (r"生命低于|低于\s*\d+%.{0,6}生命|(?i:below \d+% health)", "残血才触发：别太早撤，残血再拼一下"),
     (r"大绝|(?i:ultimate)", "围绕大绝：大绝好了再开团"),
@@ -1215,7 +1214,8 @@ class StatsProvider:
             return None
         with self.lock:
             have = self.champs.get(champ_key)
-            if have is not None and (light or not have.get("light")):
+            if have is not None and (light or not have.get("light") or
+                                     time.time() - have.get("sa_failed", 0) < 600):   # 增幅×装备下载失败过：10 分钟后再试
                 return have
             if champ_key in self.pending or time.time() - self.failed.get(champ_key, 0) < 60:
                 return have
@@ -1224,6 +1224,8 @@ class StatsProvider:
         return have
 
     def _fetch(self, key, light=False):
+        with self.lock:
+            ds_started = self.dataset
         try:
             if not self.version and not self.load_version():
                 return
@@ -1238,6 +1240,8 @@ class StatsProvider:
                 parsed["by_aug"], parsed["light"] = {}, True
             else:
                 parsed["by_aug"] = self._fetch_single_augments(dp, key, ds)
+                if parsed["by_aug"] is None:      # 增幅×装备那份没下载到：先用简版，10 分钟后再试
+                    parsed["by_aug"], parsed["light"], parsed["sa_failed"] = {}, True, time.time()
             with self.lock:
                 if ds != self.dataset:       # 下载期间换了分段：这份作废
                     return
@@ -1252,7 +1256,8 @@ class StatsProvider:
                 self.failed[key] = time.time()        # 一分钟后再试，不要每秒重试
         finally:
             with self.lock:
-                self.pending.discard(key)
+                if ds_started == self.dataset:     # 期间换过分段的话，pending 已经是新分段的，不能删
+                    self.pending.discard(key)
 
     def _fetch_single_augments(self, dp, key, ds="all"):
         """带某个增幅时，这个英雄各装备的胜率（原始文件约 5MB，只保留需要的部分存成小缓存）"""
@@ -1265,7 +1270,7 @@ class StatsProvider:
             raw = http_json(f"{ARAMKIT}/{dp}/stats/{ds}/champion-details/{key}-single-augments.json", timeout=60)
         except Exception as e:  # noqa
             self.log(tr('[胜率] 增幅×装备数据下载失败：{0}').format(e))
-            return {}
+            return None
         out = {}
         for row in raw.get("items", []):
             aid = row.get("augmentId")
@@ -1386,7 +1391,7 @@ def parse_live(raw):
         cid = re.sub(r"(?i)^(game_character_displayname_|character_)|_name$", "", p.get("rawChampionName") or "")
         if not cid:
             cid = p.get("championName", "?")
-        items = [it.get("itemID") for it in p.get("items", []) if it.get("itemID") not in IGNORE_ITEMS]
+        items = [it.get("itemID") for it in p.get("items") or [] if it.get("itemID") not in IGNORE_ITEMS]
         augs = []
         for k, v in p.items():
             if "augment" in k.lower() and isinstance(v, list):
@@ -1466,6 +1471,9 @@ class Advisor:
             return None
         if text in self.aug_index:
             return self.aug_index[text]
+        latin = not re.search(r"[\u4e00-\u9fff]", text)
+        if len(text) < (3 if latin else 2):
+            return None                    # 一两个字（OCR 杂讯、手误）不要硬配成某个增幅
         hits = [a for n, a in self.aug_index.items() if len(n) >= 2 and (text in n or n in text)]
         if hits:
             return min(hits, key=lambda a: abs(len(a["name"]) - len(text)))
@@ -1575,7 +1583,9 @@ class Advisor:
             return {"lift": 0.0, "raw": 0.0, "text": tr("这个英雄在海斗几乎没人出") if pop < 0.005 else "",
                     "wr": None, "pop": pop}
         lift = sum(x[0] for x in parts) / len(parts)
-        main = max(parts, key=lambda x: abs(x[0]))
+        # 显示的那一项要和总分同方向（总分低于平均就不要拿某一项「比平均高」来当理由）
+        same = [x for x in parts if (x[0] >= 0) == (lift >= 0)] or parts
+        main = max(same, key=lambda x: abs(x[0]))
         return {"lift": lift, "raw": main[1], "wr": main[3], "pop": pop,
                 "text": tr('{0}（比平均{1:+.1f}%）').format(main[2], main[1] * 100)}
 
@@ -1809,7 +1819,7 @@ class Advisor:
                 t["mr"] += 20
             if tg.get("HP"):
                 t["hp"] += 300
-        t["ad_share"] = adw / ((adw + apw) or 1)
+        t["ad_share"] = adw / (adw + apw) if adw + apw else 0.5      # 还读不到敌人（训练模式、载入中）：当作物理魔法各半
         # 最大威胁（敌方核心）
         if enemies:
             carry = max(enemies, key=lambda e: pw[id(e)] * (0.6 if "Tank" in (gd.champ(e.cid) or {}).get("tags", [])
@@ -1924,25 +1934,36 @@ class Advisor:
         who = tr('{0}等').format(t['carry_name']) if t.get("carry_name") else tr("敌方")
         return (val, tr('对{0}{1}伤害有效生命 +{2}%').format(who, kind, round(gain * 100)))
 
+    def craft_cost(self, iid, own):
+        """合成 iid 还要花多少钱：已有的零件（含零件的零件、重复零件）都扣掉；own 是 Counter，会被用掉"""
+        gd = self.gd
+        if own[iid] > 0:
+            own[iid] -= 1
+            return 0
+        g = gd.items.get(iid, {}).get("gold", {})
+        return g.get("base", g.get("total", 0)) + sum(
+            self.craft_cost(int(c), own) for c in gd.items.get(iid, {}).get("from", []) if str(c).isdigit())
+
     def buy_hint(self, iid, gold, owned):
         gd = self.gd
-        it = gd.items.get(iid, {})
-        total = gd.item_price(iid)
-        comps = [int(c) for c in it.get("from", []) if str(c).isdigit()]
-        have = [c for c in comps if c in owned]
-        remain = total - sum(gd.item_price(c) for c in have)
+        own = Counter(owned)
+        remain = self.craft_cost(iid, Counter(own))
         if gold >= remain:
             return tr("可直接买")
-        todo = [c for c in comps if c not in have]
-        # 下一步能买的最贵零件（包含零件的零件）
-        pool, seen = list(todo), set()
+        # 下一步能买的最贵零件（包含零件的零件；已有的不算）
+        pool, cand = [iid], []
         while pool:
             c = pool.pop()
-            if c in seen:
-                continue
-            seen.add(c)
-            pool += [int(x) for x in gd.items.get(c, {}).get("from", []) if str(x).isdigit()]
-        afford = [c for c in seen if gd.item_price(c) <= gold and c not in owned]
+            for x in gd.items.get(c, {}).get("from", []):
+                if not str(x).isdigit():
+                    continue
+                x = int(x)
+                if own[x] > 0:
+                    own[x] -= 1
+                    continue
+                cand.append(x)
+                pool.append(x)
+        afford = [c for c in cand if self.craft_cost(c, Counter(owned)) <= gold]
         if afford:
             c = max(afford, key=gd.item_price)
             return tr('先买{0}').format(gd.item_name(c))
@@ -1960,7 +1981,7 @@ class Advisor:
     @staticmethod
     def reason(fit_text, factors):
         pos = sorted([f for f in factors if f[0] > 0], reverse=True)
-        neg = [f for f in factors if f[0] < 0]
+        neg = sorted([f for f in factors if f[0] < 0], key=lambda f: f[0])     # 最严重的扣分放前面
         strong = [txt for v, txt in pos if v >= 0.08]
         weak = [txt for v, txt in pos if v < 0.08]
         parts = strong[:1] + ([fit_text] if fit_text else []) + strong[1:2]
@@ -2040,14 +2061,13 @@ class Advisor:
             fit_text = tr('契合你的{0}路线').format('/'.join(dims)) if dims else ""
             rf = [f for f in factors if f[0] > 0 or f[0] <= -0.05]
             if sf and sf["text"] and (abs(sf["raw"]) >= 0.01 or sf["pop"] < 0.005):
-                rf.append((0.1 if sf["raw"] > 0 else -0.1, sf["text"]))
+                rf.append((0.1 if sf["lift"] > 0 else -0.1, sf["text"]))
             out.append({"name": gd.item_name(iid), "id": iid, "score": self.item_score(raw),
                         "raw": raw, "price": gd.item_price(iid), "reason": self.reason(fit_text, rf),
                         "wr": sf["wr"] if sf else None, "stat_text": (sf["text"] if sf else "") + "\n" + parts_txt})
         out = self.smooth(me, out)
-        owned = set(me.items)
         for it in out[:k]:
-            it["hint"] = self.buy_hint(it["id"], gold, owned)
+            it["hint"] = self.buy_hint(it["id"], gold, me.items)
         boots = self.recommend_boots(me, t, prof, role, cs, gold, legend, phase, rules)
         return ([boots] if boots else []) + out[:k], prof
 
@@ -2101,8 +2121,8 @@ class Advisor:
         hp = self.habit_profile(me)
         if not hp or hp["games"] < 2:
             return None
-        cnt, wins = hp["items"].get(iid, (0, 0))
-        b = habit_bonus(cnt, wins, hp["games"], hp["wins"], hp["decided"], 0.10)
+        cnt, wins, dec = (list(hp["items"].get(iid, ())) + [0, 0, 0])[:3]
+        b = habit_bonus(cnt, wins, hp["games"], hp["wins"], hp["decided"], 0.10, dec)
         if b < 0.01:
             return None
         return (b, tr('你常出（{0} 局里出了 {1} 局，赢 {2} 局）').format(hp["games"], cnt, wins))
@@ -2111,12 +2131,12 @@ class Advisor:
         hp = self.habit_profile(me)
         if not hp or hp["games"] < 2:
             return None
-        cnt, wins = hp["augs"].get(a["name"], (0, 0))
+        cnt, wins, dec = (list(hp["augs"].get(a["name"], ())) + [0, 0, 0])[:3]
         seen = max(cnt, hp["offered"].get(a["name"], 0))
         if not cnt or seen < 1:
             return None
         # 增幅：用「出现时你选它的比例」当熟悉度
-        b = habit_bonus(cnt, wins, max(seen, 2), hp["wins"], hp["decided"], 0.15)
+        b = habit_bonus(cnt, wins, max(seen, 2), hp["wins"], hp["decided"], 0.15, dec)
         if b < 0.01:
             return None
         return (b, tr('你常拿（出现 {0} 次选了 {1} 次，赢 {2} 局）').format(seen, cnt, wins))
@@ -2306,7 +2326,7 @@ class Advisor:
                 continue
             vec, special = gd.item_vec(iid)
             nv = norm({d: v for d, v in vec.items() if d in BUILD_DIMS and d != "MS"})
-            fit = max(0.5, cosine(prof, nv)) if nv else 0.5      # 鞋子人人要买，契合度给个底
+            fit = max(0.5, cosine(prof, self.rule_vec(nv, rules))) if nv else 0.5   # 鞋子人人要买，契合度给个底
             ehp = self.ehp_factor(iid, me, t, prof, role)
             factors = self.counter_factors(vec, special, t, prof, ehp_done=ehp is not None, phase=1.0)
             if ehp and ehp[0] > 0.03:
@@ -2342,7 +2362,7 @@ class Advisor:
                 "stat_text": (sf["text"] if sf else "") + "\n" + parts_txt,
                 "price": gd.item_price(iid), "boots": True, "wr": sf["wr"] if sf else None,
                 "reason": self.reason(tr('契合你的{0}路线').format('/'.join(dims)) if dims else "", rf),
-                "hint": self.buy_hint(iid, gold, set(me.items))}
+                "hint": self.buy_hint(iid, gold, me.items)}
 
     # ---------- augments ----------
     def score_aug(self, a, prof, t, my_augs, me, cs=None, stage=1):
@@ -2696,8 +2716,13 @@ class Advisor:
             combos = []
         g["combos"] = [(self.combo_text(c, kit), note) for c, note in combos[:2]]
         if combos:
-            short = {"A": tr("平A"), "闪": tr("闪"), "草": tr("草")}
-            g["combo_keys"] = "→".join(short.get(x.strip(), x.strip()) for x in combos[0][0].split(">"))
+            short = {"A": tr("平A"), "闪": tr("闪"), "草": tr("草丛")}
+            suf = {"黄": tr("黄牌"), "红": tr("红牌")}       # 卡牌的 W黄 / W红
+
+            def key(x):
+                x = x.strip()
+                return short.get(x) or (x[:1] + suf[x[1:]] if x[1:] in suf else x)
+            g["combo_keys"] = "→".join(key(x) for x in combos[0][0].split(">"))
         if self.stats and self.stats.balance:
             b = self.stats.balance.get(me.cid.lower()) or {}
             label = {"damageDealt": tr("造成伤害"), "damageTaken": tr("承受伤害"), "abilityHaste": tr("技能急速"),
@@ -2782,7 +2807,8 @@ class Advisor:
         diff = t["power_diff"]
         lead = tr('领先 {0:.1f}k').format(diff / 1000) if diff > 500 else tr('落后 {0:.1f}k').format(-diff / 1000) if diff < -500 else tr("均势")
         summary = (tr('{0}｜{1}｜人头 {2}:{3}｜敌方物理 {4}%').format(self.gd.champ_name(me.cid), lead, t['kills_ally'], t['kills_enemy'], round(t['ad_share'] * 100)) + (tr('｜威胁 {0}').format(t['carry_name']) if t['carry_name'] else "") +
-                   (tr('｜网上 {0} 级 胜率 {1:.1f}%').format(cs['tier'], cs['wr'] * 100) if cs else
+                   ((tr('｜网上 {0} 级 胜率 {1:.1f}%').format(cs['tier'], cs['wr'] * 100) if cs.get('tier') else
+                     tr('｜网上胜率 {0:.1f}%').format(cs['wr'] * 100)) if cs else
                     (tr("｜网上胜率载入中…") if self.stats and not self.stats.error else "")))
         shop = None
         if me.is_dead and gold >= 300:              # 阵亡＝可以买东西：复活前该买什么
@@ -3304,6 +3330,9 @@ def scanner_loop(engine, scanner, stop, enabled, interval=3.0, clicker=None, hot
                 tries = 3
                 engine.scanning = True
                 engine.q.put(("scan", tr("识别中…")))
+                if not scanner.available:            # 没装 OCR：说清楚原因，不要一直停在「识别中…」
+                    tries, engine.scanning = 0, False
+                    engine.q.put(("scan", tr("识别不可用：") + (scanner.error or "")))
             run = scanner.available and (forced or active or tries > 0 or (enabled.is_set() and engine.connected))
             if run:
                 scanner.mask = getattr(engine, "overlay_rect", None)
@@ -3522,6 +3551,9 @@ class Engine:
                     pass
         if isinstance(sess, dict) and sess.get("gameId"):
             self._game_id = sess["gameId"]           # 结算后用来查这局的完整数据
+            if not getattr(self, "_cs_seen_game", False):
+                self._cs_seen_game = True
+                self.reset_manual()                  # 新的一局开始选英雄：上一局的手动输入清掉
         payload = self.champ_select_payload(sess)
         if payload is None:
             return None
@@ -3595,6 +3627,13 @@ class Engine:
             return
         g = self.cur_game
         champ = (self.gd.champ(me.cid) or {}).get("id", me.cid)
+        pk = getattr(self, "_parked", None)
+        if g is None and pk:
+            self._parked = None
+            if pk[0]["champ"] == champ and me.game_time + 30 >= pk[0]["len"]:
+                g = self.cur_game = pk[0]               # 重新连线回到同一局：接着记
+            else:
+                self.finish_game(None, pk[0])           # 已经是新的一局：上一局当成结束
         if g is None or g["champ"] != champ:
             g = self.cur_game = {"champ": champ, "t": time.strftime("%Y-%m-%d %H:%M"), "ts": time.time(), "items": [],
                                  "augs": [], "offered": [], "win": None, "len": 0}
@@ -3683,6 +3722,7 @@ class Engine:
             return
         for ev in ((raw.get("events") or {}).get("Events") or []):
             if ev.get("EventName") == "GameEnd":
+                self._ended = True
                 try:                       # 结束那一刻的最终 K/D/A 和装备
                     st0 = parse_live(raw)
                     if st0[2] is not None:
@@ -3693,28 +3733,49 @@ class Engine:
                 self._ended = True
                 break
 
-    def finish_game(self, win):
-        g, self.cur_game = self.cur_game, None
-        self._last_top = self._last_offer = self._items_snap = self._offer_snap = None
+    def reset_manual(self):
+        """一局结束：上一局手动输入 / 点选记下的增幅全部清掉，不带到下一局"""
+        with self.lock:
+            changed = any(self.manual.get(k) for k in self.manual)
+            for k in self.manual:
+                self.manual[k] = []
+            self.manual_dirty = changed
+        if changed:
+            self.q.put(("manual_reset", None))
+
+    def finish_game(self, win, g=None):
+        if g is None:
+            g, self.cur_game = self.cur_game, None
+            self._last_top = self._last_offer = self._items_snap = self._offer_snap = None
+            self.reset_manual()
+        gid, self._game_id = getattr(self, "_game_id", None), None
         if g and g["len"] >= 300:           # 打了 5 分钟以上的才算（重开、掉线不记）
-            g["win"] = win
             try:
-                g["mvp"] = self.mvp_lessons(g)
-            except Exception:  # noqa
-                g["mvp"] = []
-            try:
-                g["practice_new"] = self.practice.add_from_game(g, self.gd)
-            except Exception:  # noqa
-                g["practice_new"] = 0
-            rv = self.review(g)
-            self.post_game_async(dict(g))             # 背景读结算数据（伤害、承伤、治疗、控制），读到再重算高手
-            for k in ("roster", "kills", "was_dead"):   # 只在这局分析用，不存进习惯记录（太大）
-                g.pop(k, None)
-            g["mvp"] = [dict({k: m[k] for k in ("champ", "k", "d", "a", "lines")}, build=[i for i, _ in m.get("build", [])][:6])
-                        for m in g.get("mvp") or []]
-            self.habits.add_game(g)
-            self.q.put(("review", rv))
-            self.import_history_async(delay=60)    # 客户端结算后会更新对局记录，补上编号以免重复
+                self._finish_record(g, win, gid)
+            except Exception as e:  # noqa   复盘出错也不要让同一局之后再被记一次
+                self.q.put(("status", tr("复盘出错：{0}").format(e)))
+
+    def _finish_record(self, g, win, gid):
+        g["win"] = win
+        try:
+            g["mvp"] = self.mvp_lessons(g)
+        except Exception:  # noqa
+            g["mvp"] = []
+        try:
+            g["practice_new"] = self.practice.add_from_game(g, self.gd)
+        except Exception:  # noqa
+            g["practice_new"] = 0
+        full = dict(g)                                 # 给背景重算用（含名单、击杀事件）
+        for k in ("roster", "kills", "was_dead"):      # 只在这局分析用，不存进习惯记录（太大）
+            g.pop(k, None)
+        mv_full = g.get("mvp") or []
+        g["mvp"] = [dict({k: m[k] for k in ("champ", "k", "d", "a", "lines")}, build=[i for i, _ in m.get("build", [])][:6])
+                    for m in mv_full]
+        self.habits.add_game(g)                        # 先存，复盘里的「这个英雄 N 局」才包含这一局
+        self.q.put(("review", self.review(g)))
+        full["mvp"] = mv_full
+        self.post_game_async(full, gid)                # 背景读结算数据（伤害、承伤、治疗、控制），读到再重算高手
+        self.import_history_async(delay=60)            # 客户端结算后会更新对局记录，补上编号以免重复
 
     @staticmethod
     def net_scores(ros, kills, minutes, post=None):
@@ -3773,15 +3834,22 @@ class Engine:
                         tot_w = sum(w.values())
                         excess = sum(w[d] / tot_w * max(-0.2, min(0.3, shares[d] - 1.0 / len(names))) for d in w)
                         bonus = 0.6 * excess * team_kpm
-                out[n] = {"credit": cred[n], "net": net[n], "adj": adj, "rate": net[n] / minutes * 10,
+                out[n] = {"credit": cred[n], "net": net[n], "adj": adj, "rate": rate,
                           "z": z, "bonus": bonus, "shares": shares, "score": z * rate + bonus}
+            # 限制上下限后加分不一定加总为 0：每队减掉平均，维持「比队友多做多少」的意思
+            bs = [out[n]["bonus"] for n in names]
+            if any(bs):
+                mb = sum(bs) / len(bs)
+                for n in names:
+                    out[n]["bonus"] -= mb
+                    out[n]["score"] -= mb
         return out
 
-    def post_game_async(self, g):
-        """对局结束后读客户端的结算数据（最多试 2 分钟），重算「向高手学」并更新练习题"""
+    def post_game_async(self, g, gid=None):
+        """对局结束后读客户端的结算数据（最多试 2 分钟），重算「向高手学」并更新练习题。
+           gid＝这局的编号（选英雄时记下的）；不知道时只接受名字和这局对得上的结算资料"""
         if isinstance(self.source, MockGame) or not g.get("roster"):
             return
-        gid = getattr(self, "_game_id", None)
 
         def run():
             got = None
@@ -3864,10 +3932,10 @@ class Engine:
         lines = [(tr("和你同定位：") if same_role else "") + tr("{0}（{1}）{2}/{3}/{4}，参团率 {5:.0f}%").format(
             champ, tr("队友") if best.get("ally") else tr("对手"), best.get("k", 0), best.get("d", 0), best.get("a", 0), kp * 100)]
         if sc and me_name in sc:
-            lines.append(tr("净贡献：每 10 分钟 {0:+.1f} 个人头（你 {1:+.1f}）").format(sc[name]["rate"], sc[me_name]["rate"]))
+            lines.append(tr("比队友多赚：每 10 分钟 {0:+.1f} 个人头（你 {1:+.1f}）").format(sc[name]["rate"], sc[me_name]["rate"]))
             sh = sc[name].get("shares") or {}
             if sh:      # 结算数据：他在团队里做了多少事（坦克、辅助的价值靠这个看出来）
-                lab = {"dmg": tr("输出"), "tank": tr("承伤"), "support": tr("治疗护盾"), "cc": tr("控制")}
+                lab = {"dmg": tr("伤害输出"), "tank": tr("承伤"), "support": tr("治疗护盾"), "cc": tr("控制")}
                 mine = sc[me_name].get("shares") or {}
                 lines.append(tr("占全队：") + " · ".join(
                     "{0} {1:.0f}%".format(lab[d], v * 100) + (tr("（你 {0:.0f}%）").format(mine[d] * 100) if d in mine else "")
@@ -4024,8 +4092,18 @@ class Engine:
             self._raw = None
             if self.fails < 3 and self.connected:      # 游戏卡顿读不到一两次，不当成对局结束
                 return ("status", tr("监控中"))
-            self.finish_game(None)                      # 对局结束（没读到输赢）
+            if self.cur_game is not None and not self._ended:
+                # 没读到 GameEnd 就断了：可能是游戏当掉 / 重新连线，先暂存，5 分钟内同一局回来就接着记
+                self._parked = (self.cur_game, time.time())
+                self.cur_game = None
+            pk = getattr(self, "_parked", None)
+            if pk and time.time() - pk[1] > 300:
+                self._parked = None
+                self._last_top = self._last_offer = self._items_snap = self._offer_snap = None
+                self.reset_manual()
+                self.finish_game(None, pk[0])           # 真的没回来：当成结束（没读到输赢）
             self._ended = False
+            self._cs_seen_game = False
             self.last_sig = None
             self.last_state = None
             self.connected = False
@@ -4036,6 +4114,7 @@ class Engine:
             self.advisor._ema_cid = None                # 新的一局：平滑从头开始
             self.advisor._eaug_seen = {}
             self._dumped = False
+            self._cs_last = self._cs_sig = None         # 选英雄结束了：不再每秒问客户端
         self.connected = True
         if state[2] is None:
             return ("status", tr("已连接，等待玩家数据…"))
@@ -4098,7 +4177,14 @@ class Engine:
 # 程序新版本提醒（只提醒，下载与覆盖由你自己决定）
 # --------------------------------------------------------------------------------------
 def ver_tuple(v):
-    return tuple(int(x) for x in re.findall(r"\d+", str(v))[:4])
+    """版本号比较用：1.21.2 → (1, 21, 2, 1)；测试版 2.0.0-beta.5 → (2, 0, 0, 0, 5)，排在正式版 2.0.0 之前"""
+    m = re.match(r"\s*v?(\d+(?:\.\d+)*)(.*)", str(v or ""))
+    if not m:
+        return (0,)
+    main = tuple(int(x) for x in m.group(1).split("."))[:4]
+    main += (0,) * (3 - len(main)) if len(main) < 3 else ()
+    pre = re.findall(r"\d+", m.group(2))
+    return main + ((0, int(pre[0]) if pre else 0) if m.group(2).strip("-. ") else (1,))
 
 
 def check_app_version():
@@ -4164,20 +4250,29 @@ def install_update(manifest, log=print):
     for name, data in new.items():
         with open(os.path.join(prog_dir, name) + ".new", "wb") as f:
             f.write(data)
-    done = []
+    moved = []          # 已经把旧文件改名成 .bak 的
     try:
         for name in new:
             path = os.path.join(prog_dir, name)
             if os.path.exists(path):
                 os.replace(path, path + ".bak")
+                moved.append(name)
             os.replace(path + ".new", path)
-            done.append(name)
     except OSError:
-        for name in done:
+        # 中途失败（例如防毒软件锁住文件）：已经改名的旧文件全部换回来，不会留下缺文件的程序
+        for name in moved:
             path = os.path.join(prog_dir, name)
-            if os.path.exists(path + ".bak"):
+            try:
                 os.replace(path + ".bak", path)
+            except OSError:
+                pass
         raise
+    finally:
+        for name in new:
+            try:
+                os.remove(os.path.join(prog_dir, name) + ".new")
+            except OSError:
+                pass
     return list(new)
 
 
@@ -4227,16 +4322,22 @@ class PracticeStore:
         self.path = path or os.path.join(APP_DIR, "practice.json")
         data = read_json(self.path) if os.path.exists(self.path) else None
         self.cards = data.get("cards", []) if isinstance(data, dict) else []
+        self.lock = threading.RLock()       # 练习窗口（界面）和赛后重算（背景）会同时改题库
 
     def save(self):
-        self.cards = self.cards[-self.MAX_CARDS:]
-        try:
-            write_json(self.path, {"version": 1, "cards": self.cards})
-        except OSError:
-            pass
+        with self.lock:
+            self.cards = self.cards[-self.MAX_CARDS:]
+            try:
+                write_json(self.path, {"version": 1, "cards": self.cards})
+            except OSError:
+                pass
 
     def add_from_game(self, g, gd):
         """这局的失误 → 题目；回传新增几题"""
+        with self.lock:
+            return self._add_from_game(g, gd)
+
+    def _add_from_game(self, g, gd):
         champ = gd.champ_name(g["champ"])
         new = []
         for q in g.get("aug_quiz", []):
@@ -4270,6 +4371,8 @@ class PracticeStore:
         have = {c["id"] for c in self.cards}
         added = 0
         for c in new:
+            if c["type"] == "react":
+                c["t"] = int(g.get("ts") or 0)          # 反应题每局各一题（不同局的同一件装备也要能再出）
             c["id"] = hashlib.md5(json.dumps({k: c.get(k) for k in ("type", "champ", "t", "options", "item")},
                                              ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:12]
             if c["id"] in have:
@@ -4284,8 +4387,10 @@ class PracticeStore:
     def replace_mvp(self, g, gd):
         """结算数据到了、高手重新算过：这局还没练过的高手题换成新的"""
         ts = g.get("ts") or 0
-        self.cards = [c for c in self.cards if not (c["type"] == "mvp" and c.get("box") == 0 and abs(c["game"] - ts) < 1)]
-        return self.add_from_game(g, gd)
+        with self.lock:
+            self.cards = [c for c in self.cards if not (c["type"] == "mvp" and c.get("box") == 0 and c.get("seen", 0) == 0
+                                                         and abs(c["game"] - ts) < 1)]
+            return self.add_from_game(g, gd)
 
     def session(self, n=10):
         """这次要练的题：最近一局的新题优先，再来到期的旧题"""
@@ -4298,6 +4403,10 @@ class PracticeStore:
         return (fresh + due)[:n]
 
     def grade(self, card, ok):
+        with self.lock:
+            self._grade(card, ok)
+
+    def _grade(self, card, ok):
         card["seen"] = card.get("seen", 0) + 1
         card["right"] = card.get("right", 0) + (1 if ok else 0)
         card["box"] = min(6, max(1, card["box"]) + 1) if ok else 1
@@ -4404,21 +4513,24 @@ class HabitStore:
                 "items": {}, "augs": {}, "offered": {}}
         for g in games:
             w = 1 if g.get("win") else 0
+            dec = 1 if g.get("win") is not None else 0        # 没读到输赢的局不算输
             for i in set(g.get("items", [])):
-                c = prof["items"].setdefault(int(i), [0, 0])
+                c = prof["items"].setdefault(int(i), [0, 0, 0])
                 c[0] += 1
                 c[1] += w
+                c[2] += dec
             for a in set(g.get("augs", [])):
-                c = prof["augs"].setdefault(a, [0, 0])
+                c = prof["augs"].setdefault(a, [0, 0, 0])
                 c[0] += 1
                 c[1] += w
+                c[2] += dec
             for a in set(g.get("offered", [])):
                 prof["offered"][a] = prof["offered"].get(a, 0) + 1
         self._cache[champ] = prof
         return prof
 
 
-def habit_bonus(cnt, wins, games, all_wins, decided, weight):
+def habit_bonus(cnt, wins, games, all_wins, decided, weight, cnt_decided=None):
     """个人习惯加分 = weight × 熟悉度 × 战绩修正
          熟悉度 = √(min(次数 / 局数, 60%) / 60%)
          战绩修正 = 1 + clamp(5 × 收缩后的胜率差, −0.5, +0.5)，收缩：差 × n / (n + 5)
@@ -4427,10 +4539,11 @@ def habit_bonus(cnt, wins, games, all_wins, decided, weight):
         return 0.0
     fam = math.sqrt(min(cnt / games, 0.6) / 0.6)
     adj = 1.0
-    if decided >= 2:
+    nd = cnt if cnt_decided is None else cnt_decided     # 有输赢结果的那几局才拿来算胜率
+    if decided >= 2 and nd > 0:
         base = (all_wins + 1) / (decided + 2)
-        mine = (wins + 1) / (cnt + 2)
-        adj = 1 + max(-0.5, min(0.5, 5 * (mine - base) * cnt / (cnt + 5)))
+        mine = (wins + 1) / (nd + 2)
+        adj = 1 + max(-0.5, min(0.5, 5 * (mine - base) * nd / (nd + 5)))
     return weight * fam * adj
 
 
@@ -4568,8 +4681,14 @@ def import_client_history(gd, store, log=print, pages=10):
         found += parse_lcu_history(data, gd, aug_by_id)
         if len(batch) < 20:
             break
-    n = store.import_games(found)
-    return n, tr('从客户端读到 {0} 局大乱斗 / 海斗，新增 {1} 局').format(len(found), n)
+    uniq, seen_ids = [], set()          # 分页的边界可能重复同一局
+    for g in found:
+        if g.get("gameId") in seen_ids:
+            continue
+        seen_ids.add(g.get("gameId"))
+        uniq.append(g)
+    n = store.import_games(uniq)
+    return n, tr('从客户端读到 {0} 局大乱斗 / 海斗，新增 {1} 局').format(len(uniq), n)
 
 
 # --------------------------------------------------------------------------------------
@@ -4647,7 +4766,7 @@ class RiotCollector:
         self.state_path = os.path.join(self.dir, "state.json")
         st = read_json(self.state_path) if os.path.exists(self.state_path) else {}
         st = st if isinstance(st, dict) else {}
-        self.seen = set(st.get("seen", []))          # 已看过的对局编号
+        self.seen = dict.fromkeys(st.get("seen", []))  # 已看过的对局编号（有顺序，存档时留最新的）
         self.frontier = list(st.get("frontier", []))  # 待查的玩家
         self.tiers = st.get("tiers", {})             # puuid -> 段位
         self.lock = threading.Lock()
@@ -4704,7 +4823,9 @@ class RiotCollector:
     def tier_of(self, api, puuid, stop):
         if puuid in self.tiers:
             return self.tiers[puuid]
-        entries = api.get(api.platform.lower(), f"/lol/league/v4/entries/by-puuid/{puuid}", stop) or []
+        entries = api.get(api.platform.lower(), f"/lol/league/v4/entries/by-puuid/{puuid}", stop)
+        if entries is None:
+            return "UNRANKED"                 # 没读到（超速、出错）：这次先当未定级，不存，下次再查
         best = ""
         for e in entries:
             t = str(e.get("tier", "")).upper()
@@ -4753,10 +4874,12 @@ class RiotCollector:
                     for mid in ids:
                         if halt() or mid in self.seen:
                             continue
-                        self.seen.add(mid)
                         m = api.get(api.mregion, f"/lol/match/v5/matches/{mid}", halt)
+                        if m is None:
+                            continue                    # 这次没读到：不记成看过，下次再试
                         rows, players = self.rows_from_match(m)
                         if not rows:
+                            self.seen[mid] = None       # 不是海斗：记下来不再看
                             continue
                         if self.cfg.get("ranks"):
                             for r in rows:
@@ -4767,6 +4890,9 @@ class RiotCollector:
                             for r in rows:
                                 r.pop("u", None)
                                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                        self.seen[mid] = None           # 写进去了才算看过（中途被打断的下次重抓）
+                        if getattr(self, "_lines", None) is not None:
+                            self._lines += len(rows)
                         with self.lock:
                             self.frontier += [p for p in players if p not in self.frontier][:9]
                             self._agg = None
@@ -4840,7 +4966,15 @@ class RiotCollector:
         return self.aggregate().get(str(champ_id).lower())
 
     def total_games(self):
-        return sum(c["n"] for c in self.aggregate().values()) // 10
+        """大约几局（每局 10 行）。只在第一次数文件行数，之后跟着写入累加：窗口每 3 秒问一次也不卡"""
+        if getattr(self, "_lines", None) is None:
+            path = os.path.join(self.dir, "matches.jsonl")
+            n = 0
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    n = sum(1 for _ in f)
+            self._lines = n
+        return self._lines // 10
 
 
 # --------------------------------------------------------------------------------------
@@ -4972,14 +5106,19 @@ class DataUpdater:
             eng.q.put(("data", tr("发现新版本，背景下载中…")))
             bracket = eng.advisor.stats.dataset if eng.advisor.stats else "all"
             gd, stats = load_all(self.lang, bracket, self.use_stats, log=lambda m: None, force=True)
+            if self.use_stats and (stats is None or not stats.version):
+                self.last_result = tr("检查更新失败（连不上数据网站）")   # 胜率数据这次没下载到：保留现在的数据
+                eng.q.put(("data", self.last_result))
+                return
             new = data_versions(gd, stats)
             if new == cur:
                 self.last_result = tr("已是最新 ") + ".".join(cur[0].split(".")[:2])
+                eng.q.put(("data", self.last_result))
                 return
             what = []
             if new[0] != cur[0]:
                 what.append(tr('游戏 {0} → {1}').format(cur[0], new[0]))
-            if new[1] != cur[1] and stats:
+            if new[1] != cur[1] and stats and stats.version:
                 what.append(tr('海斗胜率 {0}（{1}）').format(stats.version.get('version', ''), stats.version.get('dataDate', '')))
             elif new[2] != cur[2]:
                 what.append(tr("海斗增幅/装备/平衡调整"))
@@ -5093,7 +5232,12 @@ def run_console(engine, scanner=None):
     last_status = None
     try:
         while True:
-            kind, payload = engine.q.get()
+            try:
+                kind, payload = engine.q.get(timeout=0.5)     # 有逾时 Windows 上按 Ctrl+C 才停得下来
+            except queue.Empty:
+                continue
+            if kind in ("manual_reset", "scan") and payload is None:
+                continue
             if kind == "rec":
                 print(format_rec(payload), flush=True)
             elif kind == "review":
@@ -5175,21 +5319,24 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     def fit():
         root.update_idletasks()
         need = root.winfo_reqheight()
-        root.geometry(f"{W()}x{min(need, sh - st['y'] - 8)}+{st['x']}+{st['y']}")
+        avail = sh - st['y'] - 8           # 主屏幕下方还剩多少；拖到别的（更高的）屏幕时不限制
+        h = need if avail < 120 else min(need, avail)
+        root.geometry(f"{W()}x{max(40, h)}+{st['x']}+{st['y']}")
 
     def persist():
         c = load_ui_cfg()
         c.update({"scale": st["k"], "x": st["x"], "y": st["y"]})
         save_ui_cfg(c)
 
-    def set_scale(k):
+    def set_scale(k, save=True):
         st["k"] = k
         for key, (v, w) in BASE.items():
             F[key].configure(size=max(6, round(v * k)))
         for lb in wraps:
             lb.config(wraplength=W() - int(28 * dpi))
         fit()
-        persist()
+        if save:                   # 启动时（含命令行 --scale）不写进设定，只有从选单换字号才记住
+            persist()
 
     # ---------- 小工具：悬停提示 ----------
     tip_win = {"w": None}
@@ -5508,7 +5655,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             engine.scanning = True
             scanner.force.set()
         else:
-            status.config(text=tr("识别不可用：") + (scanner.error if scanner else tr("已关闭")))
+            set_status(tr("识别不可用：") + (scanner.error if scanner else tr("已关闭")))
+            st["status_hold"] = time.time() + 8
 
     def toggle_auto():
         scan_on.set() if auto_var.get() else scan_on.clear()
@@ -5852,6 +6000,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         refresh()
     menu.add_command(label=tr("自建数据库（Riot 密钥）…"), command=open_riotdb)
     menu.add_cascade(label=tr('我的习惯（{0} 局）').format(len(engine.habits.games)), menu=hm)
+    habits_idx = menu.index("end")
     lang_var = tk.StringVar(value=LANG)
 
     def switch_lang(lg):
@@ -5872,7 +6021,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     def check_update():
         up = getattr(engine, "updater", None)
         if up is None:
-            status.config(text=tr("演示模式不检查更新"))
+            set_status(tr("演示模式不检查更新"))
+            st["status_hold"] = time.time() + 5
             return
         status.config(text=tr("检查更新中…"))
         st["status_hold"] = time.time() + 20
@@ -5882,6 +6032,10 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
 
     def open_menu():
         st["hold_until"] = time.time() + 4
+        try:                       # 局数会随着打完 / 导入改变：每次打开选单时更新
+            menu.entryconfig(habits_idx, label=tr('我的习惯（{0} 局）').format(len(engine.habits.games)))
+        except tk.TclError:
+            pass
         menu.tk_popup(menu_btn.winfo_rootx(), menu_btn.winfo_rooty() + menu_btn.winfo_height())
 
     # ---------- 手动输入（小窗） ----------
@@ -5933,11 +6087,11 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     current = {"rec": None}
 
     def brief(reason):
-        """卡片上的一行理由：胜率已在右上角显示，这里只留原因"""
-        t = re.sub(r"(网上胜率|胜率) [\d.]+%（比平均[+-][\d.]+%）[，,]?", "", reason)
-        t = re.sub(r"(?i)win rate [\d.]+% \([+-][\d.]+% vs avg\),? ?", "", t)
-        t = re.sub(r"[，,]\s*$", "", t.replace(tr("主流路线的下一件，"), tr("主流路线的下一件，")).strip(tr("，, ")))
-        return t or reason
+        """卡片上的一行理由：胜率已在右上角显示，这里拿掉讲胜率的那几段，只留原因"""
+        parts = [x for x in re.split(r"[，,]\s*", reason.rstrip(tr("。") + ".")) if x.strip()]
+        keep = [x for x in parts if not re.search(r"胜率\s*[\d.]+%|(?i:\b(win rate|WR)\b).*[\d.]+%", x)]
+        t = tr("，").join(keep)
+        return (t + tr("。")) if t else reason
 
     def fill_rows(rows, data, cand=False, before=None):
         for i, r in enumerate(rows):
@@ -6161,7 +6315,28 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         st["last_key"] = key
         fit()
 
+    def log_ui_error():
+        """界面出错不能让整个浮窗停住：记到 ui_error.log（只在本机），继续跑"""
+        import traceback
+        try:
+            with open(os.path.join(APP_DIR, "ui_error.log"), "a", encoding="utf-8") as f:
+                f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + APP_VERSION + "\n" + traceback.format_exc() + "\n")
+        except OSError:
+            pass
+        try:
+            set_status(tr("界面出错（已记录 ui_error.log）"))
+            st["status_hold"] = time.time() + 10
+        except Exception:  # noqa
+            pass
+
     def poll():
+        try:
+            poll_once()
+        except Exception:  # noqa
+            log_ui_error()
+        root.after(60 if engine.scanning else 300, poll)     # 识别中刷新快一点
+
+    def poll_once():
         try:
             engine.overlay_rect = (root.winfo_rootx(), root.winfo_rooty(),
                                    root.winfo_rootx() + root.winfo_width(), root.winfo_rooty() + root.winfo_height())
@@ -6196,6 +6371,14 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 st["hold_until"] = time.time() + 20
                 set_expanded(True)
                 fit()
+            elif kind == "manual_reset":   # 新的一局：上一局手动输入的增幅清掉
+                for k in manual_vals:
+                    manual_vals[k] = ""
+                for k, e in list(entries.items()):
+                    try:
+                        e.delete(0, "end")
+                    except tk.TclError:
+                        pass
             elif kind == "select":         # 选英雄阶段
                 dot.config(fg=GOLD)
                 show_select(payload)
@@ -6224,9 +6407,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 if not hold:               # 正在显示的重要消息（识别中、更新结果…）不被一般状态盖掉
                     set_status("" if payload == tr("监控中") else short(payload, 14))
         auto_collapse()
-        root.after(60 if engine.scanning else 300, poll)     # 识别中刷新快一点
 
-    set_scale(st["k"])
+    set_scale(st["k"], save=False)
     select_tab("items")
     st["hold_until"] = time.time() + 5
     stop = threading.Event()
