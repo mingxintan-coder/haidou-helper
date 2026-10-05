@@ -1,13 +1,13 @@
 {
- "version": "1.21.1",
+ "version": "1.21.2",
  "date": "2026-10-04",
  "notes": [
-  "「向高手学」改用每 10 分钟净贡献：击杀逐笔分功劳（击杀 0.5、助攻平分 0.5）减去死亡，再做信度修正；不再被大乱斗里廉价的助攻灌水",
-  "MVP score is now fair-share net contribution per 10 min with credibility shrinkage"
+  "「向高手学」表现分再改进：扣掉团队效应（赢方不再人人好看）；结算后读客户端的伤害、承伤、治疗护盾、控制数据，坦克辅助的贡献算得进来；同英雄跨局累积「高手出装」",
+  "MVP score: team-effect adjustment, end-of-game stats for tanks/supports, cross-game pro builds"
  ],
  "files": {
-  "haidou_helper.py": "c7666a3f0de081071c5adbd946128d026c585d64201396ca8ce51bd48d3eefcb",
-  "lang_en.py": "a753622da0d9138487044aaacff4cf133e5d374360e15864b34cb2cfe57c7a01",
-  "README.md": "30b86ecfc92337e0cef91a529f4058084ae280bfd10a14addefc78266ce3d692"
+  "haidou_helper.py": "6ac69803019550341376a1b8e5d126aa65c3a4f8e49b6989d0139afebd551038",
+  "lang_en.py": "62a7908956c838d2f1fc22bebe983f28353a933de88ceb4ac8efc25fe906a2cc",
+  "README.md": "fea3ca9c6e904e7d9bad02ab7e23b80ed93b432a21529a8e9f41e2df7907d1c8"
  }
 }

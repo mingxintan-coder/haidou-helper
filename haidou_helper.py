@@ -35,7 +35,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.21.1"
+APP_VERSION = "1.21.2"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -2663,10 +2663,26 @@ class Advisor:
             parts.append(tr("再打出伤害") + (tr("，大招开团") if r_first else tr("，大招收尾")))
         return [(">".join(seq), tr("按技能描述推导：") + tr("，").join(parts))]
 
+    def mvp_consensus(self, me):
+        """跨局累积：你记录过的对局里，这个英雄当「值得学」的高手时最常出的装备（一局很吵，多局才算数）"""
+        store = getattr(self, "habits_store", None)
+        if store is None:
+            return ""
+        cid = (self.gd.champ(me.cid) or {}).get("id", me.cid)
+        recs = [m for gm in store.games for m in (gm.get("mvp") or []) if m.get("champ") == cid and m.get("build")]
+        if len(recs) < 2:
+            return ""
+        cnt = Counter(i for m in recs for i in m["build"][:3])
+        core = [i for i, n in cnt.most_common(3) if n >= 2]
+        if not core:
+            return ""
+        return tr("高手出装（{0} 局里当过最强）：{1}").format(len(recs), " · ".join(
+            "{0}×{1}".format(self.gd.item_name(i), cnt[i]) for i in core))
+
     def champ_guide(self, me, cs, prof):
         kit = self.gd.champ_kit(me.cid)
         g = {"combos": [], "style": "", "skills": "", "spells": "", "auto": False,
-             "habit": getattr(self, "_habit_line", "")}
+             "habit": getattr(self, "_habit_line", ""), "mvp": self.mvp_consensus(me)}
         if me.cid in COMBOS:
             combos, g["style"] = COMBOS[me.cid]
             en = COMBOS_EN.get(me.cid) if LANG == "en" else None
@@ -3504,6 +3520,8 @@ class Engine:
                         f.write(raw_sig)
                 except OSError:
                     pass
+        if isinstance(sess, dict) and sess.get("gameId"):
+            self._game_id = sess["gameId"]           # 结算后用来查这局的完整数据
         payload = self.champ_select_payload(sess)
         if payload is None:
             return None
@@ -3689,20 +3707,27 @@ class Engine:
             except Exception:  # noqa
                 g["practice_new"] = 0
             rv = self.review(g)
+            self.post_game_async(dict(g))             # 背景读结算数据（伤害、承伤、治疗、控制），读到再重算高手
             for k in ("roster", "kills", "was_dead"):   # 只在这局分析用，不存进习惯记录（太大）
                 g.pop(k, None)
-            g["mvp"] = [{k: m[k] for k in ("champ", "k", "d", "a", "lines")} for m in g.get("mvp") or []]
+            g["mvp"] = [dict({k: m[k] for k in ("champ", "k", "d", "a", "lines")}, build=[i for i, _ in m.get("build", [])][:6])
+                        for m in g.get("mvp") or []]
             self.habits.add_game(g)
             self.q.put(("review", rv))
             self.import_history_async(delay=60)    # 客户端结算后会更新对局记录，补上编号以免重复
 
     @staticmethod
-    def net_scores(ros, kills, minutes):
-        """每个玩家的「净贡献」（用击杀事件逐笔分功劳）：
-             每一次击杀算 1 分：单杀＝击杀者拿 1；有助攻＝击杀者 0.5、其余 0.5 由助攻者平分
-             净贡献 N = 分到的功劳 − 死亡次数          → 一队人的 N 加起来正好等于这队的人头差
-             每 10 分钟 r = N / 分钟 × 10
-             信度修正 r* = Z·r，Z = n/(n+8)，n = 参与的击杀 + 死亡次数（一局样本少，往 0 拉）
+    def net_scores(ros, kills, minutes, post=None):
+        """每个玩家的表现分（单位：每 10 分钟「人头」）：
+             ① 功劳：每次击杀算 1 分，单杀＝击杀者 1；有助攻＝击杀者 0.5、其余 0.5 由助攻者平分
+             ② 净贡献 N = 功劳 − 死亡（一队 N 的总和＝这队的人头差）
+             ③ 扣掉团队效应：N' = N − 0.8 × 队伍平均 N（赢的一方人人好看，只算你比队友多出来的；留 1/5 当自己那份）
+             ④ r = N' / 分钟 × 10，信度修正 Z = n/(n+8)，n = 参与的击杀 + 死亡
+             ⑤ 有结算数据时再加团队贡献：每项看你占全队几成，比平均（1/队伍人数）多出多少，
+                超出量限制在 −20%～+30%（一个人包办某项不会一项就爆表）；
+                加权：输出 0.40、承伤 0.25、治疗护盾 0.20、控制 0.15（全队治疗护盾不到输出 5% 的，这项不算、权重分给其他）；
+                加分 = 0.6 × Σ 权重 × 超出量 × 这队每 10 分钟的人头 —— 把「多做了几成团队的事」换算成人头
+             表现分 S = Z·r + 加分
            没有击杀事件时：功劳 ≈ 0.5K + 0.5A / (这队平均每次击杀的助攻人数)"""
         cred = {n: 0.0 for n in ros}
         if kills:
@@ -3720,14 +3745,85 @@ class Engine:
             for n, r in ros.items():
                 per = max(1.0, ta[r["team"]] / max(1, tk[r["team"]]))
                 cred[n] = 0.5 * r.get("k", 0) + 0.5 * r.get("a", 0) / per
-        out = {}
+        minutes = max(1.0, minutes)
+        teams = {}
         for n, r in ros.items():
-            net = cred[n] - r.get("d", 0)
-            rate = net / max(1.0, minutes) * 10
-            involve = r.get("k", 0) + r.get("a", 0) + r.get("d", 0)
-            z = involve / (involve + 8)
-            out[n] = {"credit": cred[n], "net": net, "rate": rate, "score": z * rate, "z": z}
+            teams.setdefault(r["team"], []).append(n)
+        net = {n: cred[n] - ros[n].get("d", 0) for n in ros}
+        post = {n: v for n, v in (post or {}).items() if n in ros}
+        use_post = len(post) >= max(4, len(ros) - 2)
+        out = {}
+        for t, names in teams.items():
+            mean = sum(net[n] for n in names) / len(names)
+            team_kpm = sum(ros[n].get("k", 0) for n in names) / minutes * 10
+            totals = {d: sum(post.get(n, {}).get(d, 0) for n in names) for d in ("dmg", "tank", "support", "cc")}
+            for n in names:
+                r = ros[n]
+                adj = net[n] - 0.8 * mean
+                rate = adj / minutes * 10
+                involve = r.get("k", 0) + r.get("a", 0) + r.get("d", 0)
+                z = involve / (involve + 8)
+                shares, bonus = {}, 0.0
+                if use_post and n in post:
+                    shares = {d: post[n][d] / totals[d] for d in totals if totals[d] > 0}
+                    if totals["support"] < 0.05 * max(1.0, totals["dmg"]):
+                        shares.pop("support", None)          # 这队没人真的在奶，治疗只是吸血零头
+                    w = {d: POST_WEIGHTS[d] for d in shares}
+                    if w:
+                        tot_w = sum(w.values())
+                        excess = sum(w[d] / tot_w * max(-0.2, min(0.3, shares[d] - 1.0 / len(names))) for d in w)
+                        bonus = 0.6 * excess * team_kpm
+                out[n] = {"credit": cred[n], "net": net[n], "adj": adj, "rate": net[n] / minutes * 10,
+                          "z": z, "bonus": bonus, "shares": shares, "score": z * rate + bonus}
         return out
+
+    def post_game_async(self, g):
+        """对局结束后读客户端的结算数据（最多试 2 分钟），重算「向高手学」并更新练习题"""
+        if isinstance(self.source, MockGame) or not g.get("roster"):
+            return
+        gid = getattr(self, "_game_id", None)
+
+        def run():
+            got = None
+            for attempt in range(9):
+                time.sleep(5 if attempt == 0 else 15)
+                cred = getattr(self, "_lcu_cred", None) or lcu_credentials()
+                if not cred:
+                    continue
+                paths = ["/lol-end-of-game/v1/eog-stats-block"]
+                if gid:
+                    paths.append(f"/lol-match-history/v1/games/{gid}")
+                for path in paths:
+                    try:
+                        data = lcu_get(path, cred, timeout=6)
+                    except Exception:  # noqa
+                        continue
+                    if gid and isinstance(data, dict) and data.get("gameId") and data["gameId"] != gid:
+                        continue                       # 上一局的结算画面
+                    p = parse_postgame(data)
+                    if len(set(p) & set(g["roster"])) >= 4:
+                        got = (path, data, p)
+                        break
+                if got:
+                    break
+            if not got:
+                return
+            try:
+                write_json(os.path.join(APP_DIR, "last_postgame.json"), {"path": got[0], "data": got[1]})
+            except OSError:
+                pass
+            g["post"] = got[2]
+            try:
+                g["mvp"] = self.mvp_lessons(g)
+                self.practice.replace_mvp(g, self.gd)
+                ts = g.get("ts") or 0
+                g["practice_new"] = sum(1 for c in self.practice.cards if abs(c["game"] - ts) < 1 and c.get("box") == 0)
+                rv = self.review(g)
+                rv["text"] += tr(" · 已用结算数据更新")
+                self.q.put(("review", rv))
+            except Exception:  # noqa
+                pass
+        threading.Thread(target=run, daemon=True).start()
 
     def mvp_lessons(self, g):
         """这局表现比你好的玩家：全场最强 + 和你同定位里最强（最多 2 个），他们做对了什么。回传 [dict]
@@ -3736,7 +3832,7 @@ class Engine:
         if len(ros) < 4:
             return []
         minutes = g.get("len", 0) / 60
-        sc = self.net_scores(ros, g.get("kills") or [], minutes)
+        sc = self.net_scores(ros, g.get("kills") or [], minutes, g.get("post"))
         team_k = {}
         for r in ros.values():
             team_k[r["team"]] = team_k.get(r["team"], 0) + r.get("k", 0)
@@ -3769,6 +3865,13 @@ class Engine:
             champ, tr("队友") if best.get("ally") else tr("对手"), best.get("k", 0), best.get("d", 0), best.get("a", 0), kp * 100)]
         if sc and me_name in sc:
             lines.append(tr("净贡献：每 10 分钟 {0:+.1f} 个人头（你 {1:+.1f}）").format(sc[name]["rate"], sc[me_name]["rate"]))
+            sh = sc[name].get("shares") or {}
+            if sh:      # 结算数据：他在团队里做了多少事（坦克、辅助的价值靠这个看出来）
+                lab = {"dmg": tr("输出"), "tank": tr("承伤"), "support": tr("治疗护盾"), "cc": tr("控制")}
+                mine = sc[me_name].get("shares") or {}
+                lines.append(tr("占全队：") + " · ".join(
+                    "{0} {1:.0f}%".format(lab[d], v * 100) + (tr("（你 {0:.0f}%）").format(mine[d] * 100) if d in mine else "")
+                    for d, v in sh.items()))
         build = best.get("items", [])
         if build:
             lines.append(tr("出装：") + " → ".join("{0}（{1}′）".format(gd.item_name(i), m) for i, m in build[:6]))
@@ -4178,6 +4281,12 @@ class PracticeStore:
             self.save()
         return added
 
+    def replace_mvp(self, g, gd):
+        """结算数据到了、高手重新算过：这局还没练过的高手题换成新的"""
+        ts = g.get("ts") or 0
+        self.cards = [c for c in self.cards if not (c["type"] == "mvp" and c.get("box") == 0 and abs(c["game"] - ts) < 1)]
+        return self.add_from_game(g, gd)
+
     def session(self, n=10):
         """这次要练的题：最近一局的新题优先，再来到期的旧题"""
         now = time.time()
@@ -4402,6 +4511,41 @@ def parse_lcu_history(data, gd, aug_by_id):
                     "champ": champ["id"], "items": items, "augs": augs, "offered": list(augs),
                     "win": bool(st.get("win")), "len": int(g.get("gameDuration") or 0),
                     "mode": "mayhem" if mayhem else "aram", "src": "client"})
+    return out
+
+
+POST_WEIGHTS = {"dmg": 0.40, "tank": 0.25, "support": 0.20, "cc": 0.15}
+POST_KEYS = {"dmg": ["totaldamagedealttochampions"], "taken": ["totaldamagetaken"],
+             "mitig": ["damageselfmitigated", "totaldamageselfmitigated"],
+             "heal": ["totalhealsonteammates", "totalhealonteammates"], "heal_any": ["totalheal"],
+             "shield": ["totaldamageshieldedonteammates"], "cc": ["timeccingothers"]}
+
+
+def parse_postgame(data):
+    """结算数据 → {名字: {dmg 输出, tank 承伤+减免, support 给队友的治疗+护盾, cc 控制秒数}}
+       支持结算画面（/lol-end-of-game/v1/eog-stats-block）和对局详情（/lol-match-history/v1/games/编号）两种格式"""
+    out = {}
+
+    def put(name, stats):
+        f = {re.sub(r"[^a-z]", "", str(k).lower()): v for k, v in (stats or {}).items() if isinstance(v, (int, float))}
+
+        def get(key):
+            return next((float(f[k]) for k in POST_KEYS[key] if k in f), None)
+        dmg, taken = get("dmg"), get("taken")
+        if not name or (dmg is None and taken is None):
+            return
+        heal = get("heal")
+        heal = heal if heal is not None else (get("heal_any") or 0) * 0.5   # 没有「给队友」的就用总治疗的一半
+        out[str(name).split("#")[0]] = {"dmg": dmg or 0.0, "tank": (taken or 0) + (get("mitig") or 0),
+                                         "support": heal + (get("shield") or 0), "cc": get("cc") or 0.0}
+    if isinstance(data, dict):
+        for t in data.get("teams") or []:
+            for p in (t.get("players") or []) if isinstance(t, dict) else []:
+                put(p.get("riotIdGameName") or p.get("gameName") or p.get("summonerName"), p.get("stats"))
+        ids = {pi.get("participantId"): (pi.get("player") or {}) for pi in data.get("participantIdentities") or []}
+        for p in data.get("participants") or []:
+            pl = ids.get(p.get("participantId"), {})
+            put(pl.get("gameName") or pl.get("summonerName") or p.get("riotIdGameName"), p.get("stats") or p)
     return out
 
 
@@ -4892,7 +5036,7 @@ def format_rec(rec):
     g = rec.get("guide") or {}
     if g.get("combos") or g.get("skills"):
         lines.append(tr("【英雄玩法】"))
-        for x in (g.get("habit"), g.get("balance"), g.get("skills"), g.get("spells")):
+        for x in (g.get("habit"), g.get("mvp"), g.get("balance"), g.get("skills"), g.get("spells")):
             if x:
                 lines.append(" " + x)
         for c, note in g.get("combos", []):
@@ -5948,7 +6092,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             lines += [tr("按 {0} {1}：{2}").format(k, n, tip) for k, n, tip in co.get("items", [])]
             lines += [tr("「{0}」：{1}").format(n, tip) for n, tip in co.get("augs", [])]
             lines.append("")
-        lines += [x for x in (g.get("habit"), g.get("balance"), g.get("skills"), g.get("spells")) if x]
+        lines += [x for x in (g.get("habit"), g.get("mvp"), g.get("balance"), g.get("skills"), g.get("spells")) if x]
         lines += [tr('连招  {0}\n        {1}').format(c, note) for c, note in g.get("combos", [])]
         if g.get("style"):
             lines.append(tr("玩法  ") + g["style"])
