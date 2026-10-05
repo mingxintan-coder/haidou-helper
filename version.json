@@ -1,13 +1,12 @@
 {
- "version": "1.20.0",
+ "version": "1.20.1",
  "date": "2026-10-04",
  "notes": [
-  "新增练习模式：每局的失误（没选 ★ 的增幅、不在推荐里的装备、带着中娅阵亡）自动变成题目，间隔重复反复练",
-  "残血按键反应练习：血条掉到红线时按键，测反应时间",
-  "New practice mode: your mistakes become spaced-repetition drills, plus a low-HP key reaction drill"
+  "不再印出 RapidOCR 的「The text detection result is empty」（画面上没有三选一时的正常讯息）",
+  "Silence RapidOCR's harmless 'text detection result is empty' warnings"
  ],
  "files": {
-  "haidou_helper.py": "b5290865b84c76d7d6666e91ae199bdbd9aa6e3935f2babfd475532abf0ec7f2",
+  "haidou_helper.py": "1b74888772468c47817b5981d83151cdf8ab1a8a4d1b46b3a3c7bf04608c8b1b",
   "lang_en.py": "83e82daea92d94ad3e434e46ec9863d2409ec9d1fe8b2967caae0927f9388879",
   "README.md": "2a390dc87c76b79ef65c2e4f8ec74f7c05eec3c51dfaa544d47d062182f6e3b7"
  }

@@ -35,7 +35,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.20.0"
+APP_VERSION = "1.20.1"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
@@ -2981,6 +2981,7 @@ class ScreenScanner:
                  "EngineConfig.onnxruntime.inter_op_num_threads": 1, "Global.use_cls": False}
         try:
             from rapidocr import RapidOCR
+            self._quiet_ocr_log()             # 建立前也关一次：启动时的 INFO 讯息也不显示
             try:
                 self.ocr = RapidOCR(params=light)
             except Exception:  # noqa  旧版不认这些参数
@@ -2996,10 +2997,27 @@ class ScreenScanner:
                 self.error = tr('OCR 初始化失败：{0}').format(e)
         except Exception as e:  # noqa
             self.error = tr('OCR 初始化失败：{0}').format(e)
+        self._quiet_ocr_log()
         self.card_x = None    # 最近一次识别到的三张卡在屏幕上的 x 位置（用来判断点了哪张）
         self.mask = None      # 挂件自己在屏幕上的位置：识别时涂黑，省时间也避免读到自己的字
         if self.ocr is not None:
             threading.Thread(target=self._warm_up, daemon=True).start()
+
+    @staticmethod
+    def _quiet_ocr_log():
+        """RapidOCR 在画面上没有字时会印「The text detection result is empty」：
+        这是正常情况（没有三选一），不显示。新版 RapidOCR 建立时会把自己的日志等级重设回 INFO，所以建立后再关一次"""
+        import logging
+
+        class _Drop(logging.Filter):
+            def filter(self, rec):
+                return rec.levelno >= logging.ERROR
+        for name in list(logging.root.manager.loggerDict) + ["RapidOCR", "rapidocr"]:
+            if "rapidocr" in name.lower():
+                lg = logging.getLogger(name)
+                lg.setLevel(logging.ERROR)
+                for h in lg.handlers:
+                    h.addFilter(_Drop())
 
     def _warm_up(self):
         """启动时先跑一次小图，第一次按 F8 就不会多等模型初始化"""
