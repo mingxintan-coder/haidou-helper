@@ -35,7 +35,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.20.2"
+APP_VERSION = "1.20.3"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -3475,6 +3475,26 @@ class Engine:
                 sess["_current"] = cur
         except Exception:  # noqa
             pass
+        if isinstance(sess, dict) and sess.get("allowSubsetChampionPicks"):
+            # 海斗：每人只能从分给自己的 1~3 个英雄里挑；这几个不在 session 里，要另外问
+            subset, raw_sub = [], {}
+            for path in ("/lol-lobby-team-builder/champ-select/v1/subset-champion-list",
+                         "/lol-champ-select/v1/pickable-champion-ids"):
+                try:
+                    got = lcu_get(path, cred, timeout=2)
+                except Exception as e:  # noqa
+                    raw_sub[path] = "ERR " + str(e)[:80]
+                    continue
+                raw_sub[path] = got
+                ids = []
+                for x in got if isinstance(got, list) else (got or {}).get("championIds", []) if isinstance(got, dict) else []:
+                    cid = x.get("championId") if isinstance(x, dict) else x
+                    if isinstance(cid, int) and cid > 0:
+                        ids.append(cid)
+                if 0 < len(ids) <= 6 and not subset:     # 平常模式这里会是你全部的英雄（上百个），不算
+                    subset = ids
+            sess["_subset"] = subset
+            sess["_subset_raw"] = raw_sub
         if isinstance(sess, dict):
             raw_sig = json.dumps(sess, sort_keys=True, default=str)[:200000]
             if raw_sig != getattr(self, "_cs_dump", None):      # 存一份选人资料（只在本机），方便查问题
@@ -3521,6 +3541,8 @@ class Engine:
                 team.append(cid)
         if mine is None and sess.get("_current"):  # 客户端回报的「你现在的英雄」
             mine = by_key.get(str(sess["_current"]))
+        subset_c = [by_key.get(str(x)) for x in sess.get("_subset") or []]
+        subset_c = [c for c in subset_c if c]
         if mine is None:                        # 刚分配英雄的那一下 myTeam 可能还是 0：改看选人动作
             for grp in sess.get("actions") or []:
                 for a in grp if isinstance(grp, list) else []:
@@ -3538,11 +3560,14 @@ class Engine:
                 cid = x.get("championId") if isinstance(x, dict) else x
                 if isinstance(cid, int) and cid > 0:
                     bench_c.append(by_key.get(str(cid)))
-        cands = list(dict.fromkeys(([mine] if mine else []) + [b for b in bench_c if b and b != mine]))
+        cands = list(dict.fromkeys(([mine] if mine else []) + subset_c + [b for b in bench_c if b and b != mine]))
         if not cands:
             return None
         ranked, needs = self.advisor.rank_champions(cands, team, mine)
-        return {"cands": ranked, "cand_ids": cands, "team_ids": team, "needs": needs, "mine": mine,
+        for c in ranked:                         # 标出每个英雄从哪里来
+            if not c.get("hint"):
+                c["hint"] = tr("分给你的") if c["id"] in subset_c else tr("备选席") if c["id"] in bench_c else ""
+        return {"cands": ranked, "cand_ids": cands, "team_ids": team, "needs": needs, "mine": mine, "subset": subset_c,
                 "bench_enabled": bool(sess.get("benchEnabled", True))}
 
     def track_game(self, raw, state, rec):
@@ -5657,13 +5682,16 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 best["name"], best["score"], mine["name"], mine["score"])
         elif mine:
             tip = tr('保持 {0} 就好（备选席里没有明显更好的）').format(mine["name"])
+        elif sel.get("subset"):
+            tip = tr('★ 推荐 {0}（{1}）').format(best["name"], best.get("hint") or "")
         else:
             tip = tr('★ 推荐 {0}').format(best["name"])
         tip_lbls[0].config(text=tip)
         tip_lbls[0].pack(fill="x", pady=(0, 1))
-        rows = cands[:4]
-        if mine and mine not in rows:          # 你自己的英雄一定要看得到（备选席很多时会被挤出前 4）
-            rows = cands[:3] + [mine]
+        # 你自己的英雄、分给你挑的 1~3 个一定要看得到（备选席很多时会被挤出前 4），剩下的位置给分数最高的
+        must = [c for c in cands if c is mine or c["id"] in (sel.get("subset") or [])][:4]
+        rows = must + [c for c in cands if c not in must][:4 - len(must)]
+        rows.sort(key=lambda c: -c["score"])
         fill_rows(item_rows, rows)
         if st["tab"] != "items":
             select_tab("items")

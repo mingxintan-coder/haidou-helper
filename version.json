@@ -1,13 +1,14 @@
 {
- "version": "1.20.2",
+ "version": "1.20.3",
  "date": "2026-10-04",
  "notes": [
-  "检查更新更即时：改用 GitHub API（只缓存 60 秒），几个来源取最新的；刚发布的版本不会再查不到",
-  "Update check now uses the GitHub API first and takes the newest version across sources"
+  "修复：选英雄时认不出分给你挑的 1~3 个英雄（海斗的「子集选英雄」，改问客户端你能选哪几个）",
+  "选英雄画面一定显示你能挑的英雄，并标出「分给你的」/「备选席」",
+  "Fix: champ select now reads the 1–3 champions offered to you in Mayhem"
  ],
  "files": {
-  "haidou_helper.py": "7add9044aa16811c95de974bf0a21e6d677ed584a71dd19e782a943b92dc600e",
-  "lang_en.py": "83e82daea92d94ad3e434e46ec9863d2409ec9d1fe8b2967caae0927f9388879",
+  "haidou_helper.py": "05cedb3b0b800bb2e6912d61cf6c49d26793c84e6bf14d79cdfb3ce9c6e8af66",
+  "lang_en.py": "2300ac49cee48a3e767a3ba7994344e083d31a768329ab0b6bc783ae67e52586",
   "README.md": "2a390dc87c76b79ef65c2e4f8ec74f7c05eec3c51dfaa544d47d062182f6e3b7"
  }
 }
