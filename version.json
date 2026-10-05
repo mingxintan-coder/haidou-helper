@@ -1,12 +1,12 @@
 {
- "version": "1.20.1",
+ "version": "1.20.2",
  "date": "2026-10-04",
  "notes": [
-  "不再印出 RapidOCR 的「The text detection result is empty」（画面上没有三选一时的正常讯息）",
-  "Silence RapidOCR's harmless 'text detection result is empty' warnings"
+  "检查更新更即时：改用 GitHub API（只缓存 60 秒），几个来源取最新的；刚发布的版本不会再查不到",
+  "Update check now uses the GitHub API first and takes the newest version across sources"
  ],
  "files": {
-  "haidou_helper.py": "1b74888772468c47817b5981d83151cdf8ab1a8a4d1b46b3a3c7bf04608c8b1b",
+  "haidou_helper.py": "7add9044aa16811c95de974bf0a21e6d677ed584a71dd19e782a943b92dc600e",
   "lang_en.py": "83e82daea92d94ad3e434e46ec9863d2409ec9d1fe8b2967caae0927f9388879",
   "README.md": "2a390dc87c76b79ef65c2e4f8ec74f7c05eec3c51dfaa544d47d062182f6e3b7"
  }

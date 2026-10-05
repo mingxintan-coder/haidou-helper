@@ -35,10 +35,11 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "1.20.1"
+APP_VERSION = "1.20.2"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
-VERSION_URLS = ["https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
+VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
+                "https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
                 "https://cdn.jsdelivr.net/gh/mingxintan-coder/haidou-helper@main/version.json"]
 APP_DIR = os.path.join(os.path.expanduser("~"), ".lol_haidou_helper")
 
@@ -500,7 +501,10 @@ def read_json(path):
 
 
 def http_json(url, timeout=10, local=False):
-    req = urllib.request.Request(url, headers={"User-Agent": "haidou-helper/1.0"})
+    hd = {"User-Agent": "haidou-helper/1.0"}
+    if "api.github.com" in url:
+        hd["Accept"] = "application/vnd.github.raw"   # 直接拿文件内容（GitHub API 只缓存 60 秒，比 raw 的 5 分钟新）
+    req = urllib.request.Request(url, headers=hd)
     if local:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -3834,16 +3838,20 @@ def ver_tuple(v):
 
 def check_app_version():
     """返回 (新版本信息 或 None, 错误)；新版本信息是仓库里的 version.json：{version, date, notes}"""
-    err = ""
-    for url in VERSION_URLS:
+    err, best = "", None
+    for url in VERSION_URLS:      # 几个来源都问，取版本最新的（raw / jsDelivr 有缓存，刚发布时可能还是旧的）
         try:
             m = http_json(url, timeout=12)
-            return (m if ver_tuple(m.get("version")) > ver_tuple(APP_VERSION) else None), ""
+            if isinstance(m, dict) and (best is None or ver_tuple(m.get("version")) > ver_tuple(best.get("version"))):
+                best = m
         except Exception as e:  # noqa
             err = str(e)
-    return None, err
+    if best is None:
+        return None, err
+    return (best if ver_tuple(best.get("version")) > ver_tuple(APP_VERSION) else None), ""
 
 
+API_BASE = "https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/"
 RAW_BASE = "https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/"
 MIRROR_BASE = "https://cdn.jsdelivr.net/gh/mingxintan-coder/haidou-helper@main/"
 UPDATABLE = ("haidou_helper.py", "lang_en.py", "README.md")    # 一键更新只会替换这几个文件
@@ -3866,10 +3874,13 @@ def install_update(manifest, log=print):
                     continue                      # 没变，不用下载
         log(tr("下载 {0}…").format(name))
         data, err = None, ""
-        for base in (RAW_BASE, MIRROR_BASE):      # GitHub 连不上时用 jsDelivr 镜像（内容一样，靠校验码把关）
+        for base in (API_BASE, RAW_BASE, MIRROR_BASE):   # 先用 GitHub API（最新）；连不上再用 raw / jsDelivr，都靠校验码把关
             try:
-                req = urllib.request.Request(base + name + "?v=" + sha[:8],
-                                             headers={"User-Agent": f"haidou-helper/{APP_VERSION}", "Cache-Control": "no-cache"})
+                url = (base + name + "?ref=main") if base == API_BASE else (base + name + "?v=" + sha[:8])
+                hd = {"User-Agent": f"haidou-helper/{APP_VERSION}", "Cache-Control": "no-cache"}
+                if base == API_BASE:
+                    hd["Accept"] = "application/vnd.github.raw"
+                req = urllib.request.Request(url, headers=hd)
                 with urllib.request.urlopen(req, timeout=60) as r:
                     got = r.read()
             except Exception as e:  # noqa
