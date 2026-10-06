@@ -1,15 +1,15 @@
 {
- "version": "2.0.0",
+ "version": "2.1.0",
  "date": "2026-10-05",
  "notes": [
-  "2.0：推荐改成用胜率说话——每件装备 / 每个增幅显示「网上数据 +1.4%（±1.1）」和「本局调整 +1.0%」，两者分开",
-  "网上数据用同一件 / 同一次选择比较（减少滚雪球偏差），经验贝叶斯收缩，样本少的自动往 0 拉；附误差范围和样本数",
-  "本局调整（对面阵容、增幅规则、你的习惯）单独显示；鼠标移到卡片上看完整算式",
-  "2.0: recommendations now show data-backed win-rate effects (±CI, sample size) separately from this-game adjustments"
+  "2.1：实时胜率——战况条第一行显示「胜率 62% ↑5」，模型用你自建数据库收集的对局时间线训练（要 150 局）",
+  "赛后复盘多了「关键时刻」：胜率 2 分钟内掉最多的那段，配上双方阵亡数和原因（先倒下 / 少人接团 / 换人吃亏 / 丢塔 / 对面装备成型）",
+  "关键时刻会变成练习题；⋯ → 自建数据库显示时间线进度和模型准确率",
+  "2.1: live win probability trained on your own timeline data, key moments in the post-game review, and new practice cards"
  ],
  "files": {
-  "haidou_helper.py": "f3dc59d265808323cd12b539de953aa04b54c550542e0cd1908e74ebba9fb273",
-  "lang_en.py": "eadf0dbb54adef93199c604bab6d6e59037c9ac2442d69148f0242758033f216",
-  "README.md": "88b0655edcb2ded8585238ddec68630ca4849eb3bdf15334714afc2f20bc2328"
+  "haidou_helper.py": "f0f7e7e1c7de66ccb49d1ec35d256cd2f255e8d1b2ce46c10b1defae51d680e3",
+  "lang_en.py": "d61f8fbdd8e6ab33f319e0dfdbdddfb38a6d5dac8f6105751ebcce6e5e809b13",
+  "README.md": "6472a9a27647b16be2a105d61afa830cca4a4b40fb1e4e33a802fe2056165c04"
  }
 }

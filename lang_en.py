@@ -360,6 +360,40 @@ EN.update({'比队友多赚：每 10 分钟 {0:+.1f} 个人头（你 {1:+.1f}）
 EN.update({'伤害输出': 'damage'})
 EN.update({'{0:.1f} 万局': '{0:.1f}0k games', '{0} 局': '{0} games', '{0} {1:+.1f}%（±{2:.1f}），{3}': '{0} {1:+.1f}% (±{2:.1f}), {3}', '；{0} {1:+.1f}%': '; {0} {1:+.1f}%', '第 {0} 件出它': 'as item #{0}', '整局出它': 'built at all', '带「{0}」时': 'with [{0}]', '这个英雄几乎没人出（没数据）': 'almost nobody builds this on this champion (no data)', '网上数据还没载入': 'online data not loaded yet', '第 {0} 次选它': 'as pick #{0}', '拿它': 'taking it', '和「{0}」一起': 'together with [{0}]', '没有这个英雄的数据': 'no data for this champion', '已选增幅改变了出装，平时的数据不适用': "your augments change the build; usual data doesn't apply", '网上数据：': 'Online data: ', '本局调整 {0:+.1f}%：': 'This-game adjustment {0:+.1f}%: ', '出这双鞋': 'these boots', '这个英雄几乎没人买（没数据）': 'almost nobody buys these on this champion (no data)', '没数据': 'no data', '数据 {0:+.1f}': 'data {0:+.1f}', '本局 {0:+.1f}：': 'game {0:+.1f}: ', ' {0}. {1:<10} {2:>5}%  [{3}｜本局 {4:+.1f}] {5}': ' {0}. {1:<20} {2:>5}%  [{3} | game {4:+.1f}] {5}', ' {0}. {1:<10} {2:>5}%  [{3}｜本局 {4:+.1f}] {5}{6}': ' {0}. {1:<20} {2:>5}%  [{3} | game {4:+.1f}] {5}{6}', '★ 选 {0}（{1}%）': '★ Pick {0} ({1}%)'})
 EN.update({'数据载入中': 'loading data'})
+EN.update({
+    "——": " — ",
+    "{0} · {1}。这一段最主要的问题是？": "{0} · {1}. What was the main problem here?",
+    "{0} 胜率 {1}% → {2}%（我方阵亡 {3}，敌方阵亡 {4}）": "{0} win chance {1}% → {2}% (ally deaths {3}, enemy deaths {4})",
+    "人数不利还接团": "Took a fight while outnumbered",
+    "关键时刻：": "Key moment: ",
+    "团战前你第一个阵亡，队伍马上少一个人。站在前排后面半个身位，等对面关键技能交了再进。":
+        "You died first, so your team fought a man down. Stand half a step behind your frontline and go in after their key spells are used.",
+    "团战换人吃亏": "Lost the trade in the teamfight",
+    "实时胜率模型：{0} 局训练，第 8 分钟后准确率 {1:.0f}%": "Live win model: trained on {0} games, {1:.0f}% accurate after minute 8",
+    "实时胜率模型：时间线 {0}/{1} 局（攒够就自动训练）": "Live win model: timelines {0}/{1} games (trains automatically when enough)",
+    "对面关键装备做出来了、经济追上。这时别正面硬打，等自己下一件再接团。":
+        "Their key items came online and they caught up in gold. Don't force head-on fights; wait for your next item.",
+    "对面装备成型，我们还在硬打": "Kept forcing fights after their items spiked",
+    "我先倒下（站太前 / 先手被抓）": "I died first (too far forward / got caught)",
+    "✗ 答案是「{0}」": "✗ The answer is [{0}]",
+    "最好的一波：": "Best play: ",
+    "没人阵亡但被推塔：兵线没处理。清完兵再找机会，不要在塔前空站。":
+        "Lost a tower with no deaths: the wave wasn't handled. Clear the wave first; don't idle in front of the tower.",
+    "没打架却丢了塔": "Lost a tower without a fight",
+    "界面出错（已记录 ui_error.log）": "UI error (logged to ui_error.log)",
+    "胜率": "Win%",
+    "胜率 {0}%": "Win {0}%",
+    "胜率模型已更新：{0} 局，第 8 分钟后准确率 {1:.0f}%": "Win model updated: {0} games, {1:.0f}% accurate after minute 8",
+    "这段时间稳稳推进、经济拉开": "Steady pushing pulled ahead in gold",
+    "这波团战换输了。先打离你最近、最脆的目标，别追残血追到敌方后排。":
+        "You lost that teamfight trade. Hit the closest squishy target; don't chase low-HP enemies into their backline.",
+    "这波打得好：{0} 换 {1}": "Great fight: {0} for {1}",
+    "队友还没复活就开打。少人时退回塔下拖时间，等人齐再打。":
+        "Fought before teammates respawned. When down a player, fall back under tower and wait for the team.",
+    "｜网上胜率 {0:.1f}%": " | online win rate {0:.1f}%",
+    "每局也会抓时间线，攒够 150 局后自动训练实时胜率。": " It also fetches each game's timeline and trains the live win model after 150 games.",
+})
+
 COMBOS_EN = {'Aatrox': {'notes': ['Use E to adjust so all three Q casts land with the sweet spot (outer edge)',
                       'R for speed to stick to targets; heals more the lower you get'],
             'style': "Frontline fighter: go in after they burn CC, don't back off with R up"},
