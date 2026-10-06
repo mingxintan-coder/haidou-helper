@@ -35,7 +35,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.1.1"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -4823,6 +4823,8 @@ class RiotAPI:
                     return json.loads(r.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
                 if e.code == 429:                       # 超速：按服务器说的等
+                    if getattr(self, "log", None):
+                        self.log("429 rate limited, retry after {0}s: {1}".format(e.headers.get("Retry-After"), path[:60]))
                     time.sleep(float(e.headers.get("Retry-After") or 10))
                     continue
                 if e.code == 404:
@@ -4993,6 +4995,8 @@ class RiotCollector:
         self.frontier = list(st.get("frontier", []))  # 待查的玩家
         self.tiers = st.get("tiers", {})             # puuid -> 段位
         self.tl_done = dict.fromkeys(st.get("tl_done", []))   # 已经抓过时间线的对局
+        if not os.path.exists(os.path.join(self.dir, "matches.jsonl")):
+            self.seen = {}                            # 还一局都没收到：看过的清单作废，重新判断（2.1.1 修正）
         self.tl_new = 0                               # 上次训练胜率模型之后新抓的时间线
         self.on_model = None
         self.lock = threading.Lock()
@@ -5001,6 +5005,7 @@ class RiotCollector:
         self._agg = None
         self.wake = threading.Event()
         self.on_new = None
+        self.skipped = []                             # 看过、但不是海斗的对局（模式/队列），给状态说明用
 
     # ---------- 设定 ----------
     @property
@@ -5084,7 +5089,11 @@ class RiotCollector:
             self.wake.clear()
             if not self.enabled or engine.connected:
                 continue
-            api = RiotAPI(self.cfg["key"], self.cfg["platform"])
+            if getattr(self, "_api", None) is None or (self._api.key, self._api.platform) != \
+                    (self.cfg["key"].strip(), self.cfg["platform"].upper()):
+                self._api = RiotAPI(self.cfg["key"], self.cfg["platform"])   # 同一把密钥沿用限速记录（不会一换轮就超速）
+                self._api.log = self.dlog
+            api = self._api
 
             def halt():
                 return stop.is_set() or engine.connected or not self.enabled
@@ -5094,49 +5103,50 @@ class RiotCollector:
                 if me and me not in self.frontier:
                     self.frontier.insert(0, me)
                 batch = 0
+                # 先从游戏客户端记得的你的海斗对局开始（不靠 Riot 的「最近 20 局」清单）
+                own = [f"{self.cfg['platform']}_{g['gameId']}" for g in getattr(getattr(engine, "habits", None), "games", [])
+                       if g.get("gameId")]
+                own = [x for x in dict.fromkeys(reversed(own)) if x not in self.seen][:40]
+                if own:
+                    self.dlog("client history: {0} games not yet seen".format(len(own)))
+                for mid in own:
+                    if halt():
+                        break
+                    batch += self.take_match(api, mid, halt)
                 while self.frontier and not halt() and batch < 60:
                     puuid = self.frontier.pop(0)
                     # 海斗的队列编号：从认出的第一局海斗学到后才用来筛选（还不知道时全部拿来看）
                     q = f"&queue={self.cfg['mayhem_queue']}" if self.cfg.get("mayhem_queue") else ""
-                    ids = api.get(api.mregion, f"/lol/match/v5/matches/by-puuid/{puuid}/ids?start=0&count=20{q}", halt) or []
-                    for mid in ids:
-                        if halt() or mid in self.seen:
+                    ids = api.get(api.mregion, f"/lol/match/v5/matches/by-puuid/{puuid}/ids?start=0&count=20{q}", halt)
+                    if puuid == me:
+                        self.dlog("my match ids ({0}): {1}".format("queue filter" if q else "all modes", ids))
+                        if not ids:
+                            self.status = tr("Riot 查不到你的对局：检查服务器和 Riot ID 是否正确")
+                    for mid in ids or []:
+                        if halt():
+                            with self.lock:
+                                self.frontier.insert(0, puuid)      # 被打断（进游戏了）：下次从这个玩家接着查
+                            break
+                        if mid in self.seen:
                             continue
-                        m = api.get(api.mregion, f"/lol/match/v5/matches/{mid}", halt)
-                        if m is None:
-                            continue                    # 这次没读到：不记成看过，下次再试
-                        rows, players = self.rows_from_match(m)
-                        if not rows:
-                            self.seen[mid] = None       # 不是海斗：记下来不再看
-                            continue
-                        if self.cfg.get("ranks"):
-                            for r in rows:
-                                if halt():
-                                    break
-                                r["t"] = self.tier_of(api, r["u"], halt)
-                        with open(os.path.join(self.dir, "matches.jsonl"), "a", encoding="utf-8") as f:
-                            for r in rows:
-                                r.pop("u", None)
-                                f.write(json.dumps(r, ensure_ascii=False) + "\n")
-                        self.seen[mid] = None           # 写进去了才算看过（中途被打断的下次重抓）
-                        self.fetch_timeline(api, mid, m, halt)
-                        if getattr(self, "_lines", None) is not None:
-                            self._lines += len(rows)
-                        with self.lock:
-                            self.frontier += [p for p in players if p not in self.frontier][:9]
-                            self._agg = None
-                        self.added += 1
-                        batch += 1
+                        batch += self.take_match(api, mid, halt)
                     self.status = tr('自建数据库：本次新增 {0} 局').format(self.added)
                     self.save_state()
                 if self.added and self.on_new:
                     self.on_new()
                 self.maybe_refit()
-                if not self.frontier:
-                    self.status = tr("自建数据库：没有可以继续查的玩家（打一局后会再从你开始）")
+                if not self.frontier and not halt():
+                    if self.added:
+                        self.status = tr("自建数据库：没有可以继续查的玩家（打一局后会再从你开始）")
+                    elif self.skipped:
+                        self.status = tr("自建数据库：看了 {0} 局都不是海斗（{1}），打一局海斗后再试").format(
+                            len(self.skipped), "、".join(sorted(set(self.skipped))[:4]))
+                elif halt() and engine.connected:
+                    self.status = tr("自建数据库：对局中，暂停收集")
             except InterruptedError:
                 self.save_state()
             except urllib.error.HTTPError as e:
+                self.dlog("HTTP {0}: {1}".format(e.code, getattr(e, "url", "")[:90].split("?")[0]))
                 if e.code in (401, 403):
                     self.status = tr("Riot 密钥无效或已过期（开发者密钥每 24 小时要更新一次）")
                     self.save_cfg(enabled=False)
@@ -5145,6 +5155,56 @@ class RiotCollector:
                 engine.q.put(("data", self.status))
             except Exception as e:  # noqa
                 self.status = tr('自建数据库出错：{0}').format(e)
+            if self.status:
+                self.dlog("status: " + self.status)
+
+    def take_match(self, api, mid, halt):
+        """抓一局：是海斗就写进 matches.jsonl、抓时间线、把同场玩家加进待查名单。回传 1＝新增一局"""
+        m = api.get(api.mregion, f"/lol/match/v5/matches/{mid}", halt)
+        if m is None:
+            self.dlog(f"{mid}: not found")
+            miss = self.__dict__.setdefault("_miss", {})
+            miss[mid] = miss.get(mid, 0) + 1
+            if miss[mid] >= 3:
+                self.seen[mid] = None           # 一直读不到：不再试
+            return 0                            # 这次没读到：先不记成看过，下次再试
+        info = m.get("info") or {}
+        rows, players = self.rows_from_match(m)
+        if not rows:
+            self.seen[mid] = None               # 不是海斗：记下来不再看
+            kind = "{0}/{1}".format(info.get("gameMode", "?"), info.get("queueId", "?"))
+            self.skipped.append(kind)
+            self.dlog("{0}: skipped mode={1} dur={2}".format(mid, kind, info.get("gameDuration")))
+            return 0
+        if self.cfg.get("ranks"):
+            for r in rows:
+                if halt():
+                    break
+                r["t"] = self.tier_of(api, r["u"], halt)
+        with open(os.path.join(self.dir, "matches.jsonl"), "a", encoding="utf-8") as f:
+            for r in rows:
+                r.pop("u", None)
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        self.seen[mid] = None                   # 写进去了才算看过（中途被打断的下次重抓）
+        self.dlog(f"{mid}: added")
+        self.fetch_timeline(api, mid, m, halt)
+        if getattr(self, "_lines", None) is not None:
+            self._lines += len(rows)
+        with self.lock:
+            self.frontier += [p for p in players if p not in self.frontier][:9]
+            self._agg = None
+        self.added += 1
+        return 1
+
+    def dlog(self, text):
+        """收集过程记到 riotdb/collect.log（只在本机，查问题用；超过 200KB 从头写）"""
+        path = os.path.join(self.dir, "collect.log")
+        try:
+            mode = "w" if os.path.exists(path) and os.path.getsize(path) > 200000 else "a"
+            with open(path, mode, encoding="utf-8") as f:
+                f.write(time.strftime("%m-%d %H:%M:%S ") + text + "\n")
+        except OSError:
+            pass
 
     # ---------- 时间线（实时胜率模型用） ----------
     def fetch_timeline(self, api, mid, m, halt):

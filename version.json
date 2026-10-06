@@ -1,15 +1,18 @@
 {
- "version": "2.1.0",
+ "version": "2.1.1",
  "date": "2026-10-05",
  "notes": [
+  "修正自建数据库收不到对局：先从游戏客户端记得的你的海斗对局开始收集（不只靠 Riot 的最近 20 局清单）",
+  "同一把密钥沿用限速记录，避免连续几轮超速被拒；读不到的对局下次再试",
+  "收集过程记在 riotdb/collect.log；状态会说明是查不到对局、都不是海斗，还是对局中暂停",
   "2.1：实时胜率——战况条第一行显示「胜率 62% ↑5」，模型用你自建数据库收集的对局时间线训练（要 150 局）",
   "赛后复盘多了「关键时刻」：胜率 2 分钟内掉最多的那段，配上双方阵亡数和原因（先倒下 / 少人接团 / 换人吃亏 / 丢塔 / 对面装备成型）",
   "关键时刻会变成练习题；⋯ → 自建数据库显示时间线进度和模型准确率",
   "2.1: live win probability trained on your own timeline data, key moments in the post-game review, and new practice cards"
  ],
  "files": {
-  "haidou_helper.py": "f0f7e7e1c7de66ccb49d1ec35d256cd2f255e8d1b2ce46c10b1defae51d680e3",
-  "lang_en.py": "d61f8fbdd8e6ab33f319e0dfdbdddfb38a6d5dac8f6105751ebcce6e5e809b13",
+  "haidou_helper.py": "981f17ab2c5cf20a346f9468d6115167f16c4ccc92edf30cfb7a06fc1151d8d9",
+  "lang_en.py": "2f02a1b2a12b89bfaeb4f9903c520dfc199c2495b18efc1b3aff090ba7be7865",
   "README.md": "6472a9a27647b16be2a105d61afa830cca4a4b40fb1e4e33a802fe2056165c04"
  }
 }

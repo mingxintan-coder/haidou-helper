@@ -362,6 +362,9 @@ EN.update({'{0:.1f} 万局': '{0:.1f}0k games', '{0} 局': '{0} games', '{0} {1:
 EN.update({'数据载入中': 'loading data'})
 EN.update({
     "——": " — ",
+    "Riot 查不到你的对局：检查服务器和 Riot ID 是否正确": "Riot returned none of your games: check the server and Riot ID",
+    "自建数据库：看了 {0} 局都不是海斗（{1}），打一局海斗后再试": "Own database: checked {0} games, none were Mayhem ({1}); try again after a Mayhem game",
+    "自建数据库：对局中，暂停收集": "Own database: paused while in game",
     "{0} · {1}。这一段最主要的问题是？": "{0} · {1}. What was the main problem here?",
     "{0} 胜率 {1}% → {2}%（我方阵亡 {3}，敌方阵亡 {4}）": "{0} win chance {1}% → {2}% (ally deaths {3}, enemy deaths {4})",
     "人数不利还接团": "Took a fight while outnumbered",
