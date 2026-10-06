@@ -1,18 +1,18 @@
 {
- "version": "2.2.0",
+ "version": "2.3.0",
  "date": "2026-10-05",
  "notes": [
+  "「检查更新」和「更新到新版」合成一个键：⋯ →「更新」，有新版就直接下载更新",
+  "删除练习模式（赛后复盘、关键时刻、向高手学都保留）",
   "自建数据库改成从游戏客户端收集：不用 Riot 密钥（Riot 公开接口读不到海斗对局，会回 403）",
   "每局读 10 人的出装、增幅、输赢和时间线，顺着同场玩家往外扩；攒够 150 局自动训练实时胜率",
   "Own database now collects from the game client (no Riot key needed; the public API blocks Mayhem games)",
   "修正：自建数据库把「某一局读不了（403）」误判成密钥无效而停止收集；现在先用服务器状态接口确认密钥，单局读不了就跳过",
-  "密钥真的无效时，显示 Riot 回的原因；换密钥后自动重查你的账号",
-  "修正：不在游戏时「⇪ 新版」提醒被「等待对局…」盖住看不到；⋯ 菜单新增「更新到新版」",
-  "修正自建数据库收不到对局：先从游戏客户端记得的你的海斗对局开始收集（不只靠 Riot 的最近 20 局清单）"
+  "密钥真的无效时，显示 Riot 回的原因；换密钥后自动重查你的账号"
  ],
  "files": {
-  "haidou_helper.py": "f7d82880608b13716d0e13ee9d3e1b2a1133a8d1ac97f1f72c72d22f47b4f0c3",
-  "lang_en.py": "27981f4729e1679c158ed7d3af03e8f7ef7636fb42db045a1a1c300c1bd79fb7",
-  "README.md": "ee92da87ee59bcfc39ccbc9becfe33e59198757fdd48b2cb2d04ed6802a2b52a"
+  "haidou_helper.py": "4c2c2d2e86bbc84f018b373a62efb05de5e890b2cdf48218451be9864283080f",
+  "lang_en.py": "5ed43c451ec15b932c2b045b7f6e1c9d735610f970123d78c507c5485358e017",
+  "README.md": "dd834a2a9124ee26a7966126406c7cd0ea8846c436b4f73ccee763b532d43138"
  }
 }

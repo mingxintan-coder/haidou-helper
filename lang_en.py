@@ -362,6 +362,7 @@ EN.update({'{0:.1f} 万局': '{0:.1f}0k games', '{0} 局': '{0} games', '{0} {1:
 EN.update({'数据载入中': 'loading data'})
 EN.update({
     "——": " — ",
+    "更新（当前 v{0}）": "Update (current v{0})",
     "从游戏客户端收集（推荐，不用密钥；客户端开着就行）": "Collect from the game client (recommended, no key; just keep the client open)",
     "用 Riot 开发者密钥（Riot 公开接口目前读不到海斗对局）": "Use a Riot developer key (the public API currently can't read Mayhem games)",
     "自建数据库": "Own database",
