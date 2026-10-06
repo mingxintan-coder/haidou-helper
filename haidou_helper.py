@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.4.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -4361,6 +4361,47 @@ class HabitStore:
         self.games = data.get("games", []) if isinstance(data, dict) else []
         self.enabled = load_ui_cfg().get("habits", True)
         self._cache = {}
+        if self.dedupe():
+            self.save()
+
+    def save(self):
+        try:
+            write_json(self.path, {"version": 1, "games": self.games})
+        except OSError:
+            pass
+
+    def dedupe(self):
+        """同一局只留一笔：① 同一个 gameId 只留第一笔（旧版本导入时重复过）；
+           ② 本程序自己记的（没有 gameId）和客户端那笔是同一局（同英雄、开始时间差 1 小时内）→ 留客户端那笔，
+              把复盘资料（照推荐与否、关键时刻）搬过去。回传删了几笔"""
+        keep, by_id = [], {}
+        for g in self.games:
+            gid = g.get("gameId")
+            if gid:
+                if gid in by_id:
+                    first = by_id[gid]
+                    for k in ("item_follow", "aug_follow", "moments", "mvp"):
+                        if g.get(k) and not first.get(k):
+                            first[k] = g[k]
+                    continue
+                by_id[gid] = g
+            keep.append(g)
+        out = []
+        for g in keep:
+            if not g.get("gameId"):
+                twin = next((c for c in by_id.values() if c.get("champ") == g.get("champ")
+                             and abs((c.get("ts") or 0) - (g.get("ts") or 0)) < 3600), None)
+                if twin is not None:
+                    for k in ("item_follow", "aug_follow", "moments", "mvp"):
+                        if g.get(k) and not twin.get(k):
+                            twin[k] = g[k]
+                    continue
+            out.append(g)
+        removed = len(self.games) - len(out)
+        if removed:
+            self.games = out
+            self._cache.clear()
+        return removed
 
     def add_game(self, g):
         if not self.enabled or not g.get("champ"):
@@ -4380,6 +4421,7 @@ class HabitStore:
         if not new or not self.enabled:
             return 0
         self.games = sorted(self.games + new, key=lambda g: g.get("ts", 0) or 0)[-self.MAX_GAMES:]
+        self.dedupe()
         self._cache.clear()
         try:
             write_json(self.path, {"version": 1, "games": self.games})
@@ -5879,6 +5921,38 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         return b
 
     menu_btn = hbtn("⋯", lambda: open_menu())
+
+    def minimize():
+        """最小化到工作列（无边框视窗要先暂时恢复边框才能最小化；点工作列还原后再拿掉边框）"""
+        kill_tip()
+        st["minimized"] = True
+        try:
+            root.overrideredirect(False)
+            root.iconify()
+        except tk.TclError:
+            st["minimized"] = False
+            root.overrideredirect(True)
+            return
+        root.after(600, watch_restore)
+
+    def watch_restore():
+        """有些系统还原时不发 <Map>：每 0.5 秒看一次，回到正常状态就拿掉边框"""
+        if not st.get("minimized"):
+            return
+        if root.state() == "normal":
+            on_map()
+        else:
+            root.after(500, watch_restore)
+
+    def on_map(_e=None):
+        if st.get("minimized") and root.state() == "normal":
+            st["minimized"] = False
+            root.overrideredirect(True)
+            root.attributes("-topmost", True)
+            root.after(50, fit)
+    root.bind("<Map>", on_map, add="+")
+    min_btn = hbtn("—", minimize)
+    hover(min_btn, lambda: tr("最小化（点工作列的海斗助手还原）"))
     pin_btn = hbtn("📌", lambda: toggle_pin(), fg=GOLD if st["pinned"] else SUB)
     hk = getattr(getattr(engine, "hotkey", None), "name", "")
     hbtn(tr('识别 {0}').format(hk).strip(), lambda: force_scan(), fg=FG, bg="#2b3a57")
@@ -6086,7 +6160,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             return
         rec = current["rec"]
         busy = bool(rec and rec.get("auto_cand"))          # 屏幕上正在三选一
-        if inside or busy or manual_win["w"] is not None:
+        if inside or busy:
             return
         if now < st["hold_until"] or now - st["left_at"] < 1.0:
             return
@@ -6103,10 +6177,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         return getattr(engine.advisor, "stats", None)
     stats_obj = S()
     scan_on = threading.Event()
-    auto_default = bool(cfg.get("auto_scan", False) or getattr(engine, "auto_scan_default", False))
-    if auto_default:
+    if getattr(engine, "auto_scan_default", False):     # 只有演示模式 / --auto-scan 才一直识别；平常按快捷键识别
         scan_on.set()
-    auto_var = tk.IntVar(value=1 if auto_default else 0)
     bracket_var = tk.StringVar(value=getattr(stats_obj, "dataset", "all"))
     size_var = tk.DoubleVar(value=st["k"])
 
@@ -6119,12 +6191,6 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         else:
             set_status(tr("识别不可用：") + (scanner.error if scanner else tr("已关闭")))
             st["status_hold"] = time.time() + 8
-
-    def toggle_auto():
-        scan_on.set() if auto_var.get() else scan_on.clear()
-        c = load_ui_cfg()
-        c["auto_scan"] = bool(auto_var.get())
-        save_ui_cfg(c)
 
     def switch_bracket(ds=None):
         so = S()
@@ -6159,8 +6225,6 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         if current.get("rec"):
             show(current["rec"], flash=False)
     menu.add_checkbutton(label=tr("显示战况条（连招 / 战局 / 威胁 / 玩法）"), variable=brief_var, command=toggle_brief)
-    menu.add_checkbutton(label=tr("一直自动识别三选一（较耗 CPU）"), variable=auto_var, command=toggle_auto)
-    menu.add_command(label=tr("手动输入增幅…"), command=lambda: open_manual())
     habits_var = tk.BooleanVar(value=engine.habits.enabled)
 
     def toggle_habits():
@@ -6320,50 +6384,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             pass
         menu.tk_popup(menu_btn.winfo_rootx(), menu_btn.winfo_rooty() + menu_btn.winfo_height())
 
-    # ---------- 手动输入（小窗） ----------
-    manual_win = {"w": None}
-    entries = {}
+    # 点三选一的卡片＝记下你选了这张（我的增幅）
     manual_vals = {"mine": "", "cand": "", "ally": "", "enemy": ""}
-
-    def apply_all():
-        for k, e in entries.items():
-            manual_vals[k] = e.get()
-            engine.set_manual(k, e.get())
-
-    def open_manual():
-        if manual_win["w"] is not None:
-            manual_win["w"].lift()
-            return
-        w = tk.Toplevel(root)
-        w.overrideredirect(True)
-        w.attributes("-topmost", True)
-        w.configure(bg=BG, highlightthickness=1, highlightbackground="#2a3140")
-        tk.Label(w, text=tr("手动输入增幅（逗号或空格分隔，可只写关键字）"), bg=HEAD, fg=GOLD, font=F["small"],
-                 anchor="w", padx=8, pady=4).pack(fill="x")
-        for key, label in (("cand", tr("三选一候选")), ("mine", tr("我的增幅")), ("ally", tr("队友增幅")), ("enemy", tr("敌方增幅"))):
-            row = tk.Frame(w, bg=BG)
-            row.pack(fill="x", padx=8, pady=2)
-            tk.Label(row, text=label, width=8, bg=BG, fg=SUB, font=F["small"], anchor="w").pack(side="left")
-            e = tk.Entry(row, bg="#1f2637", fg=FG, insertbackground=FG, relief="flat", font=F["small"], width=26)
-            e.insert(0, manual_vals.get(key, ""))
-            e.pack(side="left", fill="x", expand=True, ipady=2)
-            e.bind("<Return>", lambda ev: apply_all())
-            entries[key] = e
-        btns = tk.Frame(w, bg=BG)
-        btns.pack(fill="x", padx=8, pady=(4, 8))
-
-        def close():
-            apply_all()
-            entries.clear()
-            w.destroy()
-            manual_win["w"] = None
-        tk.Label(btns, text=tr("套用并关闭"), bg="#2b3a57", fg=FG, font=F["small"], padx=10, pady=3,
-                 cursor="hand2").pack(side="right")
-        btns.winfo_children()[-1].bind("<Button-1>", lambda e: close())
-        w.update_idletasks()
-        x = root.winfo_rootx() - w.winfo_reqwidth() - 6
-        w.geometry(f"+{max(0, x)}+{root.winfo_rooty()}")
-        manual_win["w"] = w
 
     # ---------- 填内容 ----------
     current = {"rec": None}
@@ -6511,7 +6533,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 tr("{0}「{1}」").format(x["who"], x["aug"]) + (" → " + x["fix"] if x["fix"] else "") for x in ea[:6]))
             enemy_lbl.pack(fill="x", pady=(2, 0), after=mine_lbl)
         elif not rec.get("eaug_visible") and rec.get("game_time", 0) > 420:
-            enemy_lbl.config(text=tr("游戏没提供敌方增幅：可在 ⋯ → 手动输入增幅 填写"), fg=DIM)
+            enemy_lbl.config(text=tr("游戏没提供敌方增幅"), fg=DIM)
             enemy_lbl.pack(fill="x", pady=(2, 0), after=mine_lbl)
         else:
             enemy_lbl.pack_forget()
@@ -6660,11 +6682,6 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             elif kind == "manual_reset":   # 新的一局：上一局手动输入的增幅清掉
                 for k in manual_vals:
                     manual_vals[k] = ""
-                for k, e in list(entries.items()):
-                    try:
-                        e.delete(0, "end")
-                    except tk.TclError:
-                        pass
             elif kind == "select":         # 选英雄阶段
                 dot.config(fg=GOLD)
                 show_select(payload)
