@@ -5002,6 +5002,8 @@ class RiotCollector:
         self.cfg_path = os.path.join(self.dir, "settings.json")
         self.cfg = read_json(self.cfg_path) if os.path.exists(self.cfg_path) else {}
         self.cfg = self.cfg if isinstance(self.cfg, dict) else {}
+        if "source" not in self.cfg:                  # 2.2 起预设从客户端收集：之前因为密钥被关掉的收集重新打开
+            self.cfg["enabled"] = True
         self.state_path = os.path.join(self.dir, "state.json")
         st = read_json(self.state_path) if os.path.exists(self.state_path) else {}
         st = st if isinstance(st, dict) else {}

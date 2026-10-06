@@ -11,7 +11,7 @@
   "修正自建数据库收不到对局：先从游戏客户端记得的你的海斗对局开始收集（不只靠 Riot 的最近 20 局清单）"
  ],
  "files": {
-  "haidou_helper.py": "8c0dfc2eec5c31ea8d3789cfa392469bd23b46e9e47a8f94cabcd696570280f7",
+  "haidou_helper.py": "f7d82880608b13716d0e13ee9d3e1b2a1133a8d1ac97f1f72c72d22f47b4f0c3",
   "lang_en.py": "27981f4729e1679c158ed7d3af03e8f7ef7636fb42db045a1a1c300c1bd79fb7",
   "README.md": "ee92da87ee59bcfc39ccbc9becfe33e59198757fdd48b2cb2d04ed6802a2b52a"
  }
