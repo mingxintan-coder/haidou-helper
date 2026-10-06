@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.4.1"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -4638,32 +4638,56 @@ def parse_postgame(data):
 
 
 def import_client_history(gd, store, log=print, pages=10):
-    """读取客户端里最近最多 200 局，导入海斗 / 大乱斗对局；回传 (新增局数, 说明)"""
+    """读取客户端里的历史对局，导入海斗 / 大乱斗对局；回传 (新增局数, 说明)。
+       先试一次要 200 局；不够再一页页往回翻。客户端有时不理会分页、每页都回同样的 20 局：
+       发现这一页全是看过的就停，并把每页的情况记在 riotdb/collect.log"""
     cred = lcu_credentials()
     if not cred:
         return 0, tr("没找到正在运行的游戏客户端")
     aug_by_id = {a["id"]: a["name"] for a in gd.augments if a.get("id")}
-    found = []
-    for i in range(pages):
-        try:
-            data = lcu_get(f"/lol-match-history/v1/products/lol/current-summoner/matches?begIndex={i * 20}"
-                           f"&endIndex={i * 20 + 20}", cred)
-        except Exception as e:  # noqa
-            if i == 0:
-                return 0, tr('读取客户端对局记录失败：{0}').format(e)
-            break
+    found, ids, note = [], set(), []
+
+    def fetch(beg, end):
+        data = lcu_get(f"/lol-match-history/v1/products/lol/current-summoner/matches?begIndex={beg}&endIndex={end}", cred)
         batch = (data.get("games") or {}).get("games", []) if isinstance(data, dict) else []
-        found += parse_lcu_history(data, gd, aug_by_id)
-        if len(batch) < 20:
+        return data, batch
+    try:
+        data, batch = fetch(0, 200)
+    except Exception as e:  # noqa
+        return 0, tr('读取客户端对局记录失败：{0}').format(e)
+    ids |= {g.get("gameId") for g in batch}
+    found += parse_lcu_history(data, gd, aug_by_id)
+    note.append("0-200: {0}".format(len(batch)))
+    beg = len(batch)
+    for _ in range(pages):
+        if not batch:
             break
+        try:
+            data, batch = fetch(beg, beg + 20)
+        except Exception:  # noqa
+            break
+        fresh = [g for g in batch if g.get("gameId") not in ids]
+        note.append("{0}-{1}: {2} ({3} new)".format(beg, beg + 20, len(batch), len(fresh)))
+        if not fresh:
+            break                                   # 客户端不给更早的了（或一直回同一页）
+        ids |= {g.get("gameId") for g in fresh}
+        found += parse_lcu_history({"games": {"games": fresh}}, gd, aug_by_id)
+        beg += len(batch)
     uniq, seen_ids = [], set()          # 分页的边界可能重复同一局
     for g in found:
         if g.get("gameId") in seen_ids:
             continue
         seen_ids.add(g.get("gameId"))
         uniq.append(g)
+    try:
+        os.makedirs(os.path.join(APP_DIR, "riotdb"), exist_ok=True)
+        with open(os.path.join(APP_DIR, "riotdb", "collect.log"), "a", encoding="utf-8") as f:
+            f.write(time.strftime("%m-%d %H:%M:%S ") + "history import: " + "; ".join(note) +
+                    " | games {0}, ARAM/Mayhem {1}\n".format(len(ids), len(uniq)))
+    except OSError:
+        pass
     n = store.import_games(uniq)
-    return n, tr('从客户端读到 {0} 局大乱斗 / 海斗，新增 {1} 局').format(len(uniq), n)
+    return n, tr('客户端提供了最近 {0} 局（其中大乱斗 / 海斗 {1} 局），新增 {2} 局').format(len(ids), len(uniq), n)
 
 
 # --------------------------------------------------------------------------------------

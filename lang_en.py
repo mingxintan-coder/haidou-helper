@@ -362,6 +362,7 @@ EN.update({'{0:.1f} 万局': '{0:.1f}0k games', '{0} 局': '{0} games', '{0} {1:
 EN.update({'数据载入中': 'loading data'})
 EN.update({
     "——": " — ",
+    "客户端提供了最近 {0} 局（其中大乱斗 / 海斗 {1} 局），新增 {2} 局": "The client provided your last {0} games ({1} ARAM / Mayhem), {2} new",
     "最小化（点工作列的海斗助手还原）": "Minimize (click Mayhem Helper on the taskbar to restore)",
     "游戏没提供敌方增幅": "The game doesn't provide enemy augments",
     "更新（当前 v{0}）": "Update (current v{0})",
