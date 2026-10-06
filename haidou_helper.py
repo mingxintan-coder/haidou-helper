@@ -35,7 +35,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.1.1"
+APP_VERSION = "2.1.2"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5790,7 +5790,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
 
     def set_status(text):
         """没有别的消息时，标题栏显示新版本提醒（金色，可点）"""
-        if not text and st.get("app_new"):
+        if st.get("app_new") and not st.get("upgrading") and text in ("", tr("监控中"), tr("等待对局…"), tr("等待"),
+                                                                     tr("已连接，等待玩家数据…")):
+            # 平常的「等待 / 监控中」都让位给新版本提醒（以前不在游戏时一直被「等待对局…」盖住，看不到）
             status.config(text=tr('⇪ 新版 v{0}').format(st['app_new'].get('version', '')), fg=GOLD, cursor="hand2")
         else:
             status.config(text=text, fg=DIM, cursor="")
@@ -6441,6 +6443,13 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         st["status_hold"] = time.time() + 20
         up.check_now()
     menu.add_command(label=tr('检查更新（当前 v{0}）').format(APP_VERSION), command=check_update)
+
+    def menu_upgrade():
+        if st.get("app_new"):
+            open_download()
+        else:
+            check_update()
+    menu.add_command(label=tr("更新到新版"), command=menu_upgrade)
     menu.add_command(label=tr("关闭海斗助手"), command=root.destroy)
 
     def open_menu():
@@ -6812,8 +6821,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 st["data_msg"] = payload
             elif kind == "appupd":         # 程序有新版本：点一下直接更新
                 st["app_new"] = payload
-                if not hold:
-                    set_status("")
+                set_status("")
+                st["status_hold"] = time.time() + 30
+                st["data_msg"] = tr("发现新版 v{0}：点标题栏的「⇪ 新版」或 ⋯ → 更新到新版").format(payload.get("version", ""))
             elif kind == "data":           # 数据版本检查 / 更新
                 st["data_msg"] = payload
                 if payload.startswith(tr("更新失败")):
