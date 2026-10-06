@@ -362,6 +362,7 @@ EN.update({'{0:.1f} 万局': '{0:.1f}0k games', '{0} 局': '{0} games', '{0} {1:
 EN.update({'数据载入中': 'loading data'})
 EN.update({
     "——": " — ",
+    "自建数据库：换了密钥，重新查你的账号": "Own database: key changed, looking up your account again",
     "发现新版 v{0}：点标题栏的「⇪ 新版」或 ⋯ → 更新到新版": "New version v{0}: click \"⇪ New\" in the title bar or ⋯ → Update to new version",
     "更新到新版": "Update to new version",
     "Riot 查不到你的对局：检查服务器和 Riot ID 是否正确": "Riot returned none of your games: check the server and Riot ID",

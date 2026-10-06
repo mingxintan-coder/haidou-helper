@@ -35,7 +35,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.1.2"
+APP_VERSION = "2.1.3"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -4829,8 +4829,22 @@ class RiotAPI:
                     continue
                 if e.code == 404:
                     return None
+                try:
+                    e.riot_msg = e.read().decode("utf-8", "replace")[:200]
+                except Exception:  # noqa
+                    e.riot_msg = ""
                 raise
         return None
+
+    def check_key(self, stop=None):
+        """用最简单的接口（服务器状态）确认密钥能用：回传 None＝可以，否则回传 Riot 的说明"""
+        try:
+            self.get(self.platform.lower(), "/lol/status/v4/platform-data", stop)
+            return None
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                return "HTTP {0} {1}".format(e.code, getattr(e, "riot_msg", ""))
+            raise
 
 
 # --------------------------------------------------------------------------------------
@@ -5098,6 +5112,13 @@ class RiotCollector:
             def halt():
                 return stop.is_set() or engine.connected or not self.enabled
             try:
+                bad = api.check_key(halt)
+                if bad:
+                    self.dlog("key check failed: " + bad)
+                    self.status = tr("Riot 密钥无效或已过期（开发者密钥每 24 小时要更新一次）") + "\n" + bad[:80]
+                    self.save_cfg(enabled=False)
+                    engine.q.put(("data", tr("Riot 密钥无效或已过期（开发者密钥每 24 小时要更新一次）")))
+                    continue
                 self.backfill_timelines(api, halt)      # 以前收集的对局补抓时间线（胜率模型要用）
                 me = self.seed(api, self.cfg.get("riot_id") or getattr(engine, "my_riot_id", ""), halt)
                 if me and me not in self.frontier:
@@ -5146,8 +5167,15 @@ class RiotCollector:
             except InterruptedError:
                 self.save_state()
             except urllib.error.HTTPError as e:
-                self.dlog("HTTP {0}: {1}".format(e.code, getattr(e, "url", "")[:90].split("?")[0]))
-                if e.code in (401, 403):
+                self.dlog("HTTP {0}: {1} {2}".format(e.code, getattr(e, "url", "")[:90].split("?")[0],
+                                                     getattr(e, "riot_msg", "")))
+                if e.code == 400 and "decrypt" in getattr(e, "riot_msg", "").lower():
+                    self.cfg.pop("my_puuid", None)      # 旧密钥查到的玩家编号：换密钥后要重查
+                    with self.lock:
+                        self.frontier = []
+                    self.save_cfg()
+                    self.status = tr("自建数据库：换了密钥，重新查你的账号")
+                elif e.code in (401, 403):
                     self.status = tr("Riot 密钥无效或已过期（开发者密钥每 24 小时要更新一次）")
                     self.save_cfg(enabled=False)
                 else:
@@ -5160,7 +5188,14 @@ class RiotCollector:
 
     def take_match(self, api, mid, halt):
         """抓一局：是海斗就写进 matches.jsonl、抓时间线、把同场玩家加进待查名单。回传 1＝新增一局"""
-        m = api.get(api.mregion, f"/lol/match/v5/matches/{mid}", halt)
+        try:
+            m = api.get(api.mregion, f"/lol/match/v5/matches/{mid}", halt)
+        except urllib.error.HTTPError as e:
+            if e.code not in (401, 403):
+                raise
+            self.dlog("{0}: HTTP {1} {2}".format(mid, e.code, getattr(e, "riot_msg", "")))
+            self.seen[mid] = None               # 这一局读不了（密钥前面已确认能用）：跳过
+            return 0
         if m is None:
             self.dlog(f"{mid}: not found")
             miss = self.__dict__.setdefault("_miss", {})
