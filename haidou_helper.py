@@ -35,7 +35,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.1.3"
+APP_VERSION = "2.2.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -4866,7 +4866,7 @@ def wp_vector(m, gd, kd, ld, td):
 def timeline_rows(tl, team_of, blue_win, mid=""):
     """对局时间线 → 每分钟一行：{id, m, gd, kd, ld, td, w}（都是 蓝方 − 红方；gd 用「已花的钱」= 总金钱 − 身上的钱，
        跟对局中能读到的装备总价对得上）。只算该分钟之前发生的事件（不偷看未来）"""
-    info = (tl or {}).get("info") or {}
+    info = (tl or {}).get("info") or (tl or {})      # Riot 接口有 info 一层；客户端的直接就是 frames
     frames = info.get("frames") or []
     events = sorted((e for f in frames for e in (f.get("events") or [])), key=lambda e: e.get("timestamp", 0))
     out, ei = [], 0
@@ -5012,6 +5012,7 @@ class RiotCollector:
         if not os.path.exists(os.path.join(self.dir, "matches.jsonl")):
             self.seen = {}                            # 还一局都没收到：看过的清单作废，重新判断（2.1.1 修正）
         self.tl_new = 0                               # 上次训练胜率模型之后新抓的时间线
+        self.cfront = list(st.get("cfront", []))      # 客户端模式的待查玩家（客户端的 puuid 跟 Riot 接口的不一样）
         self.on_model = None
         self.lock = threading.Lock()
         self.status = ""
@@ -5023,7 +5024,14 @@ class RiotCollector:
 
     # ---------- 设定 ----------
     @property
+    def use_client(self):
+        """从游戏客户端收集（预设）：Riot 公开接口读不到海斗对局（回 403），客户端读得到"""
+        return self.cfg.get("source", "client") == "client"
+
+    @property
     def enabled(self):
+        if self.use_client:
+            return bool(self.cfg.get("enabled", True))
         return bool(self.cfg.get("enabled") and self.cfg.get("key") and self.cfg.get("platform"))
 
     def save_cfg(self, **kw):
@@ -5034,7 +5042,7 @@ class RiotCollector:
     def save_state(self):
         with self.lock:
             data = {"seen": list(self.seen)[-50000:], "frontier": self.frontier[-3000:], "tiers": self.tiers,
-                    "tl_done": list(self.tl_done)[-50000:]}
+                    "tl_done": list(self.tl_done)[-50000:], "cfront": self.cfront[-3000:]}
         write_json(self.state_path, data)
 
     # ---------- 收集 ----------
@@ -5102,6 +5110,17 @@ class RiotCollector:
             self.wake.wait(30)
             self.wake.clear()
             if not self.enabled or engine.connected:
+                continue
+            if self.use_client:
+                def chalt():
+                    return stop.is_set() or engine.connected or not self.enabled
+                try:
+                    self.run_client(chalt)
+                except InterruptedError:
+                    self.save_state()
+                except Exception as e:  # noqa
+                    self.status = tr('自建数据库出错：{0}').format(e)
+                    self.dlog("client error: {0!r}".format(e))
                 continue
             if getattr(self, "_api", None) is None or (self._api.key, self._api.platform) != \
                     (self.cfg["key"].strip(), self.cfg["platform"].upper()):
@@ -5185,6 +5204,149 @@ class RiotCollector:
                 self.status = tr('自建数据库出错：{0}').format(e)
             if self.status:
                 self.dlog("status: " + self.status)
+
+    # ---------- 从游戏客户端收集（2.2） ----------
+    CLIENT_GAP = 1.0          # 每次问客户端之间至少隔 1 秒（客户端会再去问 Riot 伺服器，别催太急）
+    CLIENT_BATCH = 60         # 每一轮最多新收几局
+
+    def client_call(self, cred, path, halt):
+        if halt():
+            raise InterruptedError
+        time.sleep(self.CLIENT_GAP)
+        try:
+            return lcu_get(path, cred, timeout=20)
+        except urllib.error.HTTPError as e:
+            self.dlog("client HTTP {0}: {1}".format(e.code, path[:80]))
+            return None
+
+    def _sample(self, name, data):
+        """每种回应存第一份样本（riotdb/client_sample_*.json），格式有变时方便查"""
+        path = os.path.join(self.dir, f"client_sample_{name}.json")
+        if data is not None and not os.path.exists(path):
+            try:
+                write_json(path, data)
+            except OSError:
+                pass
+
+    def parse_client_game(self, full, mid):
+        """客户端的整局资料（/lol-match-history/v1/games/{id}）→ (rows, team_of, 蓝方赢?, puuids)"""
+        parts = (full or {}).get("participants") or []
+        if len(parts) != 10:
+            return None
+        mode = str(full.get("gameMode", "")).upper()
+        q = full.get("queueId")
+        has_aug = any(int((p.get("stats") or {}).get("playerAugment1") or 0) for p in parts)
+        if mode == "CHERRY" or full.get("mapId") == 30:
+            return None
+        if not (mode == "KIWI" or q in MAYHEM_QUEUES or (q and q == self.cfg.get("mayhem_queue")) or has_aug):
+            return None
+        if (full.get("gameDuration") or 0) < 300:
+            return None
+        ident = {pi.get("participantId"): (pi.get("player") or {}) for pi in full.get("participantIdentities") or []}
+        by_key = {str(c.get("key")): c.get("id") for c in (getattr(self.gd, "champs", None) or {}).values()}
+        patch = ".".join(str(full.get("gameVersion", "")).split(".")[:2])
+        rows, team_of, puuids = [], {}, []
+        for p in parts:
+            st = p.get("stats") or {}
+            pid = p.get("participantId")
+            team_of[pid] = p.get("teamId")
+            items = [int(st.get(f"item{i}") or 0) for i in range(7)]
+            augs = [int(st.get(f"playerAugment{i}") or 0) for i in range(1, 7)]
+            rows.append({"m": mid, "v": patch, "c": by_key.get(str(p.get("championId")), str(p.get("championId"))),
+                         "i": [x for x in items if x], "a": [x for x in augs if x], "w": bool(st.get("win"))})
+            pu = ident.get(pid, {}).get("puuid")
+            if pu:
+                puuids.append(pu)
+        blue = [r for r, p in zip(rows, parts) if p.get("teamId") == 100]
+        if not blue:
+            return None
+        return rows, team_of, blue[0]["w"], puuids
+
+    def run_client(self, halt):
+        cred = lcu_credentials()
+        if not cred:
+            self.status = tr("自建数据库：等游戏客户端打开（从客户端收集）")
+            return
+        cur = self.client_call(cred, "/lol-summoner/v1/current-summoner", halt) or {}
+        me = cur.get("puuid")                       # 每轮都问（换了帐号也跟得上）
+        if not me:
+            self.status = tr("自建数据库：读不到客户端的帐号（请先登录游戏客户端）")
+            return
+        with self.lock:
+            if me in self.cfront:
+                self.cfront.remove(me)
+            self.cfront.insert(0, me)                # 每轮都先看你自己（打完新的一局马上收）
+        batch, looked = 0, 0
+        while self.cfront and batch < self.CLIENT_BATCH and not halt():
+            with self.lock:
+                puuid = self.cfront.pop(0)
+            data = self.client_call(cred, f"/lol-match-history/v1/products/lol/{puuid}/matches?begIndex=0&endIndex=20", halt)
+            self._sample("list", data)
+            games = ((data or {}).get("games") or {}).get("games") or []
+            looked += 1
+            if puuid == me:
+                self.dlog("client: my history {0} games, {1} Mayhem".format(
+                    len(games), sum(1 for g in games if str(g.get("gameMode", "")).upper() == "KIWI" or g.get("queueId") in MAYHEM_QUEUES)))
+            for g in games:
+                if halt():
+                    with self.lock:
+                        self.cfront.insert(0, puuid)
+                    raise InterruptedError
+                mode, q = str(g.get("gameMode", "")).upper(), g.get("queueId")
+                if not (mode == "KIWI" or q in MAYHEM_QUEUES or (q and q == self.cfg.get("mayhem_queue"))):
+                    continue
+                gid = g.get("gameId")
+                mid = "{0}_{1}".format(g.get("platformId") or self.cfg.get("platform") or "NA1", gid)
+                if not gid or mid in self.seen:
+                    continue
+                full = self.client_call(cred, f"/lol-match-history/v1/games/{gid}", halt)
+                self._sample("game", full)
+                parsed = self.parse_client_game(full, mid)
+                if not parsed:
+                    miss = self.__dict__.setdefault("_miss", {})
+                    miss[mid] = miss.get(mid, 0) + 1
+                    if full is not None or miss[mid] >= 3:
+                        self.seen[mid] = None
+                    self.dlog("client {0}: {1}".format(mid, "unreadable" if full is None else "not a full Mayhem game"))
+                    continue
+                rows, team_of, blue_win, players = parsed
+                with open(os.path.join(self.dir, "matches.jsonl"), "a", encoding="utf-8") as f:
+                    for r in rows:
+                        f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                self.seen[mid] = None
+                if getattr(self, "_lines", None) is not None:
+                    self._lines += len(rows)
+                with self.lock:
+                    self.cfront += [p for p in players if p != puuid and p not in self.cfront][:9]
+                    self._agg = None
+                self.added += 1
+                batch += 1
+                if mid not in self.tl_done:
+                    tl = self.client_call(cred, f"/lol-match-history/v1/game-timelines/{gid}", halt)
+                    self._sample("timeline", tl)
+                    trows = timeline_rows(tl, team_of, blue_win, mid) if tl else []
+                    if trows:
+                        with open(os.path.join(self.dir, "timelines.jsonl"), "a", encoding="utf-8") as f:
+                            for r in trows:
+                                f.write(json.dumps(r) + "\n")
+                        self.tl_new += 1
+                        if getattr(self, "_tl_count", None) is not None:
+                            self._tl_count += 1
+                        self.tl_done[mid] = None
+                    else:
+                        self.dlog(f"client {mid}: no timeline")
+                self.dlog(f"client {mid}: added" + ("" if mid in self.tl_done else " (no timeline)"))
+                self.status = tr('自建数据库：本次新增 {0} 局').format(self.added)
+            self.save_state()
+        if self.added and self.on_new:
+            self.on_new()
+        self.maybe_refit()
+        if not halt():
+            if batch == 0 and looked and not self.added:
+                self.status = tr("自建数据库：客户端里暂时没有新的海斗对局可收（打几局后再试）")
+            elif batch:
+                self.status = tr('自建数据库：本次新增 {0} 局').format(self.added)
+        self.dlog("status: " + self.status)
 
     def take_match(self, api, mid, halt):
         """抓一局：是海斗就写进 matches.jsonl、抓时间线、把同场玩家加进待查名单。回传 1＝新增一局"""
@@ -6388,37 +6550,51 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     def open_riotdb():
         db = engine.riotdb
         w = tk.Toplevel(root)
-        w.title(tr("自建数据库（Riot 开发者密钥）"))
+        w.title(tr("自建数据库"))
         w.attributes("-topmost", True)
         w.configure(bg=BG, padx=12, pady=10)
         st["hold_until"] = time.time() + 3
 
-        def lab(text, **kw):
-            lb = tk.Label(w, text=text, bg=BG, fg=kw.pop("fg", FG), font=F["small"], anchor="w", justify="left",
+        def lab(text, parent=None, **kw):
+            lb = tk.Label(parent or w, text=text, bg=BG, fg=kw.pop("fg", FG), font=F["small"], anchor="w", justify="left",
                           wraplength=int(360 * dpi * st["k"]), **kw)
             lb.pack(fill="x", pady=(4, 0))
             return lb
-        lab(tr("用你自己的 Riot 开发者密钥，在不打游戏时于背景收集海斗对局，攒够数据后按你的段位给出装 / 增幅加权。"
-               "密钥只存在本机。到 developer.riotgames.com 登录后即可免费取得（开发者密钥每 24 小时要更新一次）。") +
-            tr("每局也会抓时间线，攒够 150 局后自动训练实时胜率。"), fg=SUB)
-        lab(tr("Riot 开发者密钥（RGAPI-…）"))
-        key = tk.Entry(w, show="•", bg=CARD, fg=FG, insertbackground=FG, relief="flat", font=F["small"])
+        lab(tr("在不打游戏时于背景收集海斗对局（每局 10 人的出装、增幅、输赢和时间线），攒够数据后给出装 / 增幅加权，"
+               "攒够 150 局后自动训练实时胜率。资料只存在本机。"), fg=SUB)
+        src = tk.StringVar(value=db.cfg.get("source", "client"))
+        for val, text in (("client", tr("从游戏客户端收集（推荐，不用密钥；客户端开着就行）")),
+                          ("riot", tr("用 Riot 开发者密钥（Riot 公开接口目前读不到海斗对局）"))):
+            tk.Radiobutton(w, text=text, variable=src, value=val, bg=BG, fg=FG, selectcolor=CARD, activebackground=BG,
+                           activeforeground=FG, font=F["small"], anchor="w", command=lambda: show_src()).pack(fill="x")
+        kf = tk.Frame(w, bg=BG)
+        lab(tr("Riot 开发者密钥（RGAPI-…）"), kf)
+        key = tk.Entry(kf, show="•", bg=CARD, fg=FG, insertbackground=FG, relief="flat", font=F["small"])
         key.insert(0, db.cfg.get("key", ""))
         key.pack(fill="x", ipady=3)
-        lab(tr("你的服务器"))
+        lab(tr("你的服务器"), kf)
         plat = tk.StringVar(value=db.cfg.get("platform", "SG2"))
-        om = tk.OptionMenu(w, plat, *RIOT_PLATFORMS)
+        om = tk.OptionMenu(kf, plat, *RIOT_PLATFORMS)
         om.config(bg=CARD, fg=FG, highlightthickness=0, relief="flat", font=F["small"])
         om.pack(anchor="w")
-        lab(tr("你的 Riot ID（名字#TAG，留空＝进游戏时自动读取）"))
-        rid = tk.Entry(w, bg=CARD, fg=FG, insertbackground=FG, relief="flat", font=F["small"])
+        lab(tr("你的 Riot ID（名字#TAG，留空＝进游戏时自动读取）"), kf)
+        rid = tk.Entry(kf, bg=CARD, fg=FG, insertbackground=FG, relief="flat", font=F["small"])
         rid.insert(0, db.cfg.get("riot_id", ""))
         rid.pack(fill="x", ipady=3)
-        en = tk.BooleanVar(value=db.cfg.get("enabled", False))
         rk = tk.BooleanVar(value=db.cfg.get("ranks", True))
-        for var, text in ((en, tr("启用收集（只在不打游戏时）")), (rk, tr("记录每个玩家的段位（可以按段位统计，收集速度约慢 10 倍）"))):
-            tk.Checkbutton(w, text=text, variable=var, bg=BG, fg=FG, selectcolor=CARD, activebackground=BG,
-                           activeforeground=FG, font=F["small"], anchor="w").pack(fill="x")
+        tk.Checkbutton(kf, text=tr("记录每个玩家的段位（可以按段位统计，收集速度约慢 10 倍）"), variable=rk, bg=BG, fg=FG,
+                       selectcolor=CARD, activebackground=BG, activeforeground=FG, font=F["small"], anchor="w").pack(fill="x")
+        en = tk.BooleanVar(value=db.enabled or (db.use_client and db.cfg.get("enabled", True)))
+        en_cb = tk.Checkbutton(w, text=tr("启用收集（只在不打游戏时）"), variable=en, bg=BG, fg=FG, selectcolor=CARD,
+                               activebackground=BG, activeforeground=FG, font=F["small"], anchor="w")
+        en_cb.pack(fill="x")
+
+        def show_src():
+            if src.get() == "riot":
+                kf.pack(fill="x", before=en_cb)
+            else:
+                kf.pack_forget()
+        show_src()
         info = lab("", fg=GOLD)
 
         def refresh():
@@ -6441,14 +6617,16 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 db.cfg.pop("my_tier", None)
             if key.get().strip() != db.cfg.get("key"):
                 en.set(True)                # 换了新密钥＝要继续收集（过期时会被自动关掉）
+            if src.get() != db.cfg.get("source", "client"):
+                en.set(True)
             db.save_cfg(key=key.get().strip(), platform=plat.get(), riot_id=rid.get().strip(),
-                        enabled=bool(en.get()), ranks=bool(rk.get()))
+                        enabled=bool(en.get()), ranks=bool(rk.get()), source=src.get())
             db.status = tr("已保存，会在不打游戏时开始收集")
         tk.Label(w, text=tr("保存"), bg="#2b3a57", fg=FG, font=F["small"], padx=12, pady=4, cursor="hand2").pack(
             anchor="e", pady=(8, 0))
         w.winfo_children()[-1].bind("<Button-1>", lambda e: save())
         refresh()
-    menu.add_command(label=tr("自建数据库（Riot 密钥）…"), command=open_riotdb)
+    menu.add_command(label=tr("自建数据库…"), command=open_riotdb)
     menu.add_cascade(label=tr('我的习惯（{0} 局）').format(len(engine.habits.games)), menu=hm)
     habits_idx = menu.index("end")
     lang_var = tk.StringVar(value=LANG)

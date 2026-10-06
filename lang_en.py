@@ -362,6 +362,15 @@ EN.update({'{0:.1f} 万局': '{0:.1f}0k games', '{0} 局': '{0} games', '{0} {1:
 EN.update({'数据载入中': 'loading data'})
 EN.update({
     "——": " — ",
+    "从游戏客户端收集（推荐，不用密钥；客户端开着就行）": "Collect from the game client (recommended, no key; just keep the client open)",
+    "用 Riot 开发者密钥（Riot 公开接口目前读不到海斗对局）": "Use a Riot developer key (the public API currently can't read Mayhem games)",
+    "自建数据库": "Own database",
+    "自建数据库…": "Own database…",
+    "自建数据库：客户端里暂时没有新的海斗对局可收（打几局后再试）": "Own database: no new Mayhem games in the client right now (try after a few games)",
+    "自建数据库：等游戏客户端打开（从客户端收集）": "Own database: waiting for the game client to open",
+    "自建数据库：读不到客户端的帐号（请先登录游戏客户端）": "Own database: can't read the client account (log in to the client first)",
+    "在不打游戏时于背景收集海斗对局（每局 10 人的出装、增幅、输赢和时间线），攒够数据后给出装 / 增幅加权，攒够 150 局后自动训练实时胜率。资料只存在本机。":
+        "Collects Mayhem games in the background when you're not in a game (all 10 players' items, augments, result and timeline). Once there's enough data it weights item / augment picks, and after 150 games it trains the live win model. Data stays on this PC.",
     "自建数据库：换了密钥，重新查你的账号": "Own database: key changed, looking up your account again",
     "发现新版 v{0}：点标题栏的「⇪ 新版」或 ⋯ → 更新到新版": "New version v{0}: click \"⇪ New\" in the title bar or ⋯ → Update to new version",
     "更新到新版": "Update to new version",
