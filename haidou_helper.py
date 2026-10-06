@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.4.1"
+APP_VERSION = "2.4.2"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -4837,6 +4837,27 @@ def _solve(a, b):
 
 
 def _fit_logit(X, y, lam=1.0, iters=12):
+    try:
+        import numpy as np                      # 有 numpy（屏幕识别会装）就用它：快几百倍，也不会卡住界面
+    except ImportError:
+        np = None
+    if np is not None:
+        A, t = np.asarray(X, dtype=float), np.asarray(y, dtype=float)
+        k = A.shape[1]
+        b = np.zeros(k)
+        for _ in range(iters):
+            p = 1 / (1 + np.exp(-np.clip(A @ b, -30, 30)))
+            w = p * (1 - p)
+            H = A.T @ (A * w[:, None]) + lam * np.eye(k)
+            g = A.T @ (t - p) - lam * b
+            step = np.linalg.solve(H, g)
+            b = b + step
+            if np.max(np.abs(step)) < 1e-6:
+                break
+        return [float(v) for v in b]
+    if len(X) > 20000:                          # 纯 Python：抽样，免得算太久
+        idx = range(0, len(X), len(X) // 20000 + 1)
+        X, y = [X[i] for i in idx], [y[i] for i in idx]
     k = len(X[0])
     beta = [0.0] * k
     for _ in range(iters):
@@ -4877,8 +4898,8 @@ def fit_winmodel(rows):
     games = sorted({r["id"] for r in rows})
     if len(games) < WP_MIN_GAMES:
         return None
-    if len(games) > 2500:                 # 只用最新的 2500 局（训练快、跟得上版本）
-        keep = set(games[-2500:])
+    if len(games) > 2000:                 # 只用最新的 2000 局（训练快、跟得上版本）
+        keep = set(games[-2000:])
         rows = [r for r in rows if r["id"] in keep]
         games = sorted(keep)
     test_ids = {g for g in games if int(hashlib.md5(str(g).encode()).hexdigest(), 16) % 5 == 0}
@@ -5035,9 +5056,14 @@ class RiotCollector:
             if not self.enabled or engine.connected:
                 continue
             if self.use_client:
+                if time.time() < getattr(self, "_next_pass", 0):
+                    continue                            # 客户端模式放慢：两轮之间至少隔几分钟
+
                 def chalt():
                     return stop.is_set() or engine.connected or not self.enabled
                 try:
+                    self._next_pass = time.time() + (self.CLIENT_PAUSE if self.total_games() < self.CLIENT_TARGET
+                                                      and self.added < self.CLIENT_SESSION_CAP else self.CLIENT_PAUSE_FULL)
                     self.run_client(chalt)
                 except InterruptedError:
                     self.save_state()
@@ -5129,8 +5155,12 @@ class RiotCollector:
                 self.dlog("status: " + self.status)
 
     # ---------- 从游戏客户端收集（2.2） ----------
-    CLIENT_GAP = 1.0          # 每次问客户端之间至少隔 1 秒（客户端会再去问 Riot 伺服器，别催太急）
-    CLIENT_BATCH = 60         # 每一轮最多新收几局
+    CLIENT_GAP = 2.0          # 每次问客户端之间至少隔 2 秒（客户端会再去问 Riot 伺服器，别催太急，免得客户端卡）
+    CLIENT_BATCH = 20         # 每一轮最多新收几局
+    CLIENT_PAUSE = 180        # 两轮之间隔 3 分钟
+    CLIENT_TARGET = 1500      # 收满这么多局后只看你自己的新对局（每 15 分钟一次）
+    CLIENT_SESSION_CAP = 150  # 每次打开程序最多替别人的对局问客户端这么多局（客户端会把读过的对局留在记忆体，读太多会越来越卡）
+    CLIENT_PAUSE_FULL = 900
 
     def client_call(self, cred, path, halt):
         if halt():
@@ -5190,6 +5220,11 @@ class RiotCollector:
         if not cred:
             self.status = tr("自建数据库：等游戏客户端打开（从客户端收集）")
             return
+        phase = self.client_call(cred, "/lol-gameflow/v1/gameflow-phase", halt)
+        if isinstance(phase, str) and phase not in ("None", "EndOfGame", "WaitingForStats", "PreEndOfGame"):
+            self.status = tr("自建数据库：组队 / 排队 / 选英雄中，暂停收集")
+            self._next_pass = time.time() + 60
+            return                                   # 在房间、排队、选英雄时不打扰客户端
         cur = self.client_call(cred, "/lol-summoner/v1/current-summoner", halt) or {}
         me = cur.get("puuid")                       # 每轮都问（换了帐号也跟得上）
         if not me:
@@ -5199,6 +5234,8 @@ class RiotCollector:
             if me in self.cfront:
                 self.cfront.remove(me)
             self.cfront.insert(0, me)                # 每轮都先看你自己（打完新的一局马上收）
+            if self.total_games() >= self.CLIENT_TARGET or self.added >= self.CLIENT_SESSION_CAP:
+                self.cfront = [me]                   # 收够了：只收你自己的新对局
         batch, looked = 0, 0
         while self.cfront and batch < self.CLIENT_BATCH and not halt():
             with self.lock:
@@ -5404,8 +5441,8 @@ class RiotCollector:
     def maybe_refit(self, force=False):
         """新抓了 ≥30 局时间线（或还没有模型）就重新训练胜率模型"""
         have = load_winmodel()
-        if not force and have and self.tl_new < 30:
-            return have
+        if not force and have and self.tl_new < max(30, 0.25 * (have.get("games") or 0)):
+            return have                             # 多了 25%（至少 30 局）才重新训练
         path = os.path.join(self.dir, "timelines.jsonl")
         if not os.path.exists(path):
             return have
