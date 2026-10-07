@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.4.2"
+APP_VERSION = "2.4.3"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -499,7 +499,12 @@ def read_json(path):
         return None
 
 
+STARTUP_OFFLINE = {"on": False}     # 启动时有缓存就先不连网（开得快）；连网检查交给背景的数据更新
+
+
 def http_json(url, timeout=10, local=False):
+    if STARTUP_OFFLINE["on"] and not local and threading.current_thread() is threading.main_thread():
+        raise OSError("startup: using cache")
     hd = {"User-Agent": "haidou-helper/1.0"}
     if "api.github.com" in url:
         hd["Accept"] = "application/vnd.github.raw"   # 直接拿文件内容（GitHub API 只缓存 60 秒，比 raw 的 5 分钟新）
@@ -2948,8 +2953,15 @@ class ScreenScanner:
         except ImportError:
             self.error = tr("未安装 pillow")
             return
+        self.error = tr("文字识别载入中…")
+        self.card_x = None    # 最近一次识别到的三张卡在屏幕上的 x 位置（用来判断点了哪张）
+        self.mask = None      # 挂件自己在屏幕上的位置：识别时涂黑，省时间也避免读到自己的字
+        threading.Thread(target=self._load_ocr, daemon=True).start()   # OCR 模型载入要好几秒：背景载入，窗口先开
+
+    def _load_ocr(self):
         import logging
         logging.getLogger("RapidOCR").setLevel(logging.ERROR)
+        self.error = ""
         light = {"EngineConfig.onnxruntime.intra_op_num_threads": 2,
                  "EngineConfig.onnxruntime.inter_op_num_threads": 1, "Global.use_cls": False}
         try:
@@ -2971,10 +2983,8 @@ class ScreenScanner:
         except Exception as e:  # noqa
             self.error = tr('OCR 初始化失败：{0}').format(e)
         self._quiet_ocr_log()
-        self.card_x = None    # 最近一次识别到的三张卡在屏幕上的 x 位置（用来判断点了哪张）
-        self.mask = None      # 挂件自己在屏幕上的位置：识别时涂黑，省时间也避免读到自己的字
         if self.ocr is not None:
-            threading.Thread(target=self._warm_up, daemon=True).start()
+            self._warm_up()
 
     @staticmethod
     def _quiet_ocr_log():
@@ -6896,8 +6906,19 @@ def main():
     set_lang(args.ui_lang or cfg.get("ui_lang", "zh"))
     args.lang = args.lang or cfg.get("data_lang") or default_data_lang(LANG)
     print(tr('海斗助手 v{0}').format(APP_VERSION))
-    gd, stats = load_all(args.lang, args.bracket or load_ui_cfg().get("bracket", "all"), not args.no_stats)
-    clean_old_cache(data_versions(gd, stats))
+    # 已经有缓存：先用缓存马上开起来，几秒后背景再检查新版本（以前每次启动都要连好几个网站，很慢）
+    cached = any(fn.startswith("ver_") and fn.endswith("_" + args.lang) for fn in os.listdir(APP_DIR)) \
+        if os.path.isdir(APP_DIR) else False
+    STARTUP_OFFLINE["on"] = cached and not args.mock
+    try:
+        gd, stats = load_all(args.lang, args.bracket or load_ui_cfg().get("bracket", "all"), not args.no_stats,
+                             log=(lambda m: None) if STARTUP_OFFLINE["on"] else print)
+    except RuntimeError:
+        STARTUP_OFFLINE["on"] = False              # 缓存坏了：照旧连网下载
+        gd, stats = load_all(args.lang, args.bracket or load_ui_cfg().get("bracket", "all"), not args.no_stats)
+    started_offline, STARTUP_OFFLINE["on"] = STARTUP_OFFLINE["on"], False
+    if not started_offline:
+        clean_old_cache(data_versions(gd, stats))
     source = MockGame() if args.mock else LiveSource()
     engine = Engine(gd, source, args.interval, stats)
     scanner = None
@@ -6910,7 +6931,9 @@ def main():
             print(tr('快捷键 {0} 不支持，只能用 F1~F12').format(args.hotkey))
         engine.auto_scan_default = args.auto_scan or args.mock   # 演示模式自动识别
     if not args.mock:
-        start_updater(engine, args.lang, not args.no_stats, threading.Event())
+        up = start_updater(engine, args.lang, not args.no_stats, threading.Event())
+        if started_offline:
+            up.last_check = time.time() - up.EVERY + 10     # 用缓存开的：10 秒后背景检查数据有没有新版
     if args.web:
         start_web(engine)
     if args.console:

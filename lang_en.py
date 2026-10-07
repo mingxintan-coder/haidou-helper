@@ -362,6 +362,7 @@ EN.update({'{0:.1f} 万局': '{0:.1f}0k games', '{0} 局': '{0} games', '{0} {1:
 EN.update({'数据载入中': 'loading data'})
 EN.update({
     "——": " — ",
+    "文字识别载入中…": "Text recognition loading…",
     "自建数据库：组队 / 排队 / 选英雄中，暂停收集": "Own database: paused while in lobby / queue / champ select",
     "客户端提供了最近 {0} 局（其中大乱斗 / 海斗 {1} 局），新增 {2} 局": "The client provided your last {0} games ({1} ARAM / Mayhem), {2} new",
     "最小化（点工作列的海斗助手还原）": "Minimize (click Mayhem Helper on the taskbar to restore)",
