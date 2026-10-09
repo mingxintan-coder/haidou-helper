@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.6.2"
+APP_VERSION = "2.6.3"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -3560,6 +3560,7 @@ class Engine:
         self.riotdb = RiotCollector(gd)
         self.advisor.riotdb = self.riotdb
         self.riotdb.advisor = self.advisor
+        self.riotdb.engine = self
 
         def db_new():
             self.riotdb.aggregate()
@@ -4894,8 +4895,25 @@ MAYHEM_QUEUES = {2400}          # 海克斯大乱斗；另外 gameMode 为 KIWI 
 
 
 def lcu_credentials():
-    """回传 (port, password) 或 None：先找 lockfile，找不到再从客户端进程的启动参数读"""
-    for path in LCU_LOCKFILES:
+    """回传 (port, password) 或 None：先找 lockfile（含上次找到的安装位置），找不到再从客户端进程的启动参数读"""
+    saved = os.path.join(APP_DIR, "lcu_dir.txt")
+    paths = list(LCU_LOCKFILES)
+    try:
+        with open(saved, encoding="utf-8") as f:
+            paths.insert(0, os.path.join(f.read().strip(), "lockfile"))
+    except OSError:
+        pass
+    # Riot 客户端自己记的安装位置（装在别的磁盘 / 资料夹也找得到；客户端以系统管理员执行时进程参数读不到，靠这个）
+    meta = os.path.join(os.environ.get("PROGRAMDATA", r"C:\ProgramData"), "Riot Games", "Metadata",
+                        "league_of_legends.live", "league_of_legends.live.product_settings.yaml")
+    try:
+        with open(meta, encoding="utf-8", errors="ignore") as f:
+            mt = re.search(r"product_install_full_path:\s*['\"]?([^'\"\r\n]+)", f.read())
+        if mt:
+            paths.insert(0, os.path.join(mt.group(1).strip(), "lockfile"))
+    except OSError:
+        pass
+    for path in paths:
         try:
             with open(path, encoding="utf-8") as f:
                 parts = f.read().strip().split(":")
@@ -4905,18 +4923,26 @@ def lcu_credentials():
             continue
     if sys.platform.startswith("win"):
         import subprocess
-        try:
-            out = subprocess.run(["powershell", "-NoProfile", "-Command",
-                                  "Get-CimInstance Win32_Process -Filter \"name='LeagueClientUx.exe'\" | "
-                                  "Select-Object -ExpandProperty CommandLine"],
-                                 capture_output=True, text=True, timeout=10,
-                                 creationflags=0x08000000).stdout          # CREATE_NO_WINDOW
+        for cmd in ("Get-CimInstance Win32_Process -Filter \"name='LeagueClientUx.exe'\" | "
+                    "ForEach-Object { $_.CommandLine; '|EXE|' + $_.ExecutablePath }",
+                    "wmic process where name='LeagueClientUx.exe' get CommandLine,ExecutablePath"):
+            try:
+                args = ["powershell", "-NoProfile", "-Command", cmd] if cmd.startswith("Get-") else ["cmd", "/c", cmd]
+                out = subprocess.run(args, capture_output=True, text=True, timeout=25,
+                                     creationflags=0x08000000).stdout or ""          # CREATE_NO_WINDOW
+            except Exception:  # noqa
+                continue
             port = re.search(r"--app-port=(\d+)", out)
             token = re.search(r"--remoting-auth-token=([\w-]+)", out)
+            exe = re.search(r"([A-Za-z]:\\[^\"|\r\n]*?)\\LeagueClientUx\.exe", out)
+            if exe:                                  # 记下安装位置：下次直接读 lockfile，快又稳
+                try:
+                    with open(saved, "w", encoding="utf-8") as f:
+                        f.write(exe.group(1))
+                except OSError:
+                    pass
             if port and token:
                 return int(port.group(1)), token.group(1)
-        except Exception:  # noqa
-            pass
     return None
 
 
@@ -5625,7 +5651,14 @@ class RiotCollector:
         return rows, team_of, blue[0]["w"], puuids
 
     def run_client(self, halt):
-        cred = lcu_credentials()
+        eng = getattr(self, "engine", None)
+        cred = getattr(eng, "_lcu_cred", None) or lcu_credentials()
+        if cred and eng is not None:
+            try:
+                lcu_get("/lol-gameflow/v1/gameflow-phase", cred, timeout=5)
+            except Exception:  # noqa   旧的连接资讯（客户端重开过）：重新找
+                cred = lcu_credentials()
+            eng._lcu_cred = cred
         if not cred:
             self.status = tr("自建数据库：等游戏客户端打开（从客户端收集）")
             self._note_status()
