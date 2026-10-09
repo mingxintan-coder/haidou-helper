@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.6.0"
+APP_VERSION = "2.6.1"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5388,7 +5388,7 @@ class RiotCollector:
     def save_state(self):
         with self.lock:
             data = {"seen": list(self.seen)[-50000:], "frontier": self.frontier[-3000:], "tiers": self.tiers,
-                    "tl_done": list(self.tl_done)[-50000:], "cfront": self.cfront[-3000:]}
+                    "tl_done": list(self.tl_done)[-50000:], "cfront": self.cfront[:3000]}
         write_json(self.state_path, data)
 
     # ---------- 收集 ----------
@@ -5472,8 +5472,9 @@ class RiotCollector:
                 def chalt():
                     return stop.is_set() or engine.connected or not self.enabled
                 try:
-                    self._next_pass = time.time() + (self.CLIENT_PAUSE if self.total_games() < self.CLIENT_TARGET
-                                                      and self.added < self.CLIENT_SESSION_CAP else self.CLIENT_PAUSE_FULL)
+                    self._next_pass = time.time() + (
+                        self.CLIENT_PAUSE_FULL if self.total_games() >= self.CLIENT_TARGET else
+                        self.CLIENT_PAUSE_SLOW if self.added >= self.CLIENT_SESSION_CAP else self.CLIENT_PAUSE)
                     self.run_client(chalt)
                 except InterruptedError:
                     self.save_state()
@@ -5568,9 +5569,11 @@ class RiotCollector:
     CLIENT_GAP = 2.0          # 每次问客户端之间至少隔 2 秒（客户端会再去问 Riot 伺服器，别催太急，免得客户端卡）
     CLIENT_BATCH = 20         # 每一轮最多新收几局
     CLIENT_PAUSE = 180        # 两轮之间隔 3 分钟
-    CLIENT_TARGET = 1500      # 收满这么多局后只看你自己的新对局（每 15 分钟一次）
-    CLIENT_SESSION_CAP = 150  # 每次打开程序最多替别人的对局问客户端这么多局（客户端会把读过的对局留在记忆体，读太多会越来越卡）
+    CLIENT_TARGET = 5000      # 收满这么多局后只看你自己的新对局（每 15 分钟一次；模型只用最新的 2000 局）
+    CLIENT_SESSION_CAP = 150  # 每次打开程序先快速收这么多局；之后改成慢速（客户端会把读过的对局留在记忆体，读太快太多会卡）
     CLIENT_PAUSE_FULL = 900
+    CLIENT_SLOW_BATCH = 8     # 慢速：每 10 分钟 8 局，一直收下去
+    CLIENT_PAUSE_SLOW = 600
 
     def client_call(self, cred, path, halt):
         if halt():
@@ -5629,11 +5632,13 @@ class RiotCollector:
         cred = lcu_credentials()
         if not cred:
             self.status = tr("自建数据库：等游戏客户端打开（从客户端收集）")
+            self._note_status()
             return
         phase = self.client_call(cred, "/lol-gameflow/v1/gameflow-phase", halt)
         if isinstance(phase, str) and phase not in ("None", "EndOfGame", "WaitingForStats", "PreEndOfGame"):
             self.status = tr("自建数据库：组队 / 排队 / 选英雄中，暂停收集")
             self._next_pass = time.time() + 60
+            self._note_status()
             return                                   # 在房间、排队、选英雄时不打扰客户端
         cur = self.client_call(cred, "/lol-summoner/v1/current-summoner", halt) or {}
         me = cur.get("puuid")                       # 每轮都问（换了帐号也跟得上）
@@ -5644,12 +5649,16 @@ class RiotCollector:
             if me in self.cfront:
                 self.cfront.remove(me)
             self.cfront.insert(0, me)                # 每轮都先看你自己（打完新的一局马上收）
-            if self.total_games() >= self.CLIENT_TARGET or self.added >= self.CLIENT_SESSION_CAP:
-                self.cfront = [me]                   # 收够了：只收你自己的新对局
+        own_only = self.total_games() >= self.CLIENT_TARGET       # 收满了：只收你自己的新对局（名单留着不删）
+        limit = self.CLIENT_SLOW_BATCH if self.added >= self.CLIENT_SESSION_CAP else self.CLIENT_BATCH
         batch, looked = 0, 0
-        while self.cfront and batch < self.CLIENT_BATCH and not halt():
+        while self.cfront and batch < limit and looked < 60 and not halt():
             with self.lock:
                 puuid = self.cfront.pop(0)
+                if puuid != me:
+                    self.cfront.append(puuid)        # 看过的玩家排到最后，之后还会再看（他们会继续打新的局）
+            if own_only and puuid != me:
+                break
             data = self.client_call(cred, f"/lol-match-history/v1/products/lol/{puuid}/matches?begIndex=0&endIndex=20", halt)
             self._sample("list", data)
             games = ((data or {}).get("games") or {}).get("games") or []
@@ -5687,7 +5696,8 @@ class RiotCollector:
                 if getattr(self, "_lines", None) is not None:
                     self._lines += len(rows)
                 with self.lock:
-                    self.cfront += [p for p in players if p != puuid and p not in self.cfront][:9]
+                    fresh = [p for p in players if p != puuid and p not in self.cfront][:9]
+                    self.cfront = fresh + self.cfront    # 新认识的玩家先看（看过的排在后面轮流再看）
                     self._agg = None
                 self.added += 1
                 batch += 1
@@ -5717,6 +5727,12 @@ class RiotCollector:
             elif batch:
                 self.status = tr('自建数据库：本次新增 {0} 局').format(self.added)
         self.dlog("status: " + self.status)
+
+    def _note_status(self):
+        """同样的状态只记一次（免得每分钟一行）"""
+        if self.status != getattr(self, "_last_noted", None):
+            self._last_noted = self.status
+            self.dlog("status: " + self.status)
 
     def take_match(self, api, mid, halt):
         """抓一局：是海斗就写进 matches.jsonl、抓时间线、把同场玩家加进待查名单。回传 1＝新增一局"""
