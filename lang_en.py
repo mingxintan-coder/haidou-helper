@@ -362,6 +362,7 @@ EN.update({'{0:.1f} 万局': '{0:.1f}0k games', '{0} 局': '{0} games', '{0} {1:
 EN.update({'数据载入中': 'loading data'})
 EN.update({
     "——": " — ",
+    "已并入附带的对局资料：新增 {0} 局": "Merged the bundled game data: +{0} games",
     "自建数据库：选英雄 / 对战中，暂停收集": "Own database: paused during champ select / game",
     "资料还不够：阵亡、胜率曲线、关键时刻会从现在起每局累积，打几局后再看": "Not enough data yet: deaths, win curves and key moments are recorded from now on; check back after a few games",
     "和「{0}」一起拿 胜率 {1:+.0f}%（自建库 {2} 次）": "with \"{0}\" win rate {1:+.0f}% (own DB, {2} times)",

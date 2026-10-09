@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.6.3"
+APP_VERSION = "2.7.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -3576,6 +3576,51 @@ class Engine:
         self._ended = False            # 已读到 GameEnd（结算画面还连着时不要再记一次）
         self.fails = 0                 # 连续读取失败次数（游戏卡一下不算断线）
         self._raw, self._raw_t = None, 0.0
+        if not isinstance(source, MockGame):
+            threading.Thread(target=self._prepare_db, daemon=True, name="seed").start()
+
+    @staticmethod
+    def ensure_seed():
+        """附带的对局资料还没下载（从旧版一键更新上来时，旧版不知道有这个文件）：照 version.json 的校验码下载一份"""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), SEED_FILE)
+        if os.path.exists(path):
+            return
+        try:
+            man = http_json(VERSION_URLS[0], timeout=15)
+        except Exception:  # noqa
+            return
+        sha = ((man or {}).get("files") or {}).get(SEED_FILE)
+        if not sha:
+            return
+        for base in (API_BASE, RAW_BASE, MIRROR_BASE):
+            try:
+                url = (base + SEED_FILE + "?ref=main") if base == API_BASE else (base + SEED_FILE + "?v=" + sha[:8])
+                hd = {"User-Agent": f"haidou-helper/{APP_VERSION}"}
+                if base == API_BASE:
+                    hd["Accept"] = "application/vnd.github.raw"
+                with urllib.request.urlopen(urllib.request.Request(url, headers=hd), timeout=60) as r:
+                    got = r.read()
+            except Exception:  # noqa
+                continue
+            if hashlib.sha256(got).hexdigest() == sha:
+                with open(path + ".new", "wb") as f:
+                    f.write(got)
+                os.replace(path + ".new", path)
+                return
+
+    def _prepare_db(self):
+        """启动时（背景）：并入随程序附带的对局资料，模型比资料旧就马上重练 —— 不用等客户端也能用收集到的局预测胜率"""
+        try:
+            time.sleep(5)                              # 让窗口先开起来
+            self.ensure_seed()
+            n = self.riotdb.import_seed()
+            if n:
+                self.q.put(("data", tr("已并入附带的对局资料：新增 {0} 局").format(n)))
+            m = self.riotdb.maybe_refit()
+            if m and m is not self.winmodel:
+                self.winmodel = m
+        except Exception:  # noqa
+            log_crash("seed / refit failed", sys.exc_info())
 
     def apply_pending(self):
         gd, stats, msg = self.pending_data
@@ -4512,7 +4557,8 @@ def check_app_version():
 API_BASE = "https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/"
 RAW_BASE = "https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/"
 MIRROR_BASE = "https://cdn.jsdelivr.net/gh/mingxintan-coder/haidou-helper@main/"
-UPDATABLE = ("haidou_helper.py", "lang_en.py", "README.md")    # 一键更新只会替换这几个文件
+UPDATABLE = ("haidou_helper.py", "lang_en.py", "README.md", "seed_db.json.gz")    # 一键更新只会替换这几个文件
+SEED_FILE = "seed_db.json.gz"      # 随程序附带的海斗对局资料（整理自作者用客户端收集的对局：每局 10 人的英雄 / 装备 / 增幅 / 输赢 + 时间线）
 
 
 def install_update(manifest, log=print):
@@ -5413,7 +5459,9 @@ class RiotCollector:
 
     def save_state(self):
         with self.lock:
-            data = {"seen": list(self.seen)[-50000:], "frontier": self.frontier[-3000:], "tiers": self.tiers,
+            old = read_json(self.state_path) if os.path.exists(self.state_path) else {}
+            data = {"seed": (old or {}).get("seed") if isinstance(old, dict) else None,
+                    "seen": list(self.seen)[-50000:], "frontier": self.frontier[-3000:], "tiers": self.tiers,
                     "tl_done": list(self.tl_done)[-50000:], "cfront": self.cfront[:3000]}
         write_json(self.state_path, data)
 
@@ -5927,6 +5975,61 @@ class RiotCollector:
             if self.on_model:
                 self.on_model(model)
         return model or have
+
+    def import_seed(self):
+        """把随程序附带的对局资料（seed_db.json.gz）并进你的自建数据库：没有的局才加（按对局编号去重）。
+           同一份只并一次（记在 state.json）。回传新增几局"""
+        import gzip
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), SEED_FILE)
+        if not os.path.exists(path):
+            return 0
+        with open(path, "rb") as f:
+            raw = f.read()
+        sig = hashlib.sha256(raw).hexdigest()[:16]
+        state = read_json(self.state_path) if os.path.exists(self.state_path) else {}
+        if isinstance(state, dict) and state.get("seed") == sig:
+            return 0
+        try:
+            seed = json.loads(gzip.decompress(raw).decode("utf-8"))
+        except Exception as e:  # noqa
+            self.dlog("seed unreadable: {0!r}".format(e))
+            return 0
+        have = set(self.games())
+        tl_have = set()
+        tl_path = os.path.join(self.dir, "timelines.jsonl")
+        if os.path.exists(tl_path):
+            with open(tl_path, encoding="utf-8") as f:
+                for line in f:
+                    mt = re.search(r'"id": "([^"]+)"', line)
+                    if mt:
+                        tl_have.add(mt.group(1))
+        new_rows = [r for r in seed.get("matches", []) if r.get("m") and r["m"] not in have]
+        new_tl = [r for r in seed.get("timelines", []) if r.get("id") and r["id"] not in tl_have]
+        if new_rows:
+            with open(os.path.join(self.dir, "matches.jsonl"), "a", encoding="utf-8") as f:
+                for r in new_rows:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        if new_tl:
+            with open(tl_path, "a", encoding="utf-8") as f:
+                for r in new_tl:
+                    f.write(json.dumps(r) + "\n")
+        with self.lock:
+            for r in new_rows:
+                self.seen[r["m"]] = None
+            for r in new_tl:
+                self.tl_done[r["id"]] = None
+            self._agg = None
+            self._games = None
+            self._lines = None
+            self._tl_count = None
+        games_added = len({r["m"] for r in new_rows})
+        self.tl_new += len({r["id"] for r in new_tl})
+        self.save_state()
+        st = read_json(self.state_path) or {}
+        st["seed"] = sig
+        write_json(self.state_path, st)
+        self.dlog("seed: +{0} games, +{1} timelines".format(games_added, len({r['id'] for r in new_tl})))
+        return games_added
 
     def make_comp_fn(self, tl_rows):
         """给 fit_winmodel 用：comp_fn(训练用的对局, held=留出的对局) → {对局: 阵容胜算差（蓝 − 红）}。
