@@ -362,6 +362,10 @@ EN.update({'{0:.1f} 万局': '{0:.1f}0k games', '{0} 局': '{0} games', '{0} {1:
 EN.update({'数据载入中': 'loading data'})
 EN.update({
     "——": " — ",
+    "和「{0}」一起拿 胜率 {1:+.0f}%（自建库 {2} 次）": "with \"{0}\" win rate {1:+.0f}% (own DB, {2} times)",
+    "胜率曲线 · 开局 {0}% → 结束前 {1}%": "Win chance · start {0}% → end {1}%",
+    "阵容 {0:.0f}%": "comp {0:.0f}%",
+    "阵容预估胜率 {0:.0f}%": "Team comp est. win {0:.0f}%",
     "文字识别载入中…": "Text recognition loading…",
     "自建数据库：组队 / 排队 / 选英雄中，暂停收集": "Own database: paused while in lobby / queue / champ select",
     "客户端提供了最近 {0} 局（其中大乱斗 / 海斗 {1} 局），新增 {2} 局": "The client provided your last {0} games ({1} ARAM / Mayhem), {2} new",

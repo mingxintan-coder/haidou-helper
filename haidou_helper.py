@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.4.3"
+APP_VERSION = "2.5.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -497,6 +497,35 @@ def read_json(path):
             return json.load(f)
     except (OSError, ValueError):
         return None
+
+
+def log_crash(title, exc_info=None):
+    """崩溃 / 卡住记录：APP_DIR/crash.log（只在本机，超过 200KB 从头写）"""
+    import traceback
+    try:
+        path = os.path.join(APP_DIR, "crash.log")
+        mode = "w" if os.path.exists(path) and os.path.getsize(path) > 200000 else "a"
+        with open(path, mode, encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + APP_VERSION + " " + title + "\n")
+            if exc_info:
+                f.write("".join(traceback.format_exception(*exc_info)) + "\n")
+    except OSError:
+        pass
+
+
+def install_crash_logging():
+    """背景线程出错、Python 本身当掉（例如显示卡驱动、tkinter 崩溃）都记下来，方便查问题"""
+    def thread_hook(args):
+        log_crash("thread {0} crashed".format(getattr(args.thread, "name", "?")),
+                  (args.exc_type, args.exc_value, args.exc_traceback))
+    threading.excepthook = thread_hook
+    try:
+        import faulthandler
+        os.makedirs(APP_DIR, exist_ok=True)
+        install_crash_logging.fh = open(os.path.join(APP_DIR, "crash_native.log"), "a")
+        faulthandler.enable(install_crash_logging.fh)
+    except Exception:  # noqa
+        pass
 
 
 STARTUP_OFFLINE = {"on": False}     # 启动时有缓存就先不连网（开得快）；连网检查交给背景的数据更新
@@ -2125,6 +2154,64 @@ class Advisor:
                 "sustain": champ_role(self.gd, cid, "enchanter") or champ_role(self.gd, cid, "heal") and "Support" in tags,
                 "poke": champ_role(self.gd, cid, "poke")}
 
+    def aug_synergy(self, a, my_augs):
+        """自建数据库里这张增幅和你已有增幅的组合效果：(提升, 次数, 搭配的增幅名)；提升不到 3 个百分点不算"""
+        db = getattr(self, "riotdb", None)
+        if db is None or not a.get("id") or not my_augs:
+            return None
+        try:
+            syn = db.synergy(a["id"], [m.get("id") for m in my_augs if m.get("id")])
+        except Exception:  # noqa
+            return None
+        if not syn or abs(syn[0]) < 0.04:
+            return None
+        name = next((m["name"] for m in my_augs if m.get("id") == syn[2]), "?")
+        return syn[0], syn[1], name
+
+    def champ_strength(self, cid, minus=(0, 0)):
+        """英雄强度（对数胜算，平均约 0）：自建数据库里这个英雄的胜率，往 50% 收缩（相当于先给 40 局五五开）。
+           minus＝(局数, 胜场) 训练时扣掉「这一局」本身，免得用答案预测答案"""
+        c = self.gd.champ(cid) or {}
+        db = getattr(self, "riotdb", None)
+        x = db.champ(c.get("id", cid)) if db is not None else None
+        n = (x["n"] if x else 0) - minus[0]
+        w = (x["w"] if x else 0) - minus[1]
+        p = (w + 20) / (n + 40)
+        return math.log(p / (1 - p))
+
+    def comp_features(self, champs, wins=None):
+        """一队的阵容特征：[英雄强度总和, 前排数, 魔法伤害数, 开团数, 治疗保护数]
+           wins＝这队这局有没有赢（训练用：英雄强度扣掉这一局）"""
+        f = [0.0, 0, 0, 0, 0]
+        for cid in champs:
+            t = self.champ_traits(cid)
+            f[0] += self.champ_strength(cid, (1, 1 if wins else 0) if wins is not None else (0, 0))
+            f[1] += 1 if t["front"] else 0
+            f[2] += 1 if t["ap"] else 0
+            f[3] += 1 if t["engage"] else 0
+            f[4] += 1 if t["sustain"] else 0
+        return f
+
+    def comp_logit(self, ally, enemy, model=None):
+        """两队阵容的胜算差（对数）。model＝训练好的阵容模型；没有就只用英雄强度"""
+        model = model if model is not None else (getattr(getattr(self, "riotdb", None), "comp_model", None))
+        fa, fe = self.comp_features(ally), self.comp_features(enemy)
+        d = [a - b for a, b in zip(fa, fe)]
+        if model and model.get("beta"):
+            return sum(b * v for b, v in zip(model["beta"], comp_vec(d)))
+        return d[0]
+
+    def comp_wp_vs_avg(self, team, model=None):
+        """选英雄时（看不到敌方）：这队对上「平均阵容」的预估胜率"""
+        model = model if model is not None else getattr(getattr(self, "riotdb", None), "comp_model", None)
+        if not model or not model.get("mean") or not team:
+            return None
+        f = self.comp_features(team)
+        scale = 5 / len(team)                      # 还没选满 5 个：按比例放大成 5 人
+        d = [f[0] * scale - model["mean"][0]] + [x * scale - m for x, m in zip(f[1:], model["mean"][1:])]
+        z = sum(b * v for b, v in zip(model["beta"], comp_vec(d)))
+        return 1 / (1 + math.exp(-max(-30, min(30, z))))
+
     def rank_champions(self, cands, team, mine=None):
         """选英雄阶段：给你现在的英雄和备选席上的英雄打分
            分数 = 100 × (0.55 × 海斗胜率项 + 0.25 × 你的战绩项 + 0.20 × 阵容项)
@@ -2168,7 +2255,12 @@ class Advisor:
             if fills:
                 reasons.append(tr('补上队伍缺的{0}').format(tr("、").join(label[k] for k in fills)))
             score = 100 * (0.55 * W + 0.25 * U + 0.20 * C)
+            try:
+                cwp = self.comp_wp_vs_avg(list(team) + [cid])
+            except Exception:  # noqa
+                cwp = None
             out.append({"id": cid, "name": c["name"], "score": int(round(score)), "raw": score / 100, "wr": wr,
+                        "comp_wp": cwp,
                         "reason": tr("，").join(reasons) or tr("暂无数据"), "mine": cid == mine,
                         "hint": tr("你现在的英雄") if cid == mine else ""})
         out.sort(key=lambda x: -x["raw"])
@@ -2341,13 +2433,22 @@ class Advisor:
         adj = 6 * situ + (1.5 if de["has"] else 4.0) * (fit - 0.5) + 10 * pop * (0.5 if de["has"] else 1.0)
         if not de["has"]:
             adj += 0.5 * a.get("rarity", 0)
+        syn = self.aug_synergy(a, my_augs)
+        combo_hint = None
+        if syn:                          # 自建数据库：和已有增幅一起拿的胜率提升（±最多 2 个百分点）
+            lift, n, partner = syn
+            adj += max(-2.0, min(2.0, 0.6 * lift * 100))
+            txt = tr("和「{0}」一起拿 胜率 {1:+.0f}%（自建库 {2} 次）").format(partner, lift * 100, n)
+            factors.insert(0, (0.1 if lift > 0 else -0.1, txt))
+            if lift > 0:
+                combo_hint = txt
         adj = max(-4.0, min(4.0, adj))
         total = de["d"] * 100 + adj
         rf = list(factors)
         if am_pick is not None and (am_pick >= 0.3 or am_pick < 0.03):
             rf.append((0.05 if am_pick >= 0.3 else -0.05, tr('国服选取率 {0:.0f}%').format(am_pick * 100)))
         why = self.reason(fit_text, rf)
-        return {"name": a["name"], "score": self.item_score(total), "raw": total, "total": total,
+        return {"name": a["name"], "score": self.item_score(total), "raw": total, "total": total, "combo": combo_hint,
                 "d": de["d"] * 100, "ci": de["ci"] * 100 if de["ci"] else None, "n": de["n"], "adj": adj,
                 "has_data": de["has"], "data_text": de["text"],
                 "rarity": a.get("rarity", 0), "reason": why, "known": bool(a.get("desc")), "wr": de["wr"],
@@ -3411,6 +3512,7 @@ class Engine:
         self.advisor.habits_store = self.habits
         self.riotdb = RiotCollector(gd)
         self.advisor.riotdb = self.riotdb
+        self.riotdb.advisor = self.advisor
 
         def db_new():
             self.riotdb.aggregate()
@@ -3418,6 +3520,8 @@ class Engine:
             self.wake.set()
         self.riotdb.on_new = db_new
         self.winmodel = load_winmodel()            # 实时胜率模型（自建数据库训练出来的）
+        if self.winmodel and self.winmodel.get("comp"):
+            self.riotdb.comp_model = self.winmodel["comp"]
         self.riotdb.on_model = lambda m: setattr(self, "winmodel", m)
         self._wp_now = None
         self.cur_game = None           # 这局的记录：英雄、装备、增幅、出现过的增幅
@@ -3660,7 +3764,19 @@ class Engine:
         f = self.wp_features(raw, state)
         if f is None or f[0] < 1:
             return None
-        p = wp_predict(model, *f)
+        comp = 0.0
+        if model.get("v") == 2:
+            key = tuple(sorted(str(p.cid) for p in [state[2]] + state[3])) + ("|",) + \
+                tuple(sorted(str(p.cid) for p in state[4]))
+            cache = getattr(self, "_comp_cache", None)
+            if not cache or cache[0] != key:
+                try:
+                    cz = self.advisor.comp_logit([p.cid for p in [state[2]] + state[3]], [p.cid for p in state[4]])
+                except Exception:  # noqa
+                    cz = 0.0
+                self._comp_cache = cache = (key, cz)
+            comp = cache[1]
+        p = wp_predict(model, *f, comp=comp)
         if p is None:
             return None
         g = self.cur_game
@@ -3800,6 +3916,9 @@ class Engine:
             g["moments"] = self.key_moments(g)
         except Exception:  # noqa
             g["moments"] = []
+        ser = g.get("wp") or []
+        if len(ser) >= 6:                              # 胜率曲线（复盘画图用；每 20 秒一点，留在战绩里）
+            g["curve"] = [[x[0], x[1]] for i, x in enumerate(ser) if i % 2 == 0 or i == len(ser) - 1]
         try:
             g["mvp"] = self.mvp_lessons(g)
         except Exception:  # noqa
@@ -4040,6 +4159,8 @@ class Engine:
         for mv in g.get("mvp") or []:
             detail = (detail + "\n" if detail else "") + tr("值得学：") + mv["lines"][0]
         return {"text": head + (" · " + " · ".join(parts) if parts else ""), "detail": detail,
+                "curve": g.get("curve") or [], "moments": [{k: m.get(k) for k in ("kind", "t", "from", "to")}
+                                                           for m in g.get("moments") or []],
                 "items": [gd.item_name(i) for i in g.get("items", [])], "augs": g.get("augs", [])}
 
     def import_history_async(self, delay=0, manual=False):
@@ -4210,13 +4331,19 @@ class Engine:
         if not isinstance(self.source, MockGame):
             self.find_lcu_async()                # 一启动就先找好客户端连接，进选英雄时马上能读
         self.import_history_async(delay=3)       # 启动时先从客户端读一次历史对局
-        if not isinstance(self.source, MockGame):
-            threading.Thread(target=self.riotdb.run, args=(self, stop), daemon=True).start()
+        rt = getattr(self, "_riot_thread", None)
+        if not isinstance(self.source, MockGame) and (rt is None or not rt.is_alive()):
+            self._riot_thread = threading.Thread(target=self.riotdb.run, args=(self, stop), daemon=True, name="riotdb")
+            self._riot_thread.start()
         while not stop.is_set():
+            self.beat = time.time()
             try:
                 self.q.put(self.step())
             except Exception as e:  # 推荐演算法异常不应让挂件崩溃
                 self.q.put(("status", tr('分析出错：{0}').format(e)))
+                if time.time() - getattr(self, "_last_err_log", 0) > 60:
+                    self._last_err_log = time.time()
+                    log_crash("engine step error", sys.exc_info())
             # 选英雄阶段每秒看一次（换人、重骰马上更新）；平时按设定间隔
             self.wake.wait(1.0 if getattr(self, "_cs_last", None) else self.interval)  # 手动输入 / 识别到新增幅时会被立即唤醒
             self.wake.clear()
@@ -4788,9 +4915,10 @@ WP_FEATS = ("gd", "kd", "ld", "td")
 WP_MIN_GAMES = 150
 
 
-def wp_vector(m, gd, kd, ld, td):
+def wp_vector(m, gd, kd, ld, td, comp=None):
+    """comp＝阵容的胜算差（2.5 起的模型才有）：开局时经济人头都差不多，阵容决定大部分；时间越久越看场上"""
     u = min(max(m, 0), 30) / 10
-    x = [gd, kd, ld, td]
+    x = [gd, kd, ld, td] + ([comp] if comp is not None else [])
     return x + [v * u for v in x]
 
 
@@ -4892,10 +5020,11 @@ def _fit_logit(X, y, lam=1.0, iters=12):
     return beta
 
 
-def _sym(rows):
+def _sym(rows, comp_of=None):
     X, y = [], []
     for r in rows:
-        x = wp_vector(r["m"], r["gd"], r["kd"], r["ld"], r["td"])
+        comp = comp_of.get(r["id"], 0.0) if comp_of is not None else None
+        x = wp_vector(r["m"], r["gd"], r["kd"], r["ld"], r["td"], comp)
         X.append(x)
         y.append(r["w"])
         X.append([-v for v in x])          # 蓝红对调：左右对称，不需要截距
@@ -4903,8 +5032,32 @@ def _sym(rows):
     return X, y
 
 
-def fit_winmodel(rows):
-    """训练 + 留出 1/5 的对局检验（准确率只看第 8 分钟以后）。回传模型 dict（存成 winmodel.json）"""
+def _wp_eval(beta, rows, comp_of=None):
+    hit = tot = hit_e = tot_e = 0
+    ll = 0.0
+    for r in rows:
+        comp = comp_of.get(r["id"], 0.0) if comp_of is not None else None
+        z = sum(b * v for b, v in zip(beta, wp_vector(r["m"], r["gd"], r["kd"], r["ld"], r["td"], comp)))
+        p = min(1 - 1e-6, max(1e-6, 1 / (1 + math.exp(-max(-30, min(30, z))))))
+        ll -= r["w"] * math.log(p) + (1 - r["w"]) * math.log(1 - p)
+        ok = (p > 0.5) == (r["w"] == 1)
+        if r["m"] >= 8:
+            tot += 1
+            hit += ok
+        elif r["m"] <= 5:
+            tot_e += 1
+            hit_e += ok
+    return (hit / tot if tot else None), (hit_e / tot_e if tot_e else None), (ll / len(rows) if rows else None)
+
+
+def fit_winmodel(rows, comp_fn=None):
+    """训练 + 留出 1/5 的对局检验（准确率分开看第 8 分钟以后、前 5 分钟）。
+       comp_fn(对局编号列表) → {对局编号: 阵容胜算差（蓝 − 红）}：给了就训练含阵容的 2.5 版模型（v=2）。
+       回传模型 dict（存成 winmodel.json）"""
+    uniq = {}
+    for r in rows:                         # 同一局同一分钟只留一笔（最后一帧常和整分钟重复）
+        uniq[(r["id"], r["m"])] = r
+    rows = list(uniq.values())
     games = sorted({r["id"] for r in rows})
     if len(games) < WP_MIN_GAMES:
         return None
@@ -4915,27 +5068,41 @@ def fit_winmodel(rows):
     test_ids = {g for g in games if int(hashlib.md5(str(g).encode()).hexdigest(), 16) % 5 == 0}
     train = [r for r in rows if r["id"] not in test_ids]
     test = [r for r in rows if r["id"] in test_ids]
-    beta = _fit_logit(*_sym(train))
-    hit = tot = 0
-    ll = 0.0
-    for r in test:
-        z = sum(b * v for b, v in zip(beta, wp_vector(r["m"], r["gd"], r["kd"], r["ld"], r["td"])))
-        p = min(1 - 1e-6, max(1e-6, 1 / (1 + math.exp(-max(-30, min(30, z))))))
-        ll -= r["w"] * math.log(p) + (1 - r["w"]) * math.log(1 - p)
-        if r["m"] >= 8:
-            tot += 1
-            hit += (p > 0.5) == (r["w"] == 1)
-    beta_all = _fit_logit(*_sym(rows))
-    return {"beta": beta_all, "games": len(games), "rows": len(rows), "test_games": len(test_ids),
-            "acc8": hit / tot if tot else None, "logloss": ll / len(test) if test else None,
-            "date": time.strftime("%Y-%m-%d %H:%M")}
+    comp_tr = comp_fn(sorted(set(games) - test_ids), held=test_ids) if comp_fn else None
+    beta = _fit_logit(*_sym(train, comp_tr))
+    acc8, acc_e, ll = _wp_eval(beta, test, comp_tr)
+    comp_all = comp_fn(games) if comp_fn else None
+    beta_all = _fit_logit(*_sym(rows, comp_all))
+    out = {"beta": beta_all, "games": len(games), "rows": len(rows), "test_games": len(test_ids),
+           "acc8": acc8, "acc_early": acc_e, "logloss": ll, "date": time.strftime("%Y-%m-%d %H:%M")}
+    if comp_fn:
+        out["v"] = 2
+    return out
 
 
-def wp_predict(model, m, gd, kd, ld, td):
+def comp_vec(d):
+    """阵容特征差 → 模型输入：强度差、前排差、AP 差、开团差、治疗差"""
+    return list(d)
+
+
+def fit_comp(diffs, wins, lam=3.0):
+    """阵容模型：P(蓝方赢) = σ(β · 特征差)；岭回归、左右对调（不需要截距）"""
+    X, y = [], []
+    for d, w in zip(diffs, wins):
+        v = comp_vec(d)
+        X.append(v)
+        y.append(1 if w else 0)
+        X.append([-x for x in v])
+        y.append(0 if w else 1)
+    return _fit_logit(X, y, lam=lam)
+
+
+def wp_predict(model, m, gd, kd, ld, td, comp=0.0):
     """我方胜率（输入都是 我方 − 敌方）"""
     if not model or not model.get("beta"):
         return None
-    z = sum(b * v for b, v in zip(model["beta"], wp_vector(m, gd, kd, ld, td)))
+    vec = wp_vector(m, gd, kd, ld, td, comp) if model.get("v") == 2 else wp_vector(m, gd, kd, ld, td)
+    z = sum(b * v for b, v in zip(model["beta"], vec))
     return 1 / (1 + math.exp(-max(-30, min(30, z))))
 
 
@@ -5059,15 +5226,23 @@ class RiotCollector:
         return None
 
     def run(self, engine, stop):
-        """背景线程：不在对局中、而且已设定密钥时才收集"""
+        """背景线程：不在对局中才收集；任何意外错误都只记下来，线程不死"""
         while not stop.is_set():
+            try:
+                self._run_once(engine, stop)
+            except Exception:  # noqa
+                log_crash("collector error", sys.exc_info())
+                time.sleep(30)
+
+    def _run_once(self, engine, stop):
+        if True:
             self.wake.wait(30)
             self.wake.clear()
             if not self.enabled or engine.connected:
-                continue
+                return
             if self.use_client:
                 if time.time() < getattr(self, "_next_pass", 0):
-                    continue                            # 客户端模式放慢：两轮之间至少隔几分钟
+                    return                            # 客户端模式放慢：两轮之间至少隔几分钟
 
                 def chalt():
                     return stop.is_set() or engine.connected or not self.enabled
@@ -5080,7 +5255,7 @@ class RiotCollector:
                 except Exception as e:  # noqa
                     self.status = tr('自建数据库出错：{0}').format(e)
                     self.dlog("client error: {0!r}".format(e))
-                continue
+                return
             if getattr(self, "_api", None) is None or (self._api.key, self._api.platform) != \
                     (self.cfg["key"].strip(), self.cfg["platform"].upper()):
                 self._api = RiotAPI(self.cfg["key"], self.cfg["platform"])   # 同一把密钥沿用限速记录（不会一换轮就超速）
@@ -5096,7 +5271,7 @@ class RiotCollector:
                     self.status = tr("Riot 密钥无效或已过期（开发者密钥每 24 小时要更新一次）") + "\n" + bad[:80]
                     self.save_cfg(enabled=False)
                     engine.q.put(("data", tr("Riot 密钥无效或已过期（开发者密钥每 24 小时要更新一次）")))
-                    continue
+                    return
                 self.backfill_timelines(api, halt)      # 以前收集的对局补抓时间线（胜率模型要用）
                 me = self.seed(api, self.cfg.get("riot_id") or getattr(engine, "my_riot_id", ""), halt)
                 if me and me not in self.frontier:
@@ -5451,7 +5626,11 @@ class RiotCollector:
     def maybe_refit(self, force=False):
         """新抓了 ≥30 局时间线（或还没有模型）就重新训练胜率模型"""
         have = load_winmodel()
-        if not force and have and self.tl_new < max(30, 0.25 * (have.get("games") or 0)):
+        adv = getattr(self, "advisor", None)
+        if have and have.get("comp") and getattr(self, "comp_model", None) is None:
+            self.comp_model = have["comp"]
+        old_kind = have and adv is not None and have.get("v") != 2   # 旧版模型（没有阵容）：有资料就重练成新版
+        if not force and have and not old_kind and self.tl_new < max(30, 0.25 * (have.get("games") or 0)):
             return have                             # 多了 25%（至少 30 局）才重新训练
         path = os.path.join(self.dir, "timelines.jsonl")
         if not os.path.exists(path):
@@ -5465,8 +5644,12 @@ class RiotCollector:
                     continue
                 if all(k in r for k in ("id", "m", "gd", "kd", "ld", "td", "w")):
                     rows.append(r)
-        model = fit_winmodel(rows)
+        comp_fn = self.make_comp_fn(rows) if adv is not None else None
+        model = fit_winmodel(rows, comp_fn)
         if model:
+            if comp_fn and getattr(self, "_comp_last", None):
+                model["comp"] = self._comp_last
+                self.comp_model = self._comp_last
             write_json(os.path.join(self.dir, "winmodel.json"), model)
             self.tl_new = 0
             self.status = tr("胜率模型已更新：{0} 局，第 8 分钟后准确率 {1:.0f}%").format(
@@ -5475,6 +5658,63 @@ class RiotCollector:
                 self.on_model(model)
         return model or have
 
+    def make_comp_fn(self, tl_rows):
+        """给 fit_winmodel 用：comp_fn(训练用的对局, held=留出的对局) → {对局: 阵容胜算差（蓝 − 红）}。
+           每次呼叫都先只用「训练用的对局」训练阵容模型（赢的那队 − 输的那队），留出的对局拿来算阵容模型的准确率"""
+        adv = self.advisor
+        games = self.games()
+        blue_w = {}
+        for r in tl_rows:
+            blue_w[r["id"]] = r["w"]
+        memo = {}
+
+        def feats(champs, won):
+            key = (tuple(sorted(champs)), won)
+            if key not in memo:
+                memo[key] = adv.comp_features(champs, won)
+            return memo[key]
+
+        def sides(gid):
+            g = games.get(gid)
+            if not g:
+                return None
+            win = [r["c"] for r in g if r.get("w")]
+            lose = [r["c"] for r in g if not r.get("w")]
+            if len(win) != 5 or len(lose) != 5:
+                return None
+            return feats(win, True), feats(lose, False)
+
+        def comp_fn(ids, held=None):
+            diffs, teams = [], []
+            for gid in ids:
+                sd = sides(gid)
+                if sd:
+                    diffs.append([a - b for a, b in zip(*sd)])
+                    teams += [sd[0], sd[1]]
+            if len(diffs) < 50:
+                return {}
+            beta = fit_comp(diffs, [1] * len(diffs))
+            mean = [sum(t[i] for t in teams) / len(teams) for i in range(5)]
+            info = {"beta": beta, "mean": mean, "games": len(diffs)}
+            if held:
+                hd = [sd for sd in (sides(g) for g in held) if sd]
+                if hd:
+                    ok = sum(1 for w, l in hd if sum(b * v for b, v in zip(beta, comp_vec([a - c for a, c in zip(w, l)]))) > 0)
+                    self._comp_acc = ok / len(hd)
+            else:
+                info["acc"] = getattr(self, "_comp_acc", None)
+                self._comp_last = info
+            out = {}
+            for gid in list(ids) + list(held or []):
+                sd = sides(gid)
+                if not sd or gid not in blue_w:
+                    continue
+                d = [a - b for a, b in zip(*sd)]            # 赢 − 输
+                z = sum(b * v for b, v in zip(beta, comp_vec(d)))
+                out[gid] = z if blue_w[gid] else -z         # 换成 蓝 − 红
+            return out
+        return comp_fn
+
     # ---------- 统计 ----------
     def aggregate(self):
         """{英雄: {"n": 局数, "w": 胜场, "tiers": {段位: [n, w]}, "items": {装备: [n, w]}, "augs": {增幅: [n, w]},
@@ -5482,15 +5722,7 @@ class RiotCollector:
         with self.lock:
             if self._agg is not None:
                 return self._agg
-        path = os.path.join(self.dir, "matches.jsonl")
-        rows = []
-        if os.path.exists(path):
-            with open(path, encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        rows.append(json.loads(line))
-                    except ValueError:
-                        continue
+        rows = [r for g in self.games().values() for r in g]
         patches = sorted({r.get("v", "") for r in rows}, key=ver_tuple)[-2:]
         agg = {}
         for r in rows:
@@ -5524,6 +5756,79 @@ class RiotCollector:
     def champ(self, champ_id):
         return self.aggregate().get(str(champ_id).lower())
 
+    def games(self):
+        """{对局编号: 10 行}（同一局写过两次的只留第一份；档案没变就用上次读的）"""
+        path = os.path.join(self.dir, "matches.jsonl")
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return {}
+        cache = getattr(self, "_games", None)
+        if cache and cache[0] == size:
+            return cache[1]
+        out = {}
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                g = out.setdefault(r.get("m"), [])
+                if len(g) < 10:
+                    g.append(r)
+        out = {k: v for k, v in out.items() if k and len(v) == 10}
+        self._games = (size, out)
+        return out
+
+    def aug_pairs(self):
+        """增幅组合：{(a, b): [局数, 胜场]}、单张 {a: [局数, 胜场]}（每个玩家身上的增幅两两配对；最近两个版本）"""
+        g = self.games()
+        key = len(g)
+        cache = getattr(self, "_pairs", None)
+        if cache and cache[0] == key:
+            return cache[1], cache[2]
+        rows = [r for v in g.values() for r in v]
+        patches = sorted({r.get("v", "") for r in rows}, key=ver_tuple)[-2:]
+        pairs, single = {}, {}
+        for r in rows:
+            if r.get("v") not in patches:
+                continue
+            w = 1 if r.get("w") else 0
+            augs = sorted(set(r.get("a") or []))
+            for a in augs:
+                x = single.setdefault(a, [0, 0])
+                x[0] += 1
+                x[1] += w
+            for i in range(len(augs)):
+                for j in range(i + 1, len(augs)):
+                    x = pairs.setdefault((augs[i], augs[j]), [0, 0])
+                    x[0] += 1
+                    x[1] += w
+        self._pairs = (key, pairs, single)
+        return pairs, single
+
+    def synergy(self, aid, owned_ids, k=60, nmin=30):
+        """候选增幅 aid 和你已有的增幅一起拿时，胜率比「两张各自的胜率平均」高多少（经验贝叶斯往 0 收缩：k 局的先验）。
+           回传 (提升, 局数, 搭配的增幅编号) 或 None"""
+        if not aid or not owned_ids:
+            return None
+        pairs, single = self.aug_pairs()
+        best = None
+        for o in owned_ids:
+            if not o or o == aid:
+                continue
+            x = pairs.get((min(aid, o), max(aid, o)))
+            if not x or x[0] < nmin:             # 一起出现不到 30 次：太少，跟随机差不多（测过：打乱输赢也会出现 ±5%）
+                continue
+            sa, so = single.get(aid), single.get(o)
+            if not sa or not so:
+                continue
+            exp = ((sa[1] + 5) / (sa[0] + 10) + (so[1] + 5) / (so[0] + 10)) / 2
+            lift = (x[1] + k * exp) / (x[0] + k) - exp
+            if best is None or abs(lift) > abs(best[0]):
+                best = (lift, x[0], o)
+        return best
+
     def total_games(self):
         """大约几局（每局 10 行）。只在第一次数文件行数，之后跟着写入累加：窗口每 3 秒问一次也不卡"""
         if getattr(self, "_lines", None) is None:
@@ -5533,7 +5838,7 @@ class RiotCollector:
                 with open(path, "rb") as f:
                     n = sum(1 for _ in f)
             self._lines = n
-        return self._lines // 10
+        return len(self.games())
 
 
 # --------------------------------------------------------------------------------------
@@ -6141,6 +6446,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     shop_lbl = tk.Label(pages["items"], text="", bg="#2a2412", fg=GOLD, font=F["tip"], anchor="w", justify="left",
                         padx=6, pady=3)
     wraps.append(shop_lbl)
+    curve_cv = tk.Canvas(pages["items"], bg="#2a2412", highlightthickness=0, height=1)
     tips_box = tk.Frame(pages["items"], bg=BG)
     tips_box.pack(fill="x")
     tip_lbls = []
@@ -6482,6 +6788,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 meta.append(fmt_data(d))
             elif d.get("wr"):
                 meta.append(f"{d['wr'] * 100:.1f}%")
+            if d.get("comp_wp") is not None:
+                meta.append(tr("阵容 {0:.0f}%").format(d["comp_wp"] * 100))
             if d.get("hint"):
                 meta.append(d["hint"])
             elif not d.get("known", True):
@@ -6512,6 +6820,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         for lb in tip_lbls:
             lb.pack_forget()
         mine = next((c for c in cands if c.get("mine")), None)
+        cw = (mine or best).get("comp_wp")
+        if cw is not None:
+            summary.config(text=summary.cget("text") + " · " + tr("阵容预估胜率 {0:.0f}%").format(cw * 100))
         if mine and best is not mine and best["score"] - mine["score"] >= 3:
             tip = tr('★ 建议从备选席换成 {0}（{1} 分，你现在的 {2} {3} 分）').format(
                 best["name"], best["score"], mine["name"], mine["score"])
@@ -6553,6 +6864,38 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         for w in (r["fr"], r["nm"], r["sc"], r["rs"], r["meta"]):
             w.bind("<Button-1>", lambda e, i=i: choose(i))
 
+    def draw_curve(curve, moments):
+        """赛后复盘：整局的实时胜率曲线（中间虚线＝50%；红点＝掉最多的那段，绿点＝涨最多的那段）"""
+        curve_cv.delete("all")
+
+        def px(n):
+            return int(n * dpi * st["k"])
+        if not curve or len(curve) < 3:
+            curve_cv.pack_forget()
+            return
+        w, h = W() - px(20), px(64)
+        curve_cv.config(width=w, height=h)
+        t0, t1 = curve[0][0], max(curve[-1][0], curve[0][0] + 1)
+        top, bot, left = px(12), h - px(6), px(4)
+
+        def xy(t, p):
+            return left + (w - 2 * left) * (t - t0) / (t1 - t0), bot - (bot - top) * p
+        curve_cv.create_line(left, xy(0, 0.5)[1], w - left, xy(0, 0.5)[1], fill=DIM, dash=(2, 3))
+        pts = [c for t, p in curve for c in xy(t, p)]
+        curve_cv.create_line(*pts, fill=GOLD, width=2, smooth=True)
+        for m in moments or []:
+            if m.get("t") is None or m.get("to") is None:
+                continue
+            x, y = xy(m["t"], m["from"])
+            x2, y2 = xy(min(t1, m["t"] + 60), m["to"])
+            col = "#ff5c5c" if m.get("kind") == "drop" else GREEN
+            curve_cv.create_line(x, y, x2, y2, fill=col, width=3)
+            curve_cv.create_oval(x2 - 3, y2 - 3, x2 + 3, y2 + 3, fill=col, outline="")
+        last = curve[-1][1]
+        curve_cv.create_text(left, px(2), anchor="nw", fill=SUB, font=F["small"],
+                             text=tr("胜率曲线 · 开局 {0}% → 结束前 {1}%").format(int(round(curve[0][1] * 100)), int(round(last * 100))))
+        curve_cv.pack(fill="x", padx=0, pady=(0, 3), before=tips_box)
+
     def show(rec, flash=True):
         current["rec"] = rec
         mine_names = rec.get("my_augs", [])
@@ -6583,6 +6926,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             pass                                   # 赛后复盘还在显示
         else:
             shop_lbl.pack_forget()
+        if shop_text or not (rv and time.time() < rv[1]):
+            curve_cv.pack_forget()
         # 出装页
         normal = [] if has_brief else [x for x in tips if not x[2]][:2]
         for i, lb in enumerate(tip_lbls):
@@ -6744,6 +7089,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 st["review"] = (payload, time.time() + 25)
                 shop_lbl.config(text="📋 " + payload["text"] + ("\n" + payload["detail"] if payload.get("detail") else ""))
                 shop_lbl.pack(fill="x", pady=(0, 3), before=tips_box)
+                draw_curve(payload.get("curve"), payload.get("moments"))
                 if st["tab"] != "items":
                     select_tab("items")
                 mini.config(text="📋 " + payload["text"], fg=GOLD)
@@ -6789,11 +7135,35 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     select_tab("items")
     st["hold_until"] = time.time() + 5
     stop = threading.Event()
-    threading.Thread(target=engine.run, args=(stop,), daemon=True).start()
+    engine._thread = threading.Thread(target=engine.run, args=(stop,), daemon=True, name="engine")
+    engine._thread.start()
     start_scanner(engine, scanner, stop, scan_on)
     root.after(300, poll)
-    root.mainloop()
-    stop.set()
+
+    def watchdog():
+        """看门狗：分析线程死掉就重开；卡住超过 90 秒记一笔（crash.log）"""
+        try:
+            th = getattr(engine, "_thread", None)
+            if th is not None and not th.is_alive() and not stop.is_set():
+                log_crash("engine thread died: restarting")
+                engine._thread = threading.Thread(target=engine.run, args=(stop,), daemon=True, name="engine")
+                engine._thread.start()
+            elif time.time() - getattr(engine, "beat", time.time()) > 90 and not st.get("stall_logged"):
+                st["stall_logged"] = True
+                import traceback
+                frames = sys._current_frames()
+                stack = "".join(traceback.format_stack(frames[th.ident])) if th is not None and th.ident in frames else ""
+                log_crash("engine stalled > 90s\n" + stack)
+            elif time.time() - getattr(engine, "beat", 0) < 30:
+                st["stall_logged"] = False
+        except Exception:  # noqa
+            pass
+        root.after(15000, watchdog)
+    root.after(15000, watchdog)
+    try:
+        root.mainloop()
+    finally:
+        stop.set()                             # 关闭或崩溃都停掉这次开的线程（自动重开时不会有两份）
 
 
 # --------------------------------------------------------------------------------------
@@ -6906,6 +7276,7 @@ def main():
     set_lang(args.ui_lang or cfg.get("ui_lang", "zh"))
     args.lang = args.lang or cfg.get("data_lang") or default_data_lang(LANG)
     print(tr('海斗助手 v{0}').format(APP_VERSION))
+    install_crash_logging()
     # 已经有缓存：先用缓存马上开起来，几秒后背景再检查新版本（以前每次启动都要连好几个网站，很慢）
     cached = any(fn.startswith("ver_") and fn.endswith("_" + args.lang) for fn in os.listdir(APP_DIR)) \
         if os.path.isdir(APP_DIR) else False
@@ -6939,11 +7310,17 @@ def main():
     if args.console:
         run_console(engine, scanner)
         return
-    try:
-        run_overlay(engine, args.alpha, scanner, args.scale)
-    except ImportError:
-        print(tr("未找到 tkinter，改用控制台模式"))
-        run_console(engine, scanner)
+    for attempt in range(3):                 # 悬浮窗意外崩溃：记下原因，自动重开（最多 3 次）
+        try:
+            run_overlay(engine, args.alpha, scanner, args.scale)
+            break
+        except ImportError:
+            print(tr("未找到 tkinter，改用控制台模式"))
+            run_console(engine, scanner)
+            break
+        except Exception:  # noqa
+            log_crash("overlay crashed (restart {0})".format(attempt + 1), sys.exc_info())
+            time.sleep(2)
 
 
 if __name__ == "__main__":
