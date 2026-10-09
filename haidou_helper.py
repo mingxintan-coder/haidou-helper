@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.5.0"
+APP_VERSION = "2.6.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -2179,6 +2179,53 @@ class Advisor:
         p = (w + 20) / (n + 40)
         return math.log(p / (1 - p))
 
+    def champ_win_est(self, cid):
+        """这个英雄（由你来玩）的预估胜率：
+             英雄本身＝网上海斗胜率（已下载的才用，按样本数往 50% 收缩）；没有就用自建数据库（先给 40 局五五开）；
+             你自己＝你玩这个英雄的胜率，以英雄本身为先验、给 8 局的份量（玩得多才会偏离）"""
+        c = self.gd.champ(cid) or {}
+        base = None
+        cs = self.stats.champs.get(c.get("key")) if self.stats and c.get("key") else None
+        if cs and cs.get("n") and cs.get("wr"):
+            base = 0.5 + (cs["wr"] - 0.5) * cs["n"] / (cs["n"] + 2000)
+        if base is None:
+            db = getattr(self, "riotdb", None)
+            x = db.champ(c.get("id", cid)) if db is not None else None
+            base = (x["w"] + 20) / (x["n"] + 40) if x else 0.5
+        store = getattr(self, "habits_store", None)
+        if store is not None and store.enabled:
+            hp = store.profile(c.get("id", cid))
+            if hp["decided"]:
+                return (hp["wins"] + 8 * base) / (hp["decided"] + 8), base, hp["decided"]
+        return base, base, 0
+
+    def reroll_advice(self, mine, pool, rerolls, bench_best=None):
+        """要不要重骰：重骰＝从你能用的英雄里随机换一个，期望胜率＝这些英雄预估胜率的平均。
+           你现在的英雄比期望低 1 个百分点以上 → 建议重骰（备选席有更好的就先换备选席）"""
+        if not mine or rerolls is None:
+            return None
+        pool = [p for p in pool if p and p != mine]
+        if len(pool) < 10:
+            return None
+        ev = sum(self.champ_win_est(p)[0] for p in pool) / len(pool)
+        est = self.champ_win_est(mine)[0]
+        name = self.gd.champ_name(mine)
+        if bench_best and bench_best[1] > max(est, ev) + 0.01:
+            act = "bench"
+            text = tr("备选席的 {0} 预估 {1:.0f}%，比 {2}（{3:.0f}%）和重骰平均（{4:.0f}%）都好 → 换他").format(
+                self.gd.champ_name(bench_best[0]), bench_best[1] * 100, name, est * 100, ev * 100)
+        elif rerolls > 0 and est < ev - 0.01:
+            act = "reroll"
+            text = tr("{0} 预估 {1:.0f}%，低于重骰平均 {2:.0f}% → 建议重骰（还有 {3} 次）").format(name, est * 100, ev * 100, rerolls)
+        elif est > ev + 0.01:
+            act = "keep"
+            text = tr("{0} 预估 {1:.0f}%，高于重骰平均 {2:.0f}% → 留着").format(name, est * 100, ev * 100)
+        else:
+            act = "even"
+            text = tr("{0} 预估 {1:.0f}%，跟重骰平均 {2:.0f}% 差不多").format(name, est * 100, ev * 100) + \
+                (tr(" → 不用重骰") if rerolls else "")
+        return {"act": act, "text": text, "est": est, "ev": ev, "rerolls": rerolls}
+
     def comp_features(self, champs, wins=None):
         """一队的阵容特征：[英雄强度总和, 前排数, 魔法伤害数, 开团数, 治疗保护数]
            wins＝这队这局有没有赢（训练用：英雄强度扣掉这一局）"""
@@ -3670,8 +3717,21 @@ class Engine:
         for c in ranked:                         # 标出每个英雄从哪里来
             if not c.get("hint"):
                 c["hint"] = tr("分给你的") if c["id"] in subset_c else tr("备选席") if c["id"] in bench_c else ""
+        pool_ids = (sess.get("_subset_raw") or {}).get("/lol-champ-select/v1/pickable-champion-ids")
+        pool_ids = pool_ids if isinstance(pool_ids, list) else []
+        pool = [by_key.get(str(x)) for x in pool_ids]
+        if len(pool) < 10:
+            pool = list(self.gd.champs and [c["id"] for c in self.gd.champs.values()])
+        others = [c for c in cands if c != mine]
+        bench_best = max(((c, self.advisor.champ_win_est(c)[0]) for c in others), key=lambda x: x[1], default=None)
+        rr = sess.get("rerollsRemaining")
+        try:
+            reroll = self.advisor.reroll_advice(mine, pool, rr if isinstance(rr, int) else
+                                                (0 if sess.get("allowRerolling") is False else None), bench_best)
+        except Exception:  # noqa
+            reroll = None
         return {"cands": ranked, "cand_ids": cands, "team_ids": team, "needs": needs, "mine": mine, "subset": subset_c,
-                "bench_enabled": bool(sess.get("benchEnabled", True))}
+                "bench_enabled": bool(sess.get("benchEnabled", True)), "reroll": reroll}
 
     def track_game(self, raw, state, rec):
         """记下这局的英雄、成品装备、已选增幅、三选一出现过的增幅；读到 GameEnd 就存起来"""
@@ -3730,6 +3790,54 @@ class Engine:
             for a in names:
                 if a not in g["offered"]:
                     g["offered"].append(a)
+
+    def death_row(self, state):
+        """你死得比队友多很多时，战况条加一行「少死」（每死一次约少多少胜率，用胜率模型算）"""
+        me, allies = state[2], state[3]
+        if not allies or me.deaths < 4:
+            return None
+        avg = sum(p.deaths for p in allies) / len(allies)
+        if me.deaths < avg + 2:
+            return None
+        text = tr("你死 {0} 次，队友平均 {1:.0f} 次 → 等前排先进，别第一个上").format(me.deaths, avg)
+        model = getattr(self, "winmodel", None)
+        p = self._wp_now[0] if getattr(self, "_wp_now", None) else 0.5
+        if model and model.get("beta"):
+            b = model["beta"]
+            half = len(b) // 2
+            u = min(max(me.game_time / 60, 0), 30) / 10
+            per = (b[1] + b[1 + half] * u) * p * (1 - p)          # 人头差每少 1，胜率大约少这么多
+            if per > 0.005:
+                text += tr("（每死一次约 −{0:.0f}% 胜率）").format(per * 100)
+        return (tr("少死"), text, True)
+
+    @staticmethod
+    def death_review(g):
+        """赛后：你每次阵亡的情况（团战第一个倒下 / 被 4 人以上围杀 / 落单被抓）＋最常杀你的人"""
+        ros = g.get("roster") or {}
+        me = next((n for n, r in ros.items() if r.get("me")), None)
+        kills = sorted(g.get("kills") or [])
+        if not me or not kills:
+            return None
+        ally = {n for n, r in ros.items() if r.get("ally") and n != me}
+        cnt = {"first": 0, "gank": 0, "alone": 0}
+        killers = Counter()
+        mine = [k for k in kills if k[2] == me]
+        for t, killer, _, ass in mine:
+            killers[killer] += 1
+            near = [k for k in kills if abs(k[0] - t) <= 15 and k[2] != me]
+            before = [k for k in kills if t - 10 <= k[0] < t and k[2] in ally]
+            after = [k for k in kills if t < k[0] <= t + 15 and k[2] in ally]
+            if 1 + len(ass) >= 4:
+                cnt["gank"] += 1
+            if not near:
+                cnt["alone"] += 1
+            elif not before and after:
+                cnt["first"] += 1
+        top = killers.most_common(1)[0] if killers else None
+        top_champ = ros.get(top[0], {}).get("champ") if top else None
+        return {"deaths": len(mine), "first": cnt["first"], "gank": cnt["gank"], "alone": cnt["alone"],
+                "killer": top_champ, "killer_n": top[1] if top else 0}
 
     @staticmethod
     def buildings_lost(raw):
@@ -3916,6 +4024,13 @@ class Engine:
             g["moments"] = self.key_moments(g)
         except Exception:  # noqa
             g["moments"] = []
+        try:
+            g["death"] = self.death_review(g)
+            me_r = next((r for r in (g.get("roster") or {}).values() if r.get("me")), None)
+            if me_r:
+                g["kda"] = [me_r.get("k", 0), me_r.get("d", 0), me_r.get("a", 0)]
+        except Exception:  # noqa
+            g["death"] = None
         ser = g.get("wp") or []
         if len(ser) >= 6:                              # 胜率曲线（复盘画图用；每 20 秒一点，留在战绩里）
             g["curve"] = [[x[0], x[1]] for i, x in enumerate(ser) if i % 2 == 0 or i == len(ser) - 1]
@@ -4150,6 +4265,14 @@ class Engine:
                     break
         if practice:
             detail = (detail + "\n" if detail else "") + tr("下局练习：") + practice
+        dv = g.get("death")
+        if dv and dv.get("deaths", 0) >= 3:
+            bits = [tr("{0} {1} 次").format(lab, dv[k]) for k, lab in
+                    (("first", tr("团战第一个倒下")), ("gank", tr("被 4 人以上围杀")), ("alone", tr("落单被抓"))) if dv.get(k)]
+            line = tr("阵亡 {0} 次").format(dv["deaths"]) + ("：" + tr("、").join(bits) if bits else "")
+            if dv.get("killer") and dv.get("killer_n", 0) >= 2:
+                line += tr("；最常杀你的是{0}（{1} 次）").format(gd.champ_name(dv["killer"]), dv["killer_n"])
+            detail = (detail + "\n" if detail else "") + line
         for km in g.get("moments") or []:
             if km["kind"] == "drop":
                 line = tr("关键时刻：") + km["facts"] + tr("。") + km["label"] + tr("——") + km["lesson"]
@@ -4320,6 +4443,12 @@ class Engine:
             rec["wp"] = p
             arrow = "" if abs(dp) < 0.03 else (" ↑" if dp > 0 else " ↓") + str(int(round(abs(dp) * 100)))
             rec["brief"].insert(0, (tr("胜率"), "{0}%{1}".format(int(round(p * 100)), arrow), p < 0.35))
+        try:
+            dr = self.death_row(state)
+            if dr and isinstance(rec.get("brief"), list):
+                rec["brief"].insert(1 if wp else 0, dr)
+        except Exception:  # noqa
+            pass
         rec["changes"] = changes
         rec["quiet"] = quiet
         rec["time"] = time.strftime("%H:%M:%S")
@@ -4553,7 +4682,15 @@ class HabitStore:
 
     def import_games(self, games):
         """导入客户端里的历史对局（按 gameId 去重），回传新增几局"""
-        have = {g.get("gameId") for g in self.games if g.get("gameId")}
+        have = {g.get("gameId"): g for g in self.games if g.get("gameId")}
+        filled = 0
+        for g in games:                         # 以前导入的局补上 K/D/A（弱点报告要用）
+            old = have.get(g.get("gameId"))
+            if old is not None and g.get("kda") and not old.get("kda"):
+                old["kda"] = g["kda"]
+                filled += 1
+        if filled:
+            self.save()
         new = [g for g in games if g.get("gameId") and g["gameId"] not in have and g.get("champ")]
         if not new or not self.enabled:
             return 0
@@ -4574,7 +4711,89 @@ class HabitStore:
         except OSError:
             pass
 
-    def report(self, gd):
+    def weakness(self, gd, advisor=None):
+        """弱点报告：输在哪个阶段、死得多不多、怎么死的、哪些英雄你玩得比一般人差 → 最该先改的一件事"""
+        games = [g for g in self.games if g.get("champ") and g.get("win") is not None]
+        if len(games) < 10:
+            return [tr("弱点报告：再打 {0} 局就会出现（至少要 10 局）").format(10 - len(games))]
+        out = [tr("【弱点报告】（{0} 局）").format(len(games))]
+        issues = []                                       # (严重度, 建议)
+        # ① 输在哪个阶段（有胜率曲线的局）
+        phase = Counter()
+        for g in games:
+            cv = g.get("curve") or []
+            if g["win"] or len(cv) < 6:
+                continue
+            t = next((t for t, p in cv if p < 0.4), None)
+            if t is not None:
+                phase["early" if t < 480 else "mid" if t < 900 else "late"] += 1
+        if sum(phase.values()) >= 3:
+            n = sum(phase.values())
+            out.append(tr("输的局从哪里开始落后：前期（8 分钟前）{0} 局、中期 {1} 局、后期（15 分钟后）{2} 局").format(
+                phase["early"], phase["mid"], phase["late"]))
+            if phase["early"] / n >= 0.5:
+                issues.append((phase["early"] / n, tr("一半以上的输局在 8 分钟前就落后：开局别送人头，等第一件装备再打")))
+            elif phase["late"] / n >= 0.5:
+                issues.append((phase["late"] / n, tr("一半以上的输局是后期被翻：领先时推塔结束，别拖")))
+        # ② 死亡：赢的局 vs 输的局
+        dw = [g["kda"][1] for g in games if g.get("kda") and g["win"]]
+        dl = [g["kda"][1] for g in games if g.get("kda") and not g["win"]]
+        if len(dw) >= 3 and len(dl) >= 3:
+            aw, al = sum(dw) / len(dw), sum(dl) / len(dl)
+            out.append(tr("平均阵亡：赢的局 {0:.1f} 次，输的局 {1:.1f} 次").format(aw, al))
+            if al - aw >= 1.5:
+                issues.append(((al - aw) / 4, tr("输的局多死 {0:.1f} 次：少死是你最大的改进空间（残血先退、别第一个冲）").format(al - aw)))
+        # ③ 怎么死的（有记录击杀事件的局）
+        dc = Counter()
+        for g in games:
+            dv = g.get("death") or {}
+            for k in ("deaths", "first", "gank", "alone"):
+                dc[k] += dv.get(k, 0)
+        if dc["deaths"] >= 15:
+            out.append(tr("阵亡 {0} 次里：团战第一个倒下 {1:.0f}%、被 4 人以上围杀 {2:.0f}%、落单被抓 {3:.0f}%").format(
+                dc["deaths"], 100 * dc["first"] / dc["deaths"], 100 * dc["gank"] / dc["deaths"], 100 * dc["alone"] / dc["deaths"]))
+            if dc["first"] / dc["deaths"] >= 0.3:
+                issues.append((dc["first"] / dc["deaths"], tr("常常团战第一个倒下：站在前排后面，等对面关键技能交了再进")))
+            if dc["alone"] / dc["deaths"] >= 0.25:
+                issues.append((dc["alone"] / dc["deaths"], tr("常常落单被抓：跟着队友走，别一个人去吃血包 / 清兵")))
+        # ④ 关键时刻的原因（输的局）
+        cats = Counter(m.get("cat") for g in games if not g["win"] for m in g.get("moments") or [] if m.get("kind") == "drop")
+        cats.pop(None, None)
+        if sum(cats.values()) >= 3:
+            c, n = cats.most_common(1)[0]
+            out.append(tr("输的局里胜率大掉，最常见的原因：{0}（{1} 次）").format(tr(MOMENT_LESSON[c][0]), n))
+        # ⑤ 英雄：你的胜率 vs 这个英雄一般的胜率
+        if advisor is not None:
+            rows = []
+            for champ, n in Counter(g["champ"] for g in games).items():
+                if n < 4:
+                    continue
+                gs = [g for g in games if g["champ"] == champ]
+                mine = sum(1 for g in gs if g["win"]) / len(gs)
+                base = advisor.champ_win_est(champ)[1]
+                shrunk = (sum(1 for g in gs if g["win"]) + 5 * base) / (len(gs) + 5)   # 局数少的往一般水准拉
+                rows.append((shrunk - base, champ, len(gs), mine, base))
+            rows.sort()
+            bad = [r for r in rows if r[0] <= -0.1]
+            good = [r for r in rows[::-1] if r[0] >= 0.1]
+            if bad:
+                out.append(tr("玩得比一般人差：") + tr("、").join(
+                    tr("{0}（你 {1:.0f}%／一般 {2:.0f}%，{3} 局）").format(gd.champ_name(c), m * 100, b * 100, k)
+                    for _, c, k, m, b in bad[:3]))
+                issues.append((min(0.6, -2 * bad[0][0]), tr("{0} 你玩得明显比一般人差：分到时优先重骰或换备选席").format(gd.champ_name(bad[0][1]))))
+            if good:
+                out.append(tr("你的拿手英雄：") + tr("、").join(
+                    tr("{0}（你 {1:.0f}%／一般 {2:.0f}%）").format(gd.champ_name(c), m * 100, b * 100) for _, c, k, m, b in good[:3]))
+        if issues:
+            issues.sort(key=lambda x: -x[0])
+            out.append(tr("→ 最该先改：") + issues[0][1])
+        elif len(out) == 1:
+            out.append(tr("资料还不够：阵亡、胜率曲线、关键时刻会从现在起每局累积，打几局后再看"))
+        else:
+            out.append(tr("→ 目前没有特别明显的弱点，继续保持"))
+        return out
+
+    def report(self, gd, advisor=None):
         """战绩页的文字：总体、照推荐 vs 没照推荐、各英雄、最近几局"""
         games = [g for g in self.games if g.get("champ")]
         if not games:
@@ -4588,6 +4807,11 @@ class HabitStore:
         def fmt(w):
             return "—" if w is None else f"{w:.0f}%"
         lines = [tr('总计 {0} 局，胜率 {1}').format(len(games), fmt(wr(dec)))]
+        try:
+            lines += [""] + self.weakness(gd, advisor)
+        except Exception as e:  # noqa
+            lines.append(tr("弱点报告出错：{0}").format(e))
+        lines.append("")
         # 照推荐出装的局 vs 没照的局
         follow, other = [], []
         for g in dec:
@@ -4735,6 +4959,7 @@ def parse_lcu_history(data, gd, aug_by_id):
                     "t": time.strftime("%Y-%m-%d %H:%M", time.localtime((g.get("gameCreation") or 0) / 1000.0)),
                     "champ": champ["id"], "items": items, "augs": augs, "offered": list(augs),
                     "win": bool(st.get("win")), "len": int(g.get("gameDuration") or 0),
+                    "kda": [int(st.get("kills") or 0), int(st.get("deaths") or 0), int(st.get("assists") or 0)],
                     "mode": "mayhem" if mayhem else "aram", "src": "client"})
     return out
 
@@ -6630,7 +6855,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         w.attributes("-topmost", True)
         w.configure(bg=BG)
         txt = tk.Text(w, bg=CARD, fg=FG, font=F["small"], width=78, height=26, bd=0, padx=10, pady=8, wrap="none")
-        txt.insert("1.0", engine.habits.report(engine.gd))
+        txt.insert("1.0", engine.habits.report(engine.gd, engine.advisor))
         txt.config(state="disabled")
         txt.pack(fill="both", expand=True)
         st["hold_until"] = time.time() + 3
@@ -6834,6 +7059,16 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             tip = tr('★ 推荐 {0}').format(best["name"])
         tip_lbls[0].config(text=tip)
         tip_lbls[0].pack(fill="x", pady=(0, 1))
+        rr = sel.get("reroll")
+        if rr and len(tip_lbls) > 1:                 # 要不要重骰（和重骰的平均期望比）
+            tip_lbls[1].config(text="↻ " + rr["text"], fg=GOLD if rr["act"] in ("reroll", "bench") else FG)
+            tip_lbls[1].pack(fill="x", pady=(0, 1))
+            if rr["act"] == "reroll":
+                mini_extra = "\n↻ " + rr["text"]
+            else:
+                mini_extra = ""
+        else:
+            mini_extra = ""
         # 你自己的英雄、分给你挑的 1~3 个一定要看得到（备选席很多时会被挤出前 4），剩下的位置给分数最高的
         must = [c for c in cands if c is mine or c["id"] in (sel.get("subset") or [])][:4]
         rows = must + [c for c in cands if c not in must][:4 - len(must)]
@@ -6841,7 +7076,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         fill_rows(item_rows, rows)
         if st["tab"] != "items":
             select_tab("items")
-        mini.config(text=tip, fg=GOLD)
+        mini.config(text=tip + mini_extra, fg=GOLD)
         st["hold_until"] = time.time() + 8
         set_expanded(True)
         fit()
