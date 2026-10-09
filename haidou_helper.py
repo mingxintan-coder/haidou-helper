@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.6.1"
+APP_VERSION = "2.6.2"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5473,8 +5473,7 @@ class RiotCollector:
                     return stop.is_set() or engine.connected or not self.enabled
                 try:
                     self._next_pass = time.time() + (
-                        self.CLIENT_PAUSE_FULL if self.total_games() >= self.CLIENT_TARGET else
-                        self.CLIENT_PAUSE_SLOW if self.added >= self.CLIENT_SESSION_CAP else self.CLIENT_PAUSE)
+                        self.CLIENT_PAUSE_FULL if self.total_games() >= self.CLIENT_TARGET else self.CLIENT_PAUSE)
                     self.run_client(chalt)
                 except InterruptedError:
                     self.save_state()
@@ -5568,12 +5567,9 @@ class RiotCollector:
     # ---------- 从游戏客户端收集（2.2） ----------
     CLIENT_GAP = 2.0          # 每次问客户端之间至少隔 2 秒（客户端会再去问 Riot 伺服器，别催太急，免得客户端卡）
     CLIENT_BATCH = 20         # 每一轮最多新收几局
-    CLIENT_PAUSE = 180        # 两轮之间隔 3 分钟
+    CLIENT_PAUSE = 30         # 两轮之间隔 30 秒（一直快速收；对战中暂停）
     CLIENT_TARGET = 5000      # 收满这么多局后只看你自己的新对局（每 15 分钟一次；模型只用最新的 2000 局）
-    CLIENT_SESSION_CAP = 150  # 每次打开程序先快速收这么多局；之后改成慢速（客户端会把读过的对局留在记忆体，读太快太多会卡）
     CLIENT_PAUSE_FULL = 900
-    CLIENT_SLOW_BATCH = 8     # 慢速：每 10 分钟 8 局，一直收下去
-    CLIENT_PAUSE_SLOW = 600
 
     def client_call(self, cred, path, halt):
         if halt():
@@ -5635,8 +5631,8 @@ class RiotCollector:
             self._note_status()
             return
         phase = self.client_call(cred, "/lol-gameflow/v1/gameflow-phase", halt)
-        if isinstance(phase, str) and phase not in ("None", "EndOfGame", "WaitingForStats", "PreEndOfGame"):
-            self.status = tr("自建数据库：组队 / 排队 / 选英雄中，暂停收集")
+        if isinstance(phase, str) and phase in ("ChampSelect", "GameStart", "InProgress", "Reconnect"):
+            self.status = tr("自建数据库：选英雄 / 对战中，暂停收集")
             self._next_pass = time.time() + 60
             self._note_status()
             return                                   # 在房间、排队、选英雄时不打扰客户端
@@ -5650,7 +5646,7 @@ class RiotCollector:
                 self.cfront.remove(me)
             self.cfront.insert(0, me)                # 每轮都先看你自己（打完新的一局马上收）
         own_only = self.total_games() >= self.CLIENT_TARGET       # 收满了：只收你自己的新对局（名单留着不删）
-        limit = self.CLIENT_SLOW_BATCH if self.added >= self.CLIENT_SESSION_CAP else self.CLIENT_BATCH
+        limit = self.CLIENT_BATCH
         batch, looked = 0, 0
         while self.cfront and batch < limit and looked < 60 and not halt():
             with self.lock:
