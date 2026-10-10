@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.8.0"
+APP_VERSION = "2.8.1"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -6877,6 +6877,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         st["tab"] = name
         if user:
             st["user_tab"] = True
+            st["user_tab_t"] = time.time()          # 你刚自己切过分页：自动切换先别动（见 auto_tab_ok）
             st["tab_before_cand"] = None           # 你自己选了分页：三选一结束后不用切回
         for k, (lb, ul) in tab_btns.items():
             on = k == name
@@ -7348,7 +7349,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         rows = must + [c for c in cands if c not in must][:4 - len(must)]
         rows.sort(key=lambda c: -c["score"])
         fill_rows(item_rows, rows)
-        if st["tab"] != "items":
+        if st["tab"] != "items" and not st.get("select_tab_done"):
+            st["select_tab_done"] = True                # 选英雄开始时切到出装页一次（推荐英雄在那页）
             select_tab("items")
         mini.config(text=tip + mini_extra, fg=GOLD)
         st["hold_until"] = time.time() + 8
@@ -7407,6 +7409,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
 
     def show(rec, flash=True):
         current["rec"] = rec
+        st["select_tab_done"] = False             # 进了对局：下次选英雄再切一次出装页
         mine_names = rec.get("my_augs", [])
         manual_vals["mine"] = tr("，").join(mine_names)
         summary.config(text=rec.get("summary", "").replace(tr("｜"), " · ").replace(tr("网上 "), ""))
@@ -7513,10 +7516,15 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             st["tab_before_cand"] = None
             st["cand_jumped"] = None
         elif shop_text:
-            if st["tab"] != "items":
-                select_tab("items")
+            # 刚阵亡：切到出装页「一次」（看复活前买什么）；之后你切去别的页就不再拉回来
+            if not st.get("shop_tab_done"):
+                st["shop_tab_done"] = True
+                if st["tab"] != "items" and time.time() - st.get("user_tab_t", 0) > 60:
+                    select_tab("items")
         elif not st["user_tab"]:
             select_tab("guide" if rec.get("game_time", 999) < 90 else "items")
+        if not shop_text:
+            st["shop_tab_done"] = False
         # 单行模式
         its = [x for x in rec.get("items", []) if not x.get("boots")]
         boots = next((x for x in rec.get("items", []) if x.get("boots")), None)
@@ -7613,7 +7621,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 shop_lbl.config(text="📋 " + payload["text"] + ("\n" + payload["detail"] if payload.get("detail") else ""))
                 shop_lbl.pack(fill="x", pady=(0, 3), before=tips_box)
                 draw_curve(payload.get("curve"), payload.get("moments"))
-                if st["tab"] != "items":
+                if st["tab"] != "items" and time.time() - st.get("user_tab_t", 0) > 60:
                     select_tab("items")
                 mini.config(text="📋 " + payload["text"], fg=GOLD)
                 st["hold_until"] = time.time() + 20
