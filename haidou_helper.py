@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.7.0"
+APP_VERSION = "2.8.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -3837,6 +3837,32 @@ class Engine:
                 if a not in g["offered"]:
                     g["offered"].append(a)
 
+    def push_row(self, state):
+        """赢团后推塔：敌方阵亡 ≥2 人、比我方多死 2 人以上、最快的也要 ≥10 秒才复活、你还活着 →「推塔！还有 X 秒」
+           并用胜率模型算「多拆一座塔大约多多少胜率」"""
+        me, allies, enemies = state[2], state[3], state[4]
+        if me is None or me.is_dead or not enemies:
+            return None
+        dead_e = [p for p in enemies if p.is_dead]
+        dead_a = sum(1 for p in allies if p.is_dead)
+        if len(dead_e) < 2 or len(dead_e) - dead_a < 2:
+            return None
+        soon = min(p.respawn for p in dead_e)
+        if soon < 10:
+            return None
+        self._push_until = time.time() + soon
+        text = tr("敌方死 {0} 人，{1:.0f} 秒复活 → 推塔！").format(len(dead_e), soon)
+        model = getattr(self, "winmodel", None)
+        if model and model.get("beta"):
+            b = model["beta"]
+            half = len(b) // 2
+            u = min(max(me.game_time / 60, 0), 30) / 10
+            p = self._wp_now[0] if getattr(self, "_wp_now", None) else 0.5
+            per = (b[3] + b[3 + half] * u) * p * (1 - p)
+            if per > 0.01:
+                text += tr(" 每座 +{0:.0f}%").format(per * 100)
+        return (tr("推塔"), text, True)
+
     def death_row(self, state):
         """你死得比队友多很多时，战况条加一行「少死」（每死一次约少多少胜率，用胜率模型算）"""
         me, allies = state[2], state[3]
@@ -3845,7 +3871,7 @@ class Engine:
         avg = sum(p.deaths for p in allies) / len(allies)
         if me.deaths < avg + 2:
             return None
-        text = tr("你死 {0} 次，队友平均 {1:.0f} 次 → 等前排先进，别第一个上").format(me.deaths, avg)
+        text = tr("你死 {0} 次（队友平均 {1:.0f}）→ 别第一个上").format(me.deaths, avg)
         model = getattr(self, "winmodel", None)
         p = self._wp_now[0] if getattr(self, "_wp_now", None) else 0.5
         if model and model.get("beta"):
@@ -3854,7 +3880,7 @@ class Engine:
             u = min(max(me.game_time / 60, 0), 30) / 10
             per = (b[1] + b[1 + half] * u) * p * (1 - p)          # 人头差每少 1，胜率大约少这么多
             if per > 0.005:
-                text += tr("（每死一次约 −{0:.0f}% 胜率）").format(per * 100)
+                text += tr(" · 每死一次 −{0:.0f}%").format(per * 100)
         return (tr("少死"), text, True)
 
     @staticmethod
@@ -4490,11 +4516,22 @@ class Engine:
             arrow = "" if abs(dp) < 0.03 else (" ↑" if dp > 0 else " ↓") + str(int(round(abs(dp) * 100)))
             rec["brief"].insert(0, (tr("胜率"), "{0}%{1}".format(int(round(p * 100)), arrow), p < 0.35))
         try:
+            pr = self.push_row(state)
+            if pr and isinstance(rec.get("brief"), list):
+                push_word = tr("敌少{0}人 → 推").split("{")[0]
+                rec["brief"] = [x for x in rec["brief"] if not (x[1] or "").startswith(push_word)]   # 推塔那行已经说了
+                rec["brief"].insert(1 if wp else 0, pr)
+                rec["push"] = True
+                rec["push_until"] = getattr(self, "_push_until", 0)
             dr = self.death_row(state)
             if dr and isinstance(rec.get("brief"), list):
                 rec["brief"].insert(1 if wp else 0, dr)
         except Exception:  # noqa
             pass
+        g = self.cur_game
+        if g and g.get("wp"):                          # 悬浮窗的迷你胜率曲线：最近 6 分钟
+            t_now = g["wp"][-1][0]
+            rec["wp_series"] = [(x[0], x[1]) for x in g["wp"] if t_now - x[0] <= 360]
         rec["changes"] = changes
         rec["quiet"] = quiet
         rec["time"] = time.strftime("%H:%M:%S")
@@ -6585,6 +6622,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             F[key].configure(size=max(6, round(v * k)))
         for lb in wraps:
             lb.config(wraplength=W() - int(28 * dpi))
+        for _, tx in brief_rows:                   # 战况条的文字在标签右边：要再扣掉标签那一栏
+            tx.config(wraplength=W() - int(80 * dpi * k))
         fit()
         if save:                   # 启动时（含命令行 --scale）不写进设定，只有从选单换字号才记住
             persist()
@@ -6756,7 +6795,79 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 lb.grid_forget()
                 tx.grid_forget()
         brief_box.pack(fill="x", padx=8, pady=(5, 0), before=tabs_bar)
+        st["push_row"] = next((i for i, x in enumerate(items[:len(brief_rows)]) if x[0] == tr("推塔")), None)
         return True
+
+    # 对局中的迷你胜率曲线（最近 6 分钟）
+    live_cv = tk.Canvas(body, bg=CARD, highlightthickness=0, height=1)
+
+    def draw_live(series):
+        live_cv.delete("all")
+        if not st["brief"] or not series or len(series) < 2:
+            live_cv.pack_forget()
+            return
+        k = dpi * st["k"]
+        w, h = W() - int(16 * k), int(30 * k)
+        live_cv.config(width=w, height=h)
+        t1 = series[-1][0]
+        t0 = min(series[0][0], t1 - 60)
+        top, bot, left, right = int(4 * k), h - int(4 * k), int(6 * k), w - int(34 * k)
+
+        def xy(t, p):
+            return left + (right - left) * (t - t0) / max(1, t1 - t0), bot - (bot - top) * p
+        live_cv.create_line(left, xy(0, 0.5)[1], right, xy(0, 0.5)[1], fill=DIM, dash=(2, 3))
+        pts = [c for t, p in series for c in xy(t, p)]
+        last = series[-1][1]
+        col = GREEN if last >= 0.55 else ORANGE if last < 0.45 else GOLD
+        live_cv.create_line(*pts, fill=col, width=2)
+        live_cv.create_text(w - int(4 * k), h // 2, anchor="e", fill=col, font=F["small"],
+                            text="{0}%".format(int(round(last * 100))))
+        live_cv.pack(fill="x", padx=8, pady=(0, 0), before=tabs_bar)
+
+    # 声音提示：该推塔 / 残血按保命键 / 三选一出现 / 敌方拿到克制你的增幅
+    SOUNDS = {"push": ((880, 110), (1175, 160)), "lowhp": ((1320, 260),), "offer": ((660, 90), (880, 90)),
+              "eaug": ((440, 220),)}
+    snd_cfg = dict({k: True for k in SOUNDS}, **(load_ui_cfg().get("sounds") or {}))
+    st["last_ev"] = set()
+
+    def play(kind):
+        tones = SOUNDS.get(kind)
+        if not tones:
+            return
+        if sys.platform.startswith("win"):
+            def run():
+                try:
+                    import winsound
+                    for f, d in tones:
+                        winsound.Beep(f, d)
+                except Exception:  # noqa
+                    pass
+            threading.Thread(target=run, daemon=True).start()
+        else:
+            try:
+                root.bell()
+            except tk.TclError:
+                pass
+
+    def sound_events(rec):
+        ev = set()
+        if rec.get("push"):
+            ev.add("push")
+        if rec.get("cand_mode") and rec.get("augs"):
+            ev.add("offer")
+        for label, text, hot in rec.get("brief") or []:
+            if hot and label == tr("敌增幅"):
+                ev.add("eaug")
+            if hot and tr("残血 → 按").split("{")[0].strip() in text:
+                ev.add("lowhp")
+        return ev
+
+    def ring(rec):
+        ev = sound_events(rec)
+        for kind in ev - st["last_ev"]:
+            if snd_cfg.get(kind, True):
+                play(kind)
+        st["last_ev"] = ev
 
     tabs_bar = tk.Frame(body, bg=BG)
     tabs_bar.pack(fill="x", padx=6, pady=(6, 2))
@@ -6975,6 +7086,21 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         if current.get("rec"):
             show(current["rec"], flash=False)
     menu.add_checkbutton(label=tr("显示战况条（连招 / 战局 / 威胁 / 玩法）"), variable=brief_var, command=toggle_brief)
+    sm = tk.Menu(menu, tearoff=0, bg=CARD, fg=FG, activebackground="#2b3a57", activeforeground=FG)
+    snd_vars = {}
+
+    def toggle_sound(kind):
+        snd_cfg[kind] = bool(snd_vars[kind].get())
+        c = load_ui_cfg()
+        c["sounds"] = dict(snd_cfg)
+        save_ui_cfg(c)
+        if snd_cfg[kind]:
+            play(kind)                                  # 打开时先响一次给你听
+    for kind, label in (("push", tr("该推塔")), ("lowhp", tr("残血按保命键")), ("offer", tr("三选一出现")),
+                        ("eaug", tr("敌方拿到克制你的增幅"))):
+        snd_vars[kind] = tk.BooleanVar(value=snd_cfg.get(kind, True))
+        sm.add_checkbutton(label=label, variable=snd_vars[kind], command=lambda k=kind: toggle_sound(k))
+    menu.add_cascade(label=tr("声音提示"), menu=sm)
     habits_var = tk.BooleanVar(value=engine.habits.enabled)
 
     def toggle_habits():
@@ -7285,6 +7411,11 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         manual_vals["mine"] = tr("，").join(mine_names)
         summary.config(text=rec.get("summary", "").replace(tr("｜"), " · ").replace(tr("网上 "), ""))
         has_brief = show_brief(rec.get("brief"))
+        draw_live(rec.get("wp_series") if has_brief else None)
+        try:
+            ring(rec)
+        except Exception:  # noqa
+            pass
         if has_brief:                              # 战况条已含局势，摘要行收起来省空间
             summary.pack_forget()
         else:
@@ -7459,6 +7590,15 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         except queue.Empty:
             pass
         last_rec = max((i for i, (k, _) in enumerate(msgs) if k == "rec"), default=None)
+        cur = current.get("rec") or {}
+        pi = st.get("push_row")
+        if cur.get("push_until") and pi is not None and pi < len(brief_rows):   # 推塔倒数每次刷新
+            left = cur["push_until"] - time.time()
+            txt = brief_rows[pi][1].cget("text")
+            if left > 0:
+                brief_rows[pi][1].config(text=re.sub(r"\d+(?= ?秒复活| ?s\b)", str(int(left)), txt, count=1))
+            else:
+                brief_rows[pi][1].config(text=tr("敌方快复活了 → 退回塔下"), fg=FG)
         for i, (kind, payload) in enumerate(msgs):
             hold = time.time() < st.get("status_hold", 0)
             if kind == "rec":

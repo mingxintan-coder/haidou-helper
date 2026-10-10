@@ -362,6 +362,18 @@ EN.update({'{0:.1f} 万局': '{0:.1f}0k games', '{0} 局': '{0} games', '{0} {1:
 EN.update({'数据载入中': 'loading data'})
 EN.update({
     "——": " — ",
+    "你死 {0} 次（队友平均 {1:.0f}）→ 别第一个上": "You died {0}× (team avg {1:.0f}) → don't go in first",
+    " · 每死一次 −{0:.0f}%": " · −{0:.0f}% per death",
+    "三选一出现": "Augment choice appears",
+    "声音提示": "Sound cues",
+    "推塔": "Push",
+    "敌方死 {0} 人，{1:.0f} 秒复活 → 推塔！": "{0} enemies dead, back in {1:.0f}s → push!",
+    "敌方快复活了 → 退回塔下": "Enemies respawning → fall back to your tower",
+    "敌方拿到克制你的增幅": "Enemy got an augment that counters you",
+    "残血 → 按": "Low HP → press",
+    "残血按保命键": "Low HP: press your defensive item",
+    "该推塔": "Time to push",
+    " 每座 +{0:.0f}%": " +{0:.0f}% per tower",
     "已并入附带的对局资料：新增 {0} 局": "Merged the bundled game data: +{0} games",
     "自建数据库：选英雄 / 对战中，暂停收集": "Own database: paused during champ select / game",
     "资料还不够：阵亡、胜率曲线、关键时刻会从现在起每局累积，打几局后再看": "Not enough data yet: deaths, win curves and key moments are recorded from now on; check back after a few games",
