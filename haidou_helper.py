@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.9.0"
+APP_VERSION = "2.10.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5067,6 +5067,62 @@ class HabitStore:
                 break
         return n
 
+    @staticmethod
+    def week_start(offset=0):
+        """这周（offset=1 上周）星期一 0 点的时间戳（本机时区）"""
+        lt = time.localtime()
+        today0 = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        return today0 - lt.tm_wday * 86400 - offset * 7 * 86400
+
+    def weekly(self, gd, advisor=None, offset=0):
+        """每周战报：这周（或上周）vs 再前一周 —— 局数、胜率、阵亡、挑战、熟练度、最常玩的英雄、最好的一局、下周重点"""
+        s0 = self.week_start(offset)
+        s1, sp = s0 + 7 * 86400, s0 - 7 * 86400
+        cur = [g for g in self.games if g.get("champ") and s0 <= (g.get("ts") or 0) < s1]
+        prev = [g for g in self.games if g.get("champ") and sp <= (g.get("ts") or 0) < s0]
+        title = tr("【本周战报 {0}–{1}】") if offset == 0 else tr("【上周战报 {0}–{1}】")
+        out = [title.format(time.strftime("%m/%d", time.localtime(s0)), time.strftime("%m/%d", time.localtime(s1 - 1)))]
+        if not cur:
+            out.append(tr("这一周还没有记录的对局"))
+            return out
+
+        def wr(lst):
+            d = [g for g in lst if g.get("win") is not None]
+            return sum(1 for g in d if g["win"]) / len(d) if d else None
+
+        def dd(lst):
+            d = [g["kda"][1] for g in lst if g.get("kda")]
+            return sum(d) / len(d) if d else None
+        w, wp = wr(cur), wr(prev)
+        line = tr("{0} 局，胜率 {1:.0f}%").format(len(cur), (w or 0) * 100)
+        if wp is not None and prev:
+            diff = ((w or 0) - wp) * 100
+            line += tr("（前一周 {0} 局 {1:.0f}%，{2}{3:.0f}）").format(len(prev), wp * 100, "↑" if diff >= 0 else "↓", abs(diff))
+        out.append(line)
+        d, dp = dd(cur), dd(prev)
+        if d is not None:
+            out.append(tr("平均阵亡 {0:.1f} 次").format(d) + (tr("（前一周 {0:.1f}）").format(dp) if dp is not None else ""))
+        res = [r for g in cur for r in g.get("challenge_res") or []]
+        if res:
+            out.append(tr("挑战达成 {0}/{1}").format(sum(1 for r in res if r["ok"]), len(res)))
+        gain = Counter()
+        for g in cur:
+            gain[g["champ"]] += g.get("mastery_gain", 10 + (10 if g.get("win") else 0))
+        c, pts = gain.most_common(1)[0]
+        n_c = [g for g in cur if g["champ"] == c]
+        out.append(tr("玩最多：{0} {1} 局，胜率 {2:.0f}%，熟练度 +{3}").format(gd.champ_name(c), len(n_c), (wr(n_c) or 0) * 100, pts))
+        best = [g for g in cur if g.get("win") and g.get("kda")]
+        if best:
+            b = max(best, key=lambda g: (g["kda"][0] + g["kda"][2]) / max(1, g["kda"][1]))
+            out.append(tr("最好的一局：{0} {1}/{2}/{3}（{4}）").format(gd.champ_name(b["champ"]), *b["kda"], b.get("t", "")[5:16]))
+        try:
+            focus = next((x for x in self.weakness(gd, advisor) if x.startswith(tr("→ 最该先改："))), None)
+            if focus:
+                out.append(tr("下周重点：") + focus.replace(tr("→ 最该先改："), ""))
+        except Exception:  # noqa
+            pass
+        return out
+
     def weakness(self, gd, advisor=None):
         """弱点报告：输在哪个阶段、死得多不多、怎么死的、哪些英雄你玩得比一般人差 → 最该先改的一件事"""
         games = [g for g in self.games if g.get("champ") and g.get("win") is not None]
@@ -7462,6 +7518,44 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         txt.pack(fill="both", expand=True)
         st["hold_until"] = time.time() + 3
     menu.add_command(label=tr("我的战绩…"), command=open_stats)
+
+    def open_weekly(offset_first=0):
+        """每周战报（这周到目前为止 + 上周）"""
+        w = tk.Toplevel(root)
+        w.title(tr("每周战报"))
+        w.attributes("-topmost", True)
+        w.configure(bg=BG)
+        hs = engine.habits
+        order = (1, 0) if offset_first == 1 else (0, 1)
+        text = "\n\n".join("\n".join(hs.weekly(engine.gd, engine.advisor, o)) for o in order)
+        if not hs.enabled:
+            text += "\n\n" + tr("（「我的习惯」关着：新的对局不会记进战绩。⋯ → 我的习惯 可以打开）")
+        txt = tk.Text(w, bg=CARD, fg=FG, font=F["tip"], width=56, height=min(24, text.count("\n") + 2), bd=0,
+                      padx=12, pady=10, wrap="word")
+        txt.insert("1.0", text)
+        txt.config(state="disabled")
+        txt.pack(fill="both", expand=True)
+        st["hold_until"] = time.time() + 3
+    menu.add_command(label=tr("每周战报…"), command=open_weekly)
+
+    def weekly_popup():
+        """新的一周第一次打开：上周有 3 局以上就自动跳出上周战报（一周一次）"""
+        try:
+            import datetime
+            iso = datetime.date.today().isocalendar()
+            wk = "{0}-{1:02d}".format(iso[0], iso[1])
+            c = load_ui_cfg()
+            if c.get("weekly_seen") == wk:
+                return
+            s0 = HabitStore.week_start(1)
+            last = [g for g in engine.habits.games if s0 <= (g.get("ts") or 0) < s0 + 7 * 86400]
+            c["weekly_seen"] = wk
+            save_ui_cfg(c)
+            if len(last) >= 3:
+                open_weekly(1)
+        except Exception:  # noqa
+            log_ui_error()
+    root.after(8000, weekly_popup)
 
 
     def open_riotdb():

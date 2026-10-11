@@ -503,6 +503,23 @@ EN.update({
     '{0} Lv{1}': '{0} Lv{1}',
 })
 
+EN.update({
+    '{0} 局，胜率 {1:.0f}%': '{0} games, win rate {1:.0f}%',
+    '【上周战报 {0}–{1}】': '[Last week {0}–{1}]',
+    '【本周战报 {0}–{1}】': '[This week {0}–{1}]',
+    '下周重点：': 'Focus next week: ',
+    '平均阵亡 {0:.1f} 次': 'Average deaths {0:.1f}',
+    '挑战达成 {0}/{1}': 'Goals completed {0}/{1}',
+    '最好的一局：{0} {1}/{2}/{3}（{4}）': 'Best game: {0} {1}/{2}/{3} ({4})',
+    '每周战报': 'Weekly report',
+    '每周战报…': 'Weekly report…',
+    '玩最多：{0} {1} 局，胜率 {2:.0f}%，熟练度 +{3}': 'Most played: {0}, {1} games, {2:.0f}% wins, mastery +{3}',
+    '这一周还没有记录的对局': 'No recorded games this week',
+    '（「我的习惯」关着：新的对局不会记进战绩。⋯ → 我的习惯 可以打开）': '("My habits" is off: new games aren\'t recorded. Turn it on in ⋯ → My habits)',
+    '（前一周 {0:.1f}）': ' (week before {0:.1f})',
+    '（前一周 {0} 局 {1:.0f}%，{2}{3:.0f}）': ' (week before: {0} games {1:.0f}%, {2}{3:.0f})',
+})
+
 COMBOS_EN = {'Aatrox': {'notes': ['Use E to adjust so all three Q casts land with the sweet spot (outer edge)',
                       'R for speed to stick to targets; heals more the lower you get'],
             'style': "Frontline fighter: go in after they burn CC, don't back off with R up"},
