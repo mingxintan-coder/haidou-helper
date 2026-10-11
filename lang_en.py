@@ -533,6 +533,23 @@ EN.update({
     '自动放推荐装备页到游戏商店': 'Auto-add recommended item page to the shop',
 })
 
+EN.update({
+    '【本局打法】': '[Game plan] ',
+    '你的第 {0} 件「{1}」成型 → 强势期，主动找团': 'Your item #{0} "{1}" is done → power spike, look for fights',
+    '对面 {0} 第 {1} 件「{2}」成型 → 先避开它 2 分钟': 'Enemy {0} finished item #{1} "{2}" → avoid them for 2 minutes',
+    '对面刺客多 → 后排贴着前排走，别落单': "Many enemy assassins → backline stick to the frontline, don't wander",
+    '对面前排厚 → 先打后排，别追坦克': "Tanky enemy frontline → hit their backline, don't chase tanks",
+    '对面开团强 → 站开一点，别被一波开到好几个人': "Strong enemy engage → spread out, don't get multiple people caught",
+    '对面有治疗 → 输出位早点出重伤': 'Enemy has healing → damage dealers get anti-heal early',
+    '对面消耗多 → 别在塔前站着被磨，残血先退，等对面技能交了再进': "Enemy poke heavy → don't stand and get poked; back off when low, go in after their spells",
+    '对面消耗多、我方开团强 → 抱团等开团，别站着被磨血': "They poke, we engage → group up and wait for the engage, don't get chipped",
+    '强势期': 'Spike',
+    '我方开团强、对面没前排 → 看到落单就开': 'We engage well and they lack a frontline → jump on anyone isolated',
+    '我方没有前排 → 别先手进场，等对面交了技能再打': "No frontline on our team → don't go in first; fight after their spells are used",
+    '我方消耗强 → 先磨血再打，别急着开团': "We poke well → whittle them down first, don't rush the engage",
+    '打法': 'Plan',
+})
+
 COMBOS_EN = {'Aatrox': {'notes': ['Use E to adjust so all three Q casts land with the sweet spot (outer edge)',
                       'R for speed to stick to targets; heals more the lower you get'],
             'style': "Frontline fighter: go in after they burn CC, don't back off with R up"},

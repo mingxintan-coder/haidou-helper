@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.11.0"
+APP_VERSION = "2.12.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -2199,6 +2199,29 @@ class Advisor:
                 return (hp["wins"] + 8 * base) / (hp["decided"] + 8), base, hp["decided"]
         return base, base, 0
 
+    def game_plan(self, allies, enemies):
+        """本局打法（开局一句话）：比较双方阵容的开团 / 消耗 / 前排 / 续航 / 刺客，挑最重要的两条"""
+        def prof(team):
+            t = [self.champ_traits(c) for c in team]
+            tags = [set((self.gd.champ(c) or {}).get("tags", [])) for c in team]
+            return {"engage": sum(x["engage"] for x in t), "poke": sum(x["poke"] for x in t),
+                    "front": sum(x["front"] for x in t), "sustain": sum(x["sustain"] for x in t),
+                    "assassin": sum(1 for g in tags if "Assassin" in g), "ap": sum(x["ap"] for x in t)}
+        a, e = prof(allies), prof(enemies)
+        rules = [
+            (a["front"] == 0, 9, tr("我方没有前排 → 别先手进场，等对面交了技能再打")),
+            (e["poke"] >= 2 and a["engage"] >= 2, 8, tr("对面消耗多、我方开团强 → 抱团等开团，别站着被磨血")),
+            (e["poke"] >= 2 and a["engage"] <= 1, 7, tr("对面消耗多 → 别在塔前站着被磨，残血先退，等对面技能交了再进")),
+            (e["engage"] >= 2 and a["sustain"] == 0, 7, tr("对面开团强 → 站开一点，别被一波开到好几个人")),
+            (e["assassin"] >= 2, 6, tr("对面刺客多 → 后排贴着前排走，别落单")),
+            (a["poke"] >= 2 and e["engage"] <= 1, 6, tr("我方消耗强 → 先磨血再打，别急着开团")),
+            (e["front"] >= 2 and a["ap"] + 0 >= 0, 5, tr("对面前排厚 → 先打后排，别追坦克")),
+            (a["engage"] >= 2 and e["front"] <= 1, 5, tr("我方开团强、对面没前排 → 看到落单就开")),
+            (e["sustain"] >= 1, 3, tr("对面有治疗 → 输出位早点出重伤")),
+        ]
+        picks = [t for ok, _, t in sorted(rules, key=lambda r: -r[1]) if ok][:2]
+        return picks
+
     def skill_order(self, cid):
         """网上最多人用的加点顺序（例：['Q','W','E']）；胜率高 1 个百分点以上、样本够多的顺序优先"""
         c = self.gd.champ(cid) or {}
@@ -4093,6 +4116,47 @@ class Engine:
             notes.append(tr("连败 {0}").format(-i["streak"]))
         return tr("，").join(notes)
 
+    def plan_rows(self, state):
+        """本局打法：开局 3 分钟内显示在战况条（玩法页一直有）"""
+        g = self.cur_game
+        if not g:
+            return []
+        if "plan" not in g:
+            try:
+                g["plan"] = self.advisor.game_plan([p.cid for p in [state[2]] + state[3]], [p.cid for p in state[4]])
+            except Exception:  # noqa
+                g["plan"] = []
+        if state[2].game_time > 180 or not g["plan"]:
+            return []
+        return [(tr("打法"), tr("；").join(g["plan"]), False)]
+
+    def spike_rows(self, state):
+        """强势期：你做出第 2 / 3 件大件 → 主动找团（90 秒）；对面做出第 2 / 3 件 → 先避开（120 秒）"""
+        g = self.cur_game
+        if not g:
+            return []
+        gd = self.gd
+        seen = g.setdefault("spike_seen", {})
+        alerts = g.setdefault("spikes", [])
+        now = time.time()
+        me = state[2]
+        for p in [me] + state[4]:
+            big = [i for i in p.items if gd.is_completed(i) and not gd.is_boots(i) and gd.item_price(i) >= 2200]
+            n = len(big)
+            key = p.name
+            old = seen.get(key)
+            seen[key] = n
+            if old is None or n <= old or n not in (2, 3):
+                continue                                  # 第一次看到（刚连上）不算；只在第 2、3 件成型那一下提醒
+            item = gd.item_name(big[-1])
+            if p is me:
+                alerts.append((now + 90, tr("你的第 {0} 件「{1}」成型 → 强势期，主动找团").format(n, item), False))
+            else:
+                alerts.append((now + 120, tr("对面 {0} 第 {1} 件「{2}」成型 → 先避开它 2 分钟").format(
+                    gd.champ_name(p.cid), n, item), True))
+        alerts[:] = [a for a in alerts if a[0] > now][-3:]
+        return [(tr("强势期"), a[1], a[2]) for a in alerts[-2:]]
+
     def skill_row(self, raw, state):
         """有技能点没点时：战况条「加点」告诉你这次点哪个"""
         me = state[2]
@@ -4464,7 +4528,7 @@ class Engine:
         except Exception:  # noqa
             g["mvp"] = []
         full = dict(g)                                 # 给背景重算用（含名单、击杀事件）
-        for k in ("roster", "kills", "was_dead", "wp"):  # 只在这局分析用，不存进习惯记录（太大）
+        for k in ("roster", "kills", "was_dead", "wp", "spike_seen", "spikes"):  # 只在这局分析用，不存进习惯记录（太大）
             g.pop(k, None)
         mv_full = g.get("mvp") or []
         g["mvp"] = [dict({k: m[k] for k in ("champ", "k", "d", "a", "lines")}, build=[i for i, _ in m.get("build", [])][:6])
@@ -4892,6 +4956,9 @@ class Engine:
             dr = self.death_row(state)
             if dr and isinstance(rec.get("brief"), list):
                 rec["brief"].insert(1 if wp else 0, dr)
+            for row in reversed(self.plan_rows(state) + self.spike_rows(state)):
+                rec["brief"].insert((1 if wp else 0), row)
+            rec["plan"] = (self.cur_game or {}).get("plan")
             sk = self.skill_row(raw, state)
             if sk and isinstance(rec.get("brief"), list):
                 rec["brief"].insert((1 if wp else 0), sk)
@@ -8059,6 +8126,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         g = rec.get("guide") or {}
         co = rec.get("coach") or {}
         lines = []
+        if rec.get("plan"):                          # 本局打法（双方阵容比较）
+            lines.append(tr("【本局打法】") + tr("；").join(rec["plan"]))
+            lines.append("")
         if co.get("items") or co.get("augs"):        # 教学：怎么打出效果
             lines.append(tr("【怎么打出效果】"))
             lines += [tr("按 {0} {1}：{2}").format(k, n, tip) for k, n, tip in co.get("items", [])]
