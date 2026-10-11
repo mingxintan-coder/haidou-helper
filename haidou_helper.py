@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.12.0"
+APP_VERSION = "2.13.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -1044,6 +1044,27 @@ AUG_EXTRA_TAGS = {
 }
 
 
+RANGE_AUG_RE = re.compile(r"(增加|获得|\+)\s*[\d /]+攻击距离|攻击距离\s*\+|\d{3,}距离(之外|以外)|"
+                          r"(?i:attack range|beyond \d+ range)")
+
+
+def aug_conflict(a, my_augs):
+    """增幅之间互相抵消：「成为近战」和「加攻击距离 / 远距离才有效」不要一起拿。回传说明文字或 None"""
+    def melee(x):
+        return x.get("id") == 1134 or bool(MELEE_AUG_RE.search(x.get("desc", "")))
+
+    def ranged(x):
+        return bool(RANGE_AUG_RE.search(x.get("desc", "")))
+    for m in my_augs:
+        if m.get("name") == a.get("name"):
+            continue
+        if melee(a) and ranged(m):
+            return tr("和已选「{0}」冲突：变近战后攻击距离 / 远距离效果就没了").format(m["name"])
+        if ranged(a) and melee(m):
+            return tr("和已选「{0}」冲突：你已经是近战，攻击距离 / 远距离效果用不上").format(m["name"])
+    return None
+
+
 def make_aug(name, desc, rarity):
     tags = keyword_tags(name + " " + desc)
     for k, v in AUG_EXTRA_TAGS.get(name, {}).items():
@@ -1653,7 +1674,8 @@ class Advisor:
            （和数据同一个量级：常见装备之间真正的差距大约 ±2%）"""
         g = min(1.0, max(0.0, (fit - 0.3) / 0.4)) if gate_fit else 1.0
         v = 6 * sum(f * (g if f > 0 else 1) for f, _ in factors) + fit_w * (fit - fit_mid)
-        return max(-cap, min(cap, v))
+        # 软上限（2.13）：以前是硬切在 ±cap，好几件同时顶到 +3 就排不出先后，推荐会在不同路线之间乱跳
+        return cap * math.tanh(v / cap)
 
     def bal(self, cid, key):
         """海斗平衡调整（例如 damageDealt -0.1 表示造成伤害 -10%）"""
@@ -2010,6 +2032,13 @@ class Advisor:
         crit_now = float(s.get("critChance", 0) or 0)
         out = []
         allowed = self.stats.item_allow if self.stats else None   # 海斗实际商店清单
+        # 出装方向（2.13）：已经出的大件合起来是什么路线（坦 / 物理 / 法术 / 攻速…）；英雄本身打什么伤害
+        owned_big = [i for i in me.items if gd.is_completed(i) and not gd.is_boots(i)]
+        owned_dir = self.rule_vec(norm({d: v for d, v in self.items_profile(owned_big).items() if d in BUILD_DIMS}), rules) \
+            if len(owned_big) >= 2 else None
+        cp = self.rule_vec(norm({d: v for d, v in self.champ_profile(me.cid).items() if d in BUILD_DIMS}), rules)
+        champ_ad = cp.get("AD", 0) + cp.get("CRIT", 0) + cp.get("LETHAL", 0)
+        champ_ap = cp.get("AP", 0) + cp.get("MPEN", 0)
         for iid in gd.candidate_items(map_id, allowed):
             if gd.item_name(iid) in owned_names:
                 continue
@@ -2034,6 +2063,20 @@ class Advisor:
                 factors.append((-0.15, tr("攻速已接近上限")))
             rfac, neutral = self.rule_factors(rules, raw_nv, nv, base_id, crit_now)
             factors += rfac
+            # 伤害类型不对：物理英雄出法强装（或反过来），属性一半白费
+            i_ad = nv.get("AD", 0) + nv.get("CRIT", 0) + nv.get("LETHAL", 0)
+            i_ap = nv.get("AP", 0) + nv.get("MPEN", 0)
+            if i_ap > 0.35 and i_ap > i_ad and champ_ap < 0.25 * champ_ad:
+                factors.append((-0.4, tr("你打的是物理伤害，这件的法强用不上")))
+            elif i_ad > 0.35 and i_ad > i_ap and champ_ad < 0.25 * champ_ap:
+                factors.append((-0.4, tr("你打的是魔法伤害，这件的物攻用不上")))
+            # 出装方向一致：已经出了 2 件以上大件，跟它们方向差很多的扣分（针对对面的保命 / 克制装不算）
+            if owned_dir:
+                coh = cosine(owned_dir, nv)
+                if coh < 0.25 and not any(f > 0.05 for f, _ in factors):
+                    factors.append((-0.2, tr("跟你已经出的装备方向不同（会变成两边都不强）")))
+                elif coh > 0.6:
+                    factors.append((0.05, tr("延续你现在的出装路线")))
             syn = [a["name"] for a in my_augs if not (AUG_RULES.get(a.get("id")) or {}).get("crit_cap")
                    and cosine(norm((AUG_RULES.get(a.get("id")) or {}).get("prof") or a["tags"]), nv) > 0.5]
             if syn:
@@ -2553,6 +2596,9 @@ class Advisor:
         owned = self.items_profile(me.items)
         if owned and bv and cosine(owned, bv) > 0.6:
             factors.append((0.06, tr("和你现有装备属性吻合")))
+        conflict = aug_conflict(a, my_augs)
+        if conflict:                     # 互相抵消的增幅（变近战 vs 加攻击距离 / 远距离任务）
+            factors.append((-0.6, conflict))
         champ = (self.gd.champ(me.cid) or {}).get("id", me.cid)
         combo = getattr(self.gd, "am_combos", {}).get((str(champ).lower(), a["name"]))
         combo_f = (0.15, tr("arammayhem.com 标注为这个英雄的强力组合")) if combo == "good" else \
@@ -4296,6 +4342,65 @@ class Engine:
                 text += tr(" · 每死一次 −{0:.0f}%").format(per * 100)
         return (tr("少死"), text, True)
 
+    ITEM_KIND = (("ap", ("AP", "MPEN"), "法术"), ("ad", ("AD", "CRIT", "LETHAL"), "物理"),
+                 ("as", ("AS", "ONHIT"), "攻速"), ("tank", ("ARMOR", "MR", "HP"), "坦"), ("sup", ("HEALSHIELD",), "辅助"))
+
+    def item_kind(self, iid):
+        """一件大件属于哪条路线：法术 / 物理 / 攻速 / 坦 / 辅助（看属性比重最大的那组）"""
+        v = norm({d: x for d, x in self.gd.item_vec(iid)[0].items() if d in BUILD_DIMS})
+        best = max(self.ITEM_KIND, key=lambda k: sum(v.get(d, 0) for d in k[1]))
+        return best[0], tr(best[2])
+
+    def build_audit(self, g):
+        """赛后：出装时间线 + 增幅，检查互相矛盾的地方 ——
+             ① 增幅互相抵消（变近战 vs 加攻击距离）② 装备的伤害类型跟英雄不合（物理英雄出法强装）
+             ③ 出装路线来回切换（坦 → 法术 → 坦…）"""
+        ros = g.get("roster") or {}
+        me = next((r for r in ros.values() if r.get("me")), None)
+        if not me:
+            return []
+        gd, adv = self.gd, self.advisor
+        items = [(i, m) for i, m in me.get("items", []) if gd.is_completed(i) and not gd.is_boots(i)]
+        out = []
+        if items:
+            out.append(tr("出装时间线：") + " → ".join("{0}′{1}".format(m, gd.item_name(i)) for i, m in items))
+        augs = [adv.find_aug(n) for n in g.get("augs", [])]
+        augs = [a for a in augs if a]
+        issues = []
+        for k, a in enumerate(augs):
+            c = aug_conflict(a, augs[:k])
+            if c:
+                issues.append(tr("增幅「{0}」").format(a["name"]) + c)
+        conv = {a.get("id") for a in augs}
+        cp = norm({d: v for d, v in adv.champ_profile(g["champ"]).items() if d in BUILD_DIMS})
+        ad = cp.get("AD", 0) + cp.get("CRIT", 0) + cp.get("LETHAL", 0)
+        ap = cp.get("AP", 0) + cp.get("MPEN", 0)
+        if 1206 in conv:                       # 转换恶作剧：魔攻变物攻
+            ad, ap = ad + ap, 0
+        if 1205 in conv:                       # 灵活转换：物攻变魔攻
+            ad, ap = 0, ad + ap
+        kinds = []
+        for i, m in items:
+            k, label = self.item_kind(i)
+            kinds.append((k, label, i))
+            if k == "ap" and ap < 0.25 * ad:
+                issues.append(tr("「{0}」是法强装，但你打的是物理伤害").format(gd.item_name(i)))
+            elif k == "ad" and ad < 0.25 * ap:
+                issues.append(tr("「{0}」是物攻装，但你打的是魔法伤害").format(gd.item_name(i)))
+        seq = []
+        for k, label, i in kinds:
+            if not seq or seq[-1][0] != k:
+                seq.append((k, label))
+        switches = len(seq) - 1
+        if len(kinds) >= 3 and switches >= 2:          # 来回换（法术 → 坦 → 法术）或三条线各做一点
+            issues.append(tr("出装路线换了 {0} 次（{1}）：每条线都只做一半，哪边都不强").format(
+                switches, " → ".join(lbl for _, lbl in seq)))
+        if issues:
+            out.append(tr("矛盾：") + tr("；").join(issues[:4]))
+        elif items:
+            out.append(tr("出装和增幅方向一致"))
+        return out
+
     @staticmethod
     def death_review(g):
         """赛后：你每次阵亡的情况（团战第一个倒下 / 被 4 人以上围杀 / 落单被抓）＋最常杀你的人"""
@@ -4520,6 +4625,10 @@ class Engine:
             self.finish_challenges(g)
         except Exception:  # noqa
             pass
+        try:
+            g["build_audit"] = self.build_audit(g)
+        except Exception:  # noqa
+            g["build_audit"] = []
         ser = g.get("wp") or []
         if len(ser) >= 6:                              # 胜率曲线（复盘画图用；每 20 秒一点，留在战绩里）
             g["curve"] = [[x[0], x[1]] for i, x in enumerate(ser) if i % 2 == 0 or i == len(ser) - 1]
@@ -4754,6 +4863,8 @@ class Engine:
                     break
         if practice:
             detail = (detail + "\n" if detail else "") + tr("下局练习：") + practice
+        for line in g.get("build_audit") or []:          # 出装 / 增幅的时间线和矛盾
+            detail = (detail + "\n" if detail else "") + line
         cres = g.get("challenge_res") or []
         if cres:
             bits = [("✓ " if r["ok"] else "✗ ") + tr(Engine.CHALLENGE_TEXT[r["k"]]).format(r["target"]) +

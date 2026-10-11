@@ -550,6 +550,23 @@ EN.update({
     '打法': 'Plan',
 })
 
+EN.update({
+    '「{0}」是法强装，但你打的是物理伤害': '"{0}" is an AP item, but you deal physical damage',
+    '「{0}」是物攻装，但你打的是魔法伤害': '"{0}" is an AD item, but you deal magic damage',
+    '你打的是物理伤害，这件的法强用不上': "You deal physical damage; this item's AP is wasted",
+    '你打的是魔法伤害，这件的物攻用不上': "You deal magic damage; this item's AD is wasted",
+    '出装和增幅方向一致': 'Items and augments point the same way',
+    '出装时间线：': 'Build timeline: ',
+    '出装路线换了 {0} 次（{1}）：每条线都只做一半，哪边都不强': 'Build path switched {0}× ({1}): each path half-finished, strong at none',
+    '和已选「{0}」冲突：你已经是近战，攻击距离 / 远距离效果用不上': 'Conflicts with "{0}": you\'re melee now, range bonuses are wasted',
+    '和已选「{0}」冲突：变近战后攻击距离 / 远距离效果就没了': 'Conflicts with "{0}": becoming melee wastes its range effects',
+    '增幅「{0}」': 'Augment "{0}" ',
+    '延续你现在的出装路线': 'continues your current build path',
+    '矛盾：': 'Conflicts: ',
+    '跟你已经出的装备方向不同（会变成两边都不强）': 'different direction from your items (ends up strong at neither)',
+    '法术': 'AP',
+})
+
 COMBOS_EN = {'Aatrox': {'notes': ['Use E to adjust so all three Q casts land with the sweet spot (outer edge)',
                       'R for speed to stick to targets; heals more the lower you get'],
             'style': "Frontline fighter: go in after they burn CC, don't back off with R up"},
