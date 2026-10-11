@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.10.0"
+APP_VERSION = "2.11.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -2199,6 +2199,48 @@ class Advisor:
                 return (hp["wins"] + 8 * base) / (hp["decided"] + 8), base, hp["decided"]
         return base, base, 0
 
+    def skill_order(self, cid):
+        """网上最多人用的加点顺序（例：['Q','W','E']）；胜率高 1 个百分点以上、样本够多的顺序优先"""
+        c = self.gd.champ(cid) or {}
+        cs = self.stats.get(c.get("key"), light=True) if self.stats and c.get("key") else None
+        if not cs or not cs.get("skills"):
+            return None
+        pop = max(cs["skills"], key=lambda x: x[2])
+        best = max((x for x in cs["skills"] if x[3] >= 20000), key=lambda x: x[1], default=None)
+        pick = best if best and best[1] - pop[1] >= 0.01 else pop
+        ks = [k for k in pick[0].split(">") if k in ("Q", "W", "E")]
+        return ks if len(ks) == 3 else None
+
+    @staticmethod
+    def next_skill(level, lv, order):
+        """该升哪个技能：6/11/16 级先升大招；3 级前先把三个小技能各点 1；之后照「主 > 副 > 第三」点满（小技能上限 = 等级的一半，最多 5）"""
+        spent = sum(lv.get(k, 0) for k in ("Q", "W", "E", "R"))
+        if level <= spent:
+            return None
+        r_cap = 3 if level >= 16 else 2 if level >= 11 else 1 if level >= 6 else 0
+        if lv.get("R", 0) < r_cap:
+            return "R"
+        cap = min(5, (level + 1) // 2)
+        if level <= 3:
+            for k in order:
+                if lv.get(k, 0) == 0:
+                    return k
+        for k in order:
+            if lv.get(k, 0) < cap:
+                return k
+        return None
+
+    def spells_pick(self, cid):
+        """推荐的召唤师技能（两个编号）：样本够多里胜率最高的；没有就最多人用的"""
+        c = self.gd.champ(cid) or {}
+        cs = self.stats.get(c.get("key"), light=True) if self.stats and c.get("key") else None
+        if not cs or not cs.get("summoners"):
+            return None
+        pop = max(cs["summoners"], key=lambda x: x[2])
+        best = max((x for x in cs["summoners"] if x[3] >= 20000), key=lambda x: x[1], default=None)
+        pick = best if best and best[1] - pop[1] >= 0.01 else pop
+        return pick[0] if len(pick[0]) == 2 else None
+
     def item_set_for(self, cid):
         """给游戏商店的「推荐装备」页：按网上数据（同一件比较）挑每个阶段最好的几件 + 鞋子。还没载入数据就回传 None"""
         gd = self.gd
@@ -3686,10 +3728,19 @@ class Engine:
         if cred is None:
             self.find_lcu_async()                         # 背景找客户端连接资讯（不卡住这里）
             return None
+        if getattr(self, "auto_accept", False):          # 自动接受对局（⋯ 里可以关）
+            try:
+                rc = lcu_get("/lol-matchmaking/v1/ready-check", cred, timeout=2)
+                if isinstance(rc, dict) and rc.get("state") == "InProgress" and rc.get("playerResponse") == "None":
+                    lcu_send("POST", "/lol-matchmaking/v1/ready-check/accept", cred)
+                    self.q.put(("data", tr("已自动接受对局")))
+            except Exception:  # noqa
+                pass
         try:
             sess = lcu_get("/lol-champ-select/v1/session", cred, timeout=3)
         except urllib.error.HTTPError:
             self._cs_last = None                         # 404＝没在选英雄
+            self._spells_done = None
             return None
         except Exception:  # noqa                         客户端关了 / 换了端口
             self._lcu_cred, self._cs_last = None, None
@@ -3804,7 +3855,29 @@ class Engine:
             pool = list(self.gd.champs and [c["id"] for c in self.gd.champs.values()])
         others = [c for c in cands if c != mine]
         bench_best = max(((c, self.advisor.champ_win_est(c)[0]) for c in others), key=lambda x: x[1], default=None)
-        if mine and getattr(self, "_itemset_for", None) != mine and not getattr(self, "_itemset_busy", False):
+        spells = self.advisor.spells_pick(mine) if mine else None
+        if spells and getattr(self, "auto_spells", True) and getattr(self, "_spells_done", None) != mine:
+            me_cell = next((m for m in sess.get("myTeam", []) or [] if m.get("cellId") == cell), {})
+            have = [me_cell.get("spell1Id"), me_cell.get("spell2Id")]
+            want = list(spells)
+            if set(have) != set(want):
+                # 保留你原来的键位：已经带着的那个技能留在原位，另一个换掉
+                new = list(have)
+                for sp in want:
+                    if sp not in new:
+                        slot = next((k for k in (0, 1) if new[k] not in want), None)
+                        if slot is not None:
+                            new[slot] = sp
+                try:
+                    lcu_send("PATCH", "/lol-champ-select/v1/session/my-selection", self._lcu_cred,
+                             {"spell1Id": new[0], "spell2Id": new[1]})
+                    sn = (self.advisor.stats.spell_names or {}) if self.advisor.stats else {}
+                    self.q.put(("data", tr("已换成推荐的召唤师技能：{0}").format(tr("＋").join(sn.get(i, str(i)) for i in new))))
+                except Exception:  # noqa
+                    pass
+            self._spells_done = mine
+        if mine and getattr(self, "auto_itemset", True) and getattr(self, "_itemset_for", None) != mine \
+                and not getattr(self, "_itemset_busy", False):
             self._itemset_busy = True
             threading.Thread(target=self.write_item_set, args=(mine,), daemon=True, name="itemset").start()
         rr = sess.get("rerollsRemaining")
@@ -3942,10 +4015,14 @@ class Engine:
                 hist = lcu_get(f"/lol-match-history/v1/products/lol/{pu}/matches?begIndex=0&endIndex=20", cred, timeout=15)
                 games = ((hist or {}).get("games") or {}).get("games") or []
                 info = self.player_intel(games, cid)
-                info.update({"champ": champ, "ally": p in my_team,
+                info.update({"champ": champ, "ally": p in my_team, "puuid": pu,
+                             "gids": [x.get("gameId") for x in games if x.get("gameId")],
                              "name": p.get("gameName") or p.get("summonerName") or ""})
-                info["note"] = self.intel_note(info)
                 out.append(info)
+            self.mark_parties(out, me_gids=None)
+            for info in out:
+                info["note"] = self.intel_note(info)
+                info.pop("gids", None)
             g["intel"] = out
             self.q.put(("intel", out))
             self.wake.set()
@@ -3974,8 +4051,36 @@ class Engine:
                 "champ_n": len(on), "champ_w": sum(1 for g in on if won(g)), "streak": streak}
 
     @staticmethod
+    def mark_parties(players, me_gids=None):
+        """组队识别：同一队的两个人，最近 20 局里有 ≥2 局是同一场（排除这局）→ 一起排的；连起来成车队"""
+        n = len(players)
+        parent = list(range(n))
+
+        def find(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+        for i in range(n):
+            for j in range(i + 1, n):
+                a, b = players[i], players[j]
+                if a["ally"] != b["ally"]:
+                    continue
+                if len(set(a.get("gids") or []) & set(b.get("gids") or [])) >= 2:
+                    parent[find(i)] = find(j)
+        groups = {}
+        for i in range(n):
+            groups.setdefault(find(i), []).append(i)
+        for idx in groups.values():
+            for i in idx:
+                players[i]["party"] = len(idx) if len(idx) >= 2 else 0
+                players[i]["party_with"] = [players[k].get("champ") for k in idx if k != i]
+
+    @staticmethod
     def intel_note(i):
         notes = []
+        if i.get("party"):
+            notes.append(tr("{0} 人车队").format(i["party"]))
         if i["may_n"] >= 8 and i["may_w"] / i["may_n"] >= 0.6:
             notes.append(tr("海斗高手（近 20 局海斗 {0}/{1} 胜）").format(i["may_w"], i["may_n"]))
         if i["champ_n"] >= 5:
@@ -3988,12 +4093,33 @@ class Engine:
             notes.append(tr("连败 {0}").format(-i["streak"]))
         return tr("，").join(notes)
 
+    def skill_row(self, raw, state):
+        """有技能点没点时：战况条「加点」告诉你这次点哪个"""
+        me = state[2]
+        ab = (raw.get("activePlayer") or {}).get("abilities") or {}
+        lv = {k: int((ab.get(k) or {}).get("abilityLevel") or 0) for k in ("Q", "W", "E", "R")}
+        if not any(lv.values()) and me.level > 1 and not ab:
+            return None
+        order = self.advisor.skill_order(me.cid)
+        if not order:
+            return None
+        k = self.advisor.next_skill(me.level, lv, order)
+        if not k:
+            return None
+        name = (ab.get(k) or {}).get("displayName") or ""
+        return (tr("加点"), tr("升 {0}{1}（主 {2}）").format(k, ("「" + name + "」") if name else "", " > ".join(order)), False)
+
     def intel_row(self):
         """战况条「情报」：最值得注意的敌人（高手 / 本命英雄）"""
         g = self.cur_game
         intel = (g or {}).get("intel") or []
         threats = [i for i in intel if not i["ally"] and i["champ"] and
                    ((i["may_n"] >= 8 and i["may_w"] / i["may_n"] >= 0.6) or i["champ_n"] >= 5)]
+        party = max((i.get("party", 0) for i in intel if not i["ally"]), default=0)
+        if not threats and party >= 2:
+            names = tr("、").join(self.gd.champ_name(i["champ"]) for i in intel
+                                 if not i["ally"] and i.get("party") == party and i["champ"])
+            return (tr("情报"), tr("对面 {0} 是 {1} 人车队 → 配合好，别落单").format(names, party), False)
         if not threats:
             return None
         threats.sort(key=lambda i: -(i["champ_n"] + i["may_w"]))
@@ -4766,6 +4892,9 @@ class Engine:
             dr = self.death_row(state)
             if dr and isinstance(rec.get("brief"), list):
                 rec["brief"].insert(1 if wp else 0, dr)
+            sk = self.skill_row(raw, state)
+            if sk and isinstance(rec.get("brief"), list):
+                rec["brief"].insert((1 if wp else 0), sk)
             ir = self.intel_row()
             if ir and isinstance(rec.get("brief"), list):
                 rec["brief"].append(ir)
@@ -7485,6 +7614,27 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         snd_vars[kind] = tk.BooleanVar(value=snd_cfg.get(kind, True))
         sm.add_checkbutton(label=label, variable=snd_vars[kind], command=lambda k=kind: toggle_sound(k))
     menu.add_cascade(label=tr("声音提示"), menu=sm)
+    am = tk.Menu(menu, tearoff=0, bg=CARD, fg=FG, activebackground="#2b3a57", activeforeground=FG)
+    auto_cfg = dict({"accept": True, "spells": True, "itemset": True}, **(load_ui_cfg().get("auto") or {}))
+    auto_vars = {}
+
+    def apply_auto():
+        engine.auto_accept = bool(auto_cfg["accept"])
+        engine.auto_spells = bool(auto_cfg["spells"])
+        engine.auto_itemset = bool(auto_cfg["itemset"])
+
+    def toggle_auto_opt(k):
+        auto_cfg[k] = bool(auto_vars[k].get())
+        c = load_ui_cfg()
+        c["auto"] = dict(auto_cfg)
+        save_ui_cfg(c)
+        apply_auto()
+    for k, label in (("accept", tr("自动接受对局")), ("spells", tr("自动换成推荐的召唤师技能")),
+                     ("itemset", tr("自动放推荐装备页到游戏商店"))):
+        auto_vars[k] = tk.BooleanVar(value=auto_cfg[k])
+        am.add_checkbutton(label=label, variable=auto_vars[k], command=lambda k=k: toggle_auto_opt(k))
+    menu.add_cascade(label=tr("自动操作"), menu=am)
+    apply_auto()
     habits_var = tk.BooleanVar(value=engine.habits.enabled)
 
     def toggle_habits():

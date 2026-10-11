@@ -520,6 +520,19 @@ EN.update({
     '（前一周 {0} 局 {1:.0f}%，{2}{3:.0f}）': ' (week before: {0} games {1:.0f}%, {2}{3:.0f})',
 })
 
+EN.update({
+    '{0} 人车队': '{0}-stack premade',
+    '加点': 'Skill',
+    '升 {0}{1}（主 {2}）': 'Level {0}{1} (max {2})',
+    '对面 {0} 是 {1} 人车队 → 配合好，别落单': 'Enemy {0} are a {1}-stack premade → stay grouped',
+    '已换成推荐的召唤师技能：{0}': 'Switched to recommended summoner spells: {0}',
+    '已自动接受对局': 'Match auto-accepted',
+    '自动换成推荐的召唤师技能': 'Auto-set recommended summoner spells',
+    '自动接受对局': 'Auto-accept matches',
+    '自动操作': 'Automation',
+    '自动放推荐装备页到游戏商店': 'Auto-add recommended item page to the shop',
+})
+
 COMBOS_EN = {'Aatrox': {'notes': ['Use E to adjust so all three Q casts land with the sweet spot (outer edge)',
                       'R for speed to stick to targets; heals more the lower you get'],
             'style': "Frontline fighter: go in after they burn CC, don't back off with R up"},
