@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.8.1"
+APP_VERSION = "2.9.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -2199,6 +2199,40 @@ class Advisor:
                 return (hp["wins"] + 8 * base) / (hp["decided"] + 8), base, hp["decided"]
         return base, base, 0
 
+    def item_set_for(self, cid):
+        """给游戏商店的「推荐装备」页：按网上数据（同一件比较）挑每个阶段最好的几件 + 鞋子。还没载入数据就回传 None"""
+        gd = self.gd
+        c = gd.champ(cid) or {}
+        cs = self.stats.get(c.get("key")) if self.stats and c.get("key") else None
+        if not cs or cs.get("light"):
+            return None                              # 完整数据还在下载：下一秒再试
+        allowed = self.stats.item_allow if self.stats else None
+        cands = [i for i in gd.candidate_items(ITEM_MAP["aram"], allowed) if gd.is_completed(i)]
+        blocks, used = [], set()
+        for nslot, title in ((1, tr("第 1 件")), (2, tr("第 2 件")), (3, tr("第 3 件")), (4, tr("后期"))):
+            scored = []
+            for i in cands:
+                if gd.is_boots(i) or i in used:
+                    continue
+                de = self.data_effect_item(i, cs, nslot, [])
+                if de.get("has"):
+                    scored.append((de["d"], i))
+            scored.sort(reverse=True)
+            pick = [i for _, i in scored[:4]]
+            used.update(pick[:2])
+            if pick:
+                blocks.append((title, pick))
+        boots = []
+        for i in cands:
+            if gd.is_boots(i) and gd.item_price(i) >= 900:
+                de = self.data_effect_item(i, cs, 2, [])
+                if de.get("has"):
+                    boots.append((de["d"], i))
+        boots.sort(reverse=True)
+        if boots:
+            blocks.insert(1, (tr("鞋子"), [i for _, i in boots[:3]]))
+        return blocks or None
+
     def reroll_advice(self, mine, pool, rerolls, bench_best=None):
         """要不要重骰：重骰＝从你能用的英雄里随机换一个，期望胜率＝这些英雄预估胜率的平均。
            你现在的英雄比期望低 1 个百分点以上 → 建议重骰（备选席有更好的就先换备选席）"""
@@ -3770,6 +3804,9 @@ class Engine:
             pool = list(self.gd.champs and [c["id"] for c in self.gd.champs.values()])
         others = [c for c in cands if c != mine]
         bench_best = max(((c, self.advisor.champ_win_est(c)[0]) for c in others), key=lambda x: x[1], default=None)
+        if mine and getattr(self, "_itemset_for", None) != mine and not getattr(self, "_itemset_busy", False):
+            self._itemset_busy = True
+            threading.Thread(target=self.write_item_set, args=(mine,), daemon=True, name="itemset").start()
         rr = sess.get("rerollsRemaining")
         try:
             reroll = self.advisor.reroll_advice(mine, pool, rr if isinstance(rr, int) else
@@ -3778,6 +3815,39 @@ class Engine:
             reroll = None
         return {"cands": ranked, "cand_ids": cands, "team_ids": team, "needs": needs, "mine": mine, "subset": subset_c,
                 "bench_enabled": bool(sess.get("benchEnabled", True)), "reroll": reroll}
+
+    def write_item_set(self, champ):
+        """把推荐出装写进游戏商店的「推荐装备」页（客户端 /lol-item-sets）：只在海斗地图、只给这个英雄；
+           只改「海斗助手」自己那一页，你自己做的装备页不动"""
+        try:
+            blocks = self.advisor.item_set_for(champ)
+            if not blocks:
+                return                                      # 数据还没好：下一次选英雄刷新时再试
+            cred = getattr(self, "_lcu_cred", None) or lcu_credentials()
+            if not cred:
+                return
+            summ = lcu_get("/lol-summoner/v1/current-summoner", cred, timeout=5) or {}
+            sid = summ.get("summonerId")
+            if not sid:
+                return
+            path = f"/lol-item-sets/v1/item-sets/{sid}/sets"
+            cur = lcu_get(path, cred, timeout=5) or {}
+            sets = [x for x in cur.get("itemSets") or [] if not str(x.get("uid", "")).startswith("haidou-")]
+            c = self.gd.champ(champ) or {}
+            sets.insert(0, {
+                "uid": "haidou-" + str(c.get("id", champ)).lower(), "title": tr("海斗助手 · {0}").format(c.get("name", champ)),
+                "associatedChampions": [int(c.get("key", 0))], "associatedMaps": [12], "map": "any", "mode": "any",
+                "type": "custom", "sortrank": 0, "startedFrom": "blank", "preferredItemSlots": [],
+                "blocks": [{"type": title, "hideIfSummonerSpell": "", "showIfSummonerSpell": "",
+                            "items": [{"id": str(i), "count": 1} for i in items]} for title, items in blocks]})
+            body = {"accountId": summ.get("accountId", sid), "itemSets": sets, "timestamp": int(time.time() * 1000)}
+            lcu_send("PUT", path, cred, body)
+            self._itemset_for = champ
+            self.q.put(("data", tr("已把 {0} 的推荐出装放进游戏商店（推荐装备页）").format(c.get("name", champ))))
+        except Exception:  # noqa
+            log_crash("item set failed", sys.exc_info())
+        finally:
+            self._itemset_busy = False
 
     def track_game(self, raw, state, rec):
         """记下这局的英雄、成品装备、已选增幅、三选一出现过的增幅；读到 GameEnd 就存起来"""
@@ -3796,6 +3866,12 @@ class Engine:
         if g is None or g["champ"] != champ:
             g = self.cur_game = {"champ": champ, "t": time.strftime("%Y-%m-%d %H:%M"), "ts": time.time(), "items": [],
                                  "augs": [], "offered": [], "win": None, "len": 0}
+            try:
+                g["challenges"] = self.pick_challenges()
+            except Exception:  # noqa
+                g["challenges"] = []
+            if not isinstance(self.source, MockGame):
+                threading.Thread(target=self.fetch_intel, args=(g,), daemon=True, name="intel").start()
         g["len"] = int(me.game_time)
         try:
             self.track_roster(g, raw, [me] + state[3] + state[4], me)
@@ -3836,6 +3912,153 @@ class Engine:
             for a in names:
                 if a not in g["offered"]:
                     g["offered"].append(a)
+
+    def fetch_intel(self, g):
+        """队友 / 对手情报（像 Porofessor）：从客户端读这局 10 个人的最近 20 局 —— 海斗胜率、这个英雄玩过几次、连胜连败"""
+        try:
+            cred = getattr(self, "_lcu_cred", None) or lcu_credentials()
+            if not cred:
+                return
+            sess = lcu_get("/lol-gameflow/v1/session", cred, timeout=10) or {}
+            try:
+                write_json(os.path.join(APP_DIR, "riotdb", "client_sample_session.json"), sess)
+            except OSError:
+                pass
+            gdat = sess.get("gameData") or {}
+            me = (lcu_get("/lol-summoner/v1/current-summoner", cred, timeout=10) or {}).get("puuid")
+            t1, t2 = gdat.get("teamOne") or [], gdat.get("teamTwo") or []
+            my_team = t1 if any(p.get("puuid") == me for p in t1) else t2 if any(p.get("puuid") == me for p in t2) else t1
+            by_key = {str(c.get("key")): c["id"] for c in self.gd.champs.values()}
+            sel = {str(x.get("puuid")): x.get("championId") for x in gdat.get("playerChampionSelections") or []
+                   if isinstance(x, dict)}
+            out = []
+            for p in t1 + t2:
+                pu = p.get("puuid")
+                if not pu or pu == me:
+                    continue
+                cid = p.get("championId") or sel.get(pu)
+                champ = by_key.get(str(cid))
+                time.sleep(0.5)
+                hist = lcu_get(f"/lol-match-history/v1/products/lol/{pu}/matches?begIndex=0&endIndex=20", cred, timeout=15)
+                games = ((hist or {}).get("games") or {}).get("games") or []
+                info = self.player_intel(games, cid)
+                info.update({"champ": champ, "ally": p in my_team,
+                             "name": p.get("gameName") or p.get("summonerName") or ""})
+                info["note"] = self.intel_note(info)
+                out.append(info)
+            g["intel"] = out
+            self.q.put(("intel", out))
+            self.wake.set()
+        except Exception:  # noqa
+            log_crash("intel failed", sys.exc_info())
+
+    @staticmethod
+    def player_intel(games, cid):
+        """一个玩家最近 20 局 → 海斗局数 / 胜场、这个英雄玩了几次（这个英雄的胜场）、连胜（正）/ 连败（负）"""
+        def won(g):
+            p = (g.get("participants") or [{}])[0]
+            return bool((p.get("stats") or {}).get("win"))
+        may = [g for g in games if str(g.get("gameMode", "")).upper() == "KIWI" or g.get("queueId") in MAYHEM_QUEUES]
+        on = [g for g in games if (g.get("participants") or [{}])[0].get("championId") == cid]
+        games = sorted(games, key=lambda g: -(g.get("gameCreation") or 0))
+        streak = 0
+        for g in games:
+            w = won(g)
+            if streak == 0:
+                streak = 1 if w else -1
+            elif (streak > 0) == w:
+                streak += 1 if w else -1
+            else:
+                break
+        return {"n": len(games), "may_n": len(may), "may_w": sum(1 for g in may if won(g)),
+                "champ_n": len(on), "champ_w": sum(1 for g in on if won(g)), "streak": streak}
+
+    @staticmethod
+    def intel_note(i):
+        notes = []
+        if i["may_n"] >= 8 and i["may_w"] / i["may_n"] >= 0.6:
+            notes.append(tr("海斗高手（近 20 局海斗 {0}/{1} 胜）").format(i["may_w"], i["may_n"]))
+        if i["champ_n"] >= 5:
+            notes.append(tr("本命英雄（近 20 局玩了 {0} 次）").format(i["champ_n"]))
+        elif i["champ_n"] == 0 and i["n"] >= 10:
+            notes.append(tr("最近没玩过这个英雄"))
+        if i["streak"] >= 3:
+            notes.append(tr("连胜 {0}").format(i["streak"]))
+        elif i["streak"] <= -3:
+            notes.append(tr("连败 {0}").format(-i["streak"]))
+        return tr("，").join(notes)
+
+    def intel_row(self):
+        """战况条「情报」：最值得注意的敌人（高手 / 本命英雄）"""
+        g = self.cur_game
+        intel = (g or {}).get("intel") or []
+        threats = [i for i in intel if not i["ally"] and i["champ"] and
+                   ((i["may_n"] >= 8 and i["may_w"] / i["may_n"] >= 0.6) or i["champ_n"] >= 5)]
+        if not threats:
+            return None
+        threats.sort(key=lambda i: -(i["champ_n"] + i["may_w"]))
+        names = tr("、").join(self.gd.champ_name(i["champ"]) for i in threats[:2])
+        return (tr("情报"), tr("{0} 是熟手 → 优先集火、别单挑").format(names), False)
+
+    CHALLENGE_TEXT = {"deaths": "死亡 ≤{0}", "towers": "推塔 ≥{0}", "first": "先倒下 ≤{0} 次"}
+
+    def pick_challenges(self):
+        """这局的小挑战（1～2 个）：按你最近的对局定目标 —— 死亡数（比你最近的中位数少 1）+ 推塔，
+           常常团战第一个倒下的人改成「别第一个倒下」"""
+        games = [g for g in self.habits.games[-15:] if g.get("kda")]
+        deaths = sorted(g["kda"][1] for g in games)
+        target = max(3, min(8, deaths[len(deaths) // 2] - 1)) if len(deaths) >= 5 else 5
+        out = [{"k": "deaths", "target": target}]
+        dc = Counter()
+        for g in self.habits.games[-15:]:
+            for k, v in (g.get("death") or {}).items():
+                if isinstance(v, int):
+                    dc[k] += v
+        if dc["deaths"] >= 15 and dc["first"] / dc["deaths"] >= 0.3:
+            out.append({"k": "first", "target": 1})
+        else:
+            out.append({"k": "towers", "target": 2})
+        return out
+
+    def challenge_row(self, raw, state):
+        """战况条「挑战」：每个目标现在做到哪里"""
+        g = self.cur_game
+        if not g or not g.get("challenges"):
+            return None
+        me = state[2]
+        lost = self.buildings_lost(raw)
+        their = sum(v for k, v in lost.items() if k != str(me.team).upper())
+        g["towers_taken"] = max(g.get("towers_taken", 0), their)
+        parts, hot = [], False
+        for c in g["challenges"]:
+            label = tr(self.CHALLENGE_TEXT[c["k"]]).format(c["target"])
+            if c["k"] == "deaths":
+                ok = me.deaths <= c["target"]
+                hot = hot or me.deaths >= c["target"]
+                parts.append(("✓ " if ok else "✗ ") + label + tr("（{0}）").format(me.deaths))
+            elif c["k"] == "towers":
+                ok = g["towers_taken"] >= c["target"]
+                parts.append(("✓ " if ok else "○ ") + label + tr("（{0}）").format(g["towers_taken"]))
+            else:
+                parts.append("○ " + label + tr("（赛后判定）"))
+        return (tr("挑战"), " · ".join(parts), hot)
+
+    def finish_challenges(self, g):
+        """赛后：挑战有没有达成 + 这个英雄的熟练度（每局 +10、赢 +10、每达成一个挑战 +15；每 100 点升 1 级）"""
+        res = []
+        for c in g.get("challenges") or []:
+            if c["k"] == "deaths" and g.get("kda"):
+                v = g["kda"][1]
+                res.append(dict(c, value=v, ok=v <= c["target"]))
+            elif c["k"] == "towers":
+                v = g.get("towers_taken", 0)
+                res.append(dict(c, value=v, ok=v >= c["target"]))
+            elif c["k"] == "first" and g.get("death"):
+                v = g["death"].get("first", 0)
+                res.append(dict(c, value=v, ok=v <= c["target"]))
+        g["challenge_res"] = res
+        g["mastery_gain"] = 10 + (10 if g.get("win") else 0) + 15 * sum(1 for r in res if r["ok"])
+        return res
 
     def push_row(self, state):
         """赢团后推塔：敌方阵亡 ≥2 人、比我方多死 2 人以上、最快的也要 ≥10 秒才复活、你还活着 →「推塔！还有 X 秒」
@@ -4103,6 +4326,10 @@ class Engine:
                 g["kda"] = [me_r.get("k", 0), me_r.get("d", 0), me_r.get("a", 0)]
         except Exception:  # noqa
             g["death"] = None
+        try:
+            self.finish_challenges(g)
+        except Exception:  # noqa
+            pass
         ser = g.get("wp") or []
         if len(ser) >= 6:                              # 胜率曲线（复盘画图用；每 20 秒一点，留在战绩里）
             g["curve"] = [[x[0], x[1]] for i, x in enumerate(ser) if i % 2 == 0 or i == len(ser) - 1]
@@ -4337,6 +4564,19 @@ class Engine:
                     break
         if practice:
             detail = (detail + "\n" if detail else "") + tr("下局练习：") + practice
+        cres = g.get("challenge_res") or []
+        if cres:
+            bits = [("✓ " if r["ok"] else "✗ ") + tr(Engine.CHALLENGE_TEXT[r["k"]]).format(r["target"]) +
+                    tr("（{0}）").format(r["value"]) for r in cres]
+            line = tr("挑战：") + "  ".join(bits)
+            m = self.habits.mastery(g["champ"])
+            if m:
+                line += tr("｜{0} 熟练度 Lv{1}（{2}/100，这局 +{3}）").format(
+                    gd.champ_name(g["champ"]), m["level"], m["points"] % 100, g.get("mastery_gain", 0))
+            streak = self.habits.challenge_streak()
+            if streak >= 2:
+                line += tr("｜连续 {0} 局全部达成").format(streak)
+            detail = (detail + "\n" if detail else "") + line
         dv = g.get("death")
         if dv and dv.get("deaths", 0) >= 3:
             bits = [tr("{0} {1} 次").format(lab, dv[k]) for k, lab in
@@ -4526,6 +4766,13 @@ class Engine:
             dr = self.death_row(state)
             if dr and isinstance(rec.get("brief"), list):
                 rec["brief"].insert(1 if wp else 0, dr)
+            ir = self.intel_row()
+            if ir and isinstance(rec.get("brief"), list):
+                rec["brief"].append(ir)
+            rec["intel"] = (self.cur_game or {}).get("intel")
+            cr = self.challenge_row(raw, state)
+            if cr and isinstance(rec.get("brief"), list):
+                rec["brief"].insert((1 if wp else 0) + (1 if pr else 0) + (1 if dr else 0), cr)
         except Exception:  # noqa
             pass
         g = self.cur_game
@@ -4795,6 +5042,31 @@ class HabitStore:
         except OSError:
             pass
 
+    def mastery(self, champ):
+        """这个英雄的熟练度（从记录过的对局累加）：{"points", "level", "games"}"""
+        gs = [g for g in self.games if str(g.get("champ", "")).lower() == str(champ).lower()]
+        if not gs:
+            return None
+        pts = 0
+        for g in gs:
+            if "mastery_gain" in g:
+                pts += g["mastery_gain"]
+            else:                                   # 旧的局（没有挑战）：每局 10、赢 +10
+                pts += 10 + (10 if g.get("win") else 0)
+        return {"points": pts, "level": 1 + pts // 100, "games": len(gs)}
+
+    def challenge_streak(self):
+        n = 0
+        for g in reversed(self.games):
+            res = g.get("challenge_res")
+            if not res:
+                continue
+            if all(r.get("ok") for r in res):
+                n += 1
+            else:
+                break
+        return n
+
     def weakness(self, gd, advisor=None):
         """弱点报告：输在哪个阶段、死得多不多、怎么死的、哪些英雄你玩得比一般人差 → 最该先改的一件事"""
         games = [g for g in self.games if g.get("champ") and g.get("win") is not None]
@@ -4895,6 +5167,15 @@ class HabitStore:
             lines += [""] + self.weakness(gd, advisor)
         except Exception as e:  # noqa
             lines.append(tr("弱点报告出错：{0}").format(e))
+        champs_m = sorted(((self.mastery(c), c) for c in {g["champ"] for g in games}), key=lambda x: -x[0]["points"])[:5]
+        if champs_m:
+            lines.append("")
+            lines.append(tr("英雄熟练度：") + tr("、").join(tr("{0} Lv{1}").format(gd.champ_name(c), m["level"])
+                                                          for m, c in champs_m))
+        res = [r for g in games for r in g.get("challenge_res") or []]
+        if res:
+            lines.append(tr("挑战达成率：{0}/{1}（连续全部达成 {2} 局）").format(
+                sum(1 for r in res if r["ok"]), len(res), self.challenge_streak()))
         lines.append("")
         # 照推荐出装的局 vs 没照的局
         follow, other = [], []
@@ -5040,6 +5321,23 @@ def lcu_get(path, cred, timeout=10):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ctx))
     with opener.open(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
+
+
+def lcu_send(method, path, cred, body=None, timeout=10):
+    """向本机客户端送出 PUT / POST（只用在：写入推荐装备页）"""
+    import base64
+    port, pw = cred
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(f"https://127.0.0.1:{port}{path}", data=data, method=method, headers={
+        "Authorization": "Basic " + base64.b64encode(f"riot:{pw}".encode()).decode(),
+        "Accept": "application/json", "Content-Type": "application/json"})
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ctx))
+    with opener.open(req, timeout=timeout) as r:
+        raw = r.read()
+        return json.loads(raw.decode("utf-8")) if raw else None
 
 
 def parse_lcu_history(data, gd, aug_by_id):
@@ -6447,6 +6745,14 @@ def fmt_total(d):
     return "{0:+.1f}".format(d["total"]) if "total" in d else str(d.get("score", ""))
 
 
+def aug_tier(total):
+    """增幅等级（S～D）：看总效果（网上数据 + 本局调整，单位：胜率百分点）"""
+    return "S" if total >= 3 else "A" if total >= 1.5 else "B" if total >= 0 else "C" if total >= -1.5 else "D"
+
+
+TIER_COLOR = {"S": "#ff9f43", "A": "#3ddc84", "B": "#e6e9ef", "C": "#8a93a6", "D": "#5b6477"}
+
+
 def fmt_data(d):
     """卡片右上：网上数据 +1.4 ±1.1（没数据就说没数据）"""
     if "total" not in d:
@@ -6958,6 +7264,27 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                          padx=8, pady=6)
     guide_lbl.pack(fill="x")
     wraps.append(guide_lbl)
+    intel_lbl = tk.Label(pages["guide"], text="", bg=BG, fg=FG, font=F["small"], anchor="w", justify="left",
+                         padx=8, pady=4)
+    wraps.append(intel_lbl)
+
+    def show_intel(intel):
+        """玩法页下方：这局每个人的情报（队友 / 敌方各一段）"""
+        if not intel:
+            intel_lbl.pack_forget()
+            return
+        lines = []
+        for ally in (False, True):
+            grp = [i for i in intel if i["ally"] == ally]
+            if not grp:
+                continue
+            lines.append(tr("【敌方】") if not ally else tr("【队友】"))
+            for i in grp:
+                head = engine.gd.champ_name(i["champ"]) if i.get("champ") else (i.get("name") or "?")
+                base = tr("近 20 局海斗 {0}/{1}").format(i["may_w"], i["may_n"]) if i["may_n"] else tr("近期没打海斗")
+                lines.append("· " + head + "：" + base + ("；" + i["note"] if i.get("note") else ""))
+        intel_lbl.config(text="\n".join(lines))
+        intel_lbl.pack(fill="x", pady=(4, 0))
 
     footer = tk.Label(body, text="", bg=BG, fg=DIM, font=F["small"], anchor="w", padx=8, cursor="hand2")
     footer.pack(fill="x", pady=(0, 4))
@@ -7281,7 +7608,11 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 continue
             d = data[i]
             star = "★ " if cand and i == 0 else ""
-            r["sc"].config(text=fmt_total(d), fg=score_color(d["score"]))
+            if rows is aug_rows and "total" in d:          # 增幅卡片：大字母 S～D，一眼看出该选哪张
+                t = aug_tier(d["total"])
+                r["sc"].config(text=t + " " + fmt_total(d), fg=TIER_COLOR[t], width=6)
+            else:
+                r["sc"].config(text=fmt_total(d), fg=score_color(d["score"]), width=4)
             r["nm"].config(text=star + d["name"], fg=GOLD if cand and i == 0 else FG)
             meta = []
             if "total" in d:                    # 2.0：网上数据（胜率差 ± 误差），跟本局调整分开
@@ -7415,6 +7746,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         summary.config(text=rec.get("summary", "").replace(tr("｜"), " · ").replace(tr("网上 "), ""))
         has_brief = show_brief(rec.get("brief"))
         draw_live(rec.get("wp_series") if has_brief else None)
+        show_intel(rec.get("intel"))
         try:
             ring(rec)
         except Exception:  # noqa
@@ -7533,7 +7865,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         elif urgent:
             mini.config(text="⚠ " + urgent[0][1], fg=ORANGE)
         elif cand and rec.get("augs"):
-            mini.config(text=tr('★ 选 {0}（{1}%）').format(rec['augs'][0]['name'], fmt_total(rec['augs'][0])), fg=GOLD)
+            mini.config(text=aug_tier(rec['augs'][0].get('total', 0)) + " " +
+                        tr('★ 选 {0}（{1}%）').format(rec['augs'][0]['name'], fmt_total(rec['augs'][0])), fg=GOLD)
         else:
             parts = []
             if its:
@@ -7630,6 +7963,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             elif kind == "manual_reset":   # 新的一局：上一局手动输入的增幅清掉
                 for k in manual_vals:
                     manual_vals[k] = ""
+            elif kind == "intel":          # 队友 / 对手情报
+                show_intel(payload)
             elif kind == "select":         # 选英雄阶段
                 dot.config(fg=GOLD)
                 show_select(payload)
