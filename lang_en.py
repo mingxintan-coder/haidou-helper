@@ -576,6 +576,8 @@ EN.update({
         'Build path: {0} (set by "{1}") · on-path items up, switching down',
     '英雄本身': 'champion',
     '跟本局路线（{0}）不合': 'doesn\'t fit this game\'s path ({0})',
+    '预定路线：{0}（按阵容和增幅，预估胜率 {1}）· 第一件大件出来后锁定':
+        'Planned path: {0} (by comp and augments, est. win rate {1}) · locks after your first big item',
     '预定路线：{0}（按英雄和增幅）· 第一件大件出来后锁定':
         'Planned path: {0} (from champion and augments) · locks after your first big item',
     '法术': 'AP',

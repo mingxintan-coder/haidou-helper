@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.14.0"
+APP_VERSION = "2.14.1"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -2045,7 +2045,7 @@ class Advisor:
         out = []
         allowed = self.stats.item_allow if self.stats else None   # 海斗实际商店清单
         # 出装方向（2.13）：已经出的大件合起来是什么路线（坦 / 物理 / 法术 / 攻速…）；英雄本身打什么伤害
-        route = self.build_route(me, my_augs, rules)
+        route = self.build_route(me, my_augs, rules, allies, enemies, cs)
         self._route = route
         cp =self.rule_vec(norm({d: v for d, v in self.champ_profile(me.cid).items() if d in BUILD_DIMS}), rules)
         champ_ad = cp.get("AD", 0) + cp.get("CRIT", 0) + cp.get("LETHAL", 0)
@@ -2110,7 +2110,67 @@ class Advisor:
         boots = self.recommend_boots(me, t, prof, role, cs, gold, legend, phase, rules)
         return ([boots] if boots else []) + out[:k], prof
 
-    def build_route(self, me, my_augs, rules=None):
+    @staticmethod
+    def aug_kind_vec(a):
+        """一张增幅偏向哪条路线：[法术, 物理, 坦]（没有属性描述的增幅回传 None）"""
+        r = AUG_RULES.get(a.get("id")) or {}
+        if r.get("crit_cap"):
+            return None
+        v = norm({d: x for d, x in (r.get("prof") or a.get("tags") or {}).items() if d in BUILD_DIMS})
+        if not v:
+            return None
+        s = kind_scores(v)
+        return [s["ap"], s["atk"], s["tank"]]
+
+    def path_options(self, me, allies, enemies, my_augs, cs=None, kinds=None):
+        """每条路线的预估胜率 {路线: (胜率, 这个英雄走这条路线的局数)}：
+             英雄 × 路线的胜率（自建数据库 + 网上主流出装，网上的最多当 3000 局）+ 阵容和增幅的调整（路线模型）"""
+        db = getattr(self, "riotdb", None)
+        model = getattr(db, "path_model", None) if db is not None else None
+        if not model or not model.get("beta"):
+            return {}
+        champ = (self.gd.champ(me.cid) or {}).get("id", me.cid)
+        al = [0.0, 0.0, 0.0]
+        for a in my_augs:
+            v = self.aug_kind_vec(a)
+            if v:
+                al = [x + y for x, y in zip(al, v)]
+        tt = [self.champ_traits(p.cid) for p in allies if p.cid != me.cid]
+        te = [self.champ_traits(p.cid) for p in enemies]
+        ctx = al + [sum(1 for x in tt if x["ap"]), sum(1 for x in te if x["ap"]),
+                    sum(1 for x in tt if x["front"]), sum(1 for x in te if x["front"])]
+        online = {}
+        if cs and cs.get("core") and cs.get("n"):
+            for core in cs["core"]:
+                kk = [self.item_kind_id(i) for i in core["items"]]
+                kk = [k for k in kk if k]
+                if not kk:
+                    continue
+                k = Counter(kk).most_common(1)[0][0]
+                o = online.setdefault(k, [0.0, 0.0])
+                n_on = core["pick"] * cs["n"]
+                o[0] += n_on
+                o[1] += n_on * core["wr"]
+        out = {}
+        cpm = model["cp"]
+        tn = sum(cpm.get("{0}|{1}".format(champ, k), [0, 0])[0] for k in PATH_KINDS)
+        tw = sum(cpm.get("{0}|{1}".format(champ, k), [0, 0])[1] for k in PATH_KINDS)
+        prior = (tw + 20) / (tn + 40)
+        for p in kinds or PATH_KINDS:
+            n, w = cpm.get("{0}|{1}".format(champ, p), [0, 0])
+            if p in online and online[p][0] > 0:
+                scale = min(1.0, 3000 / online[p][0])
+                n, w = n + online[p][0] * scale, w + online[p][1] * scale
+            out[p] = (path_score(model, path_logit(n, w, prior), p, ctx), int(n))
+        return out
+
+    def item_kind_id(self, iid):
+        if not self.gd.is_completed(iid) or self.gd.is_boots(iid):
+            return None
+        s = kind_scores(norm({d: x for d, x in self.gd.item_vec(iid)[0].items() if d in BUILD_DIMS}))
+        return max(s, key=s.get) if max(s.values()) > 0 else None
+
+    def build_route(self, me, my_augs, rules=None, allies=(), enemies=(), cs=None):
         """本局出装路线（法术 / 物理输出 / 坦 / 辅助）：
              · 还没大件：按英雄本身 + 已选增幅（转换属性的增幅已算进去）估一条「预定路线」，力度减半；
              · 有大件：已出大件里最多的那条路线（一样多看先出的）——第一件大件就把路线定下来；
@@ -2130,6 +2190,21 @@ class Advisor:
         mx = max(sup.values()) or 1.0
         rel = {k: v / mx for k, v in sup.items()}
         best = max(rel, key=rel.get)
+        # 胜率（2.14.1）：英雄用得上的路线（份量 ≥ 主路线 30%）里，按自建数据库 + 网上数据 + 阵容 + 增幅
+        # 预估胜率最高的那条；样本不够（< 30 局）或差不到 0.5 个百分点就还是按属性
+        wr = {}
+        try:
+            wr = self.path_options(me, allies, enemies, my_augs, cs,
+                                   kinds=[k for k in PATH_KINDS if rel.get(k, 0) >= 0.3 or k == best])
+        except Exception:  # noqa
+            wr = {}
+        by_wr = False
+        if wr:
+            top = max(wr, key=lambda k: wr[k][0])
+            if wr[top][1] >= 30 and (best not in wr or top == best or wr[top][0] - wr[best][0] >= 0.005):
+                by_wr, best = True, top
+        wr_text = " · ".join(tr("{0} {1:.1f}%").format(tr(KIND_LABEL[k]), v[0] * 100)
+                             for k, v in sorted(wr.items(), key=lambda kv: -kv[1][0]) if v[1] >= 30)
         big = [i for i in me.items if gd.is_completed(i) and not gd.is_boots(i)]
         kinds = []
         for i in big:
@@ -2150,8 +2225,11 @@ class Advisor:
                 text = tr("本局路线：{0}（由「{1}」定下）· 同路线加分，换路线扣分").format(tr(KIND_LABEL[path]), src)
         else:
             path, src, locked = best, tr("英雄本身"), False
-            text = tr("预定路线：{0}（按英雄和增幅）· 第一件大件出来后锁定").format(tr(KIND_LABEL[path]))
-        return {"kind": path, "label": tr(KIND_LABEL[path]), "locked": locked, "src": src, "rel": rel, "text": text}
+            text = (tr("预定路线：{0}（按阵容和增幅，预估胜率 {1}）· 第一件大件出来后锁定").format(tr(KIND_LABEL[path]), wr_text)
+                    if by_wr and wr_text else
+                    tr("预定路线：{0}（按英雄和增幅）· 第一件大件出来后锁定").format(tr(KIND_LABEL[path])))
+        return {"kind": path, "label": tr(KIND_LABEL[path]), "locked": locked, "src": src, "rel": rel, "text": text,
+                "wr": wr, "by_wr": by_wr}
 
     def route_factor(self, route, nv, factors):
         """一件装和本局路线的关系 → (总分额外调整, 说明, 说明的份量)。
@@ -2166,7 +2244,7 @@ class Advisor:
         if top <= 0:
             return 0.0, "", 0.0
         path, lab = route["kind"], route["label"]
-        w = 1.0 if route["locked"] else 0.5
+        w = 1.0 if route["locked"] else 0.7 if route.get("by_wr") else 0.5
         if ks.get(path, 0) >= 0.5 * top:
             return 0.3 * w, (tr("延续本局路线（{0}）").format(lab) if route["locked"] else ""), 0.05
         need = [txt for f, txt in factors if f > 0.1]
@@ -2678,14 +2756,15 @@ class Advisor:
         if owned and bv and cosine(owned, bv) > 0.6:
             factors.append((0.06, tr("和你现有装备属性吻合")))
         route = getattr(self, "_route", None)
-        if route and route["locked"] and bv:        # 定路线后：增幅也跟着路线走
+        if route and (route["locked"] or route.get("by_wr")) and bv:   # 定路线后：增幅也跟着路线走（预定路线时减半）
             ks = kind_scores(bv)
             top = max(ks.values())
+            rw = 1.0 if route["locked"] else 0.5
             if top >= 0.3:
                 if ks.get(route["kind"], 0) >= 0.5 * top:
-                    factors.append((0.06, tr("契合本局路线（{0}）").format(route["label"])))
+                    factors.append((0.06 * rw, tr("契合本局路线（{0}）").format(route["label"])))
                 elif max(ks, key=ks.get) != "tank":
-                    factors.append((-0.3, tr("跟本局路线（{0}）不合").format(route["label"])))
+                    factors.append((-0.3 * rw, tr("跟本局路线（{0}）不合").format(route["label"])))
         conflict = aug_conflict(a, my_augs)
         if conflict:                   # 互相抵消的增幅（变近战 vs 加攻击距离 / 远距离任务）
             factors.append((-0.6, conflict))
@@ -6198,6 +6277,35 @@ def wp_predict(model, m, gd, kd, ld, td, comp=0.0):
     return 1 / (1 + math.exp(-max(-30, min(30, z))))
 
 
+PATH_KINDS = ("ap", "atk", "tank")
+PATH_K0 = 100            # 英雄 × 路线胜率的先验（局数，50/50）
+
+
+def path_logit(n, w, prior=0.5, k0=PATH_K0):
+    """英雄 × 路线的胜算：往这个英雄整体胜率（prior）收缩 k0 局 —— 很少人走的路线就当作跟英雄平均一样"""
+    p = (w + prior * k0) / (n + k0)
+    return math.log(p / (1 - p))
+
+
+def path_vec(cp, p, ctx):
+    """路线模型的特征：[英雄×路线胜算] + 每条路线 6 个：截距、增幅偏向这条路线多少（减平均）、
+       我方其他人 AP 数、敌方 AP 数、我方其他人前排数、敌方前排数（都减掉常见值）
+       ctx = [增幅·法术, 增幅·物理, 增幅·坦, 我方AP, 敌方AP, 我方前排, 敌方前排]"""
+    v = [cp] + [0.0] * 18
+    i = PATH_KINDS.index(p)
+    al = ctx[:3]
+    m = sum(al) / 3
+    b = 1 + i * 6
+    v[b], v[b + 1] = 1.0, al[i] - m
+    v[b + 2], v[b + 3], v[b + 4], v[b + 5] = ctx[3] - 1.5, ctx[4] - 1.5, ctx[5] - 1.0, ctx[6] - 1.0
+    return v
+
+
+def path_score(model, cp, p, ctx):
+    z = sum(b * v for b, v in zip(model["beta"], path_vec(cp, p, ctx)))
+    return 1 / (1 + math.exp(-max(-30, min(30, z))))
+
+
 def load_winmodel():
     m = read_json(os.path.join(APP_DIR, "riotdb", "winmodel.json"))
     return m if isinstance(m, dict) and m.get("beta") else None
@@ -6736,8 +6844,96 @@ class RiotCollector:
             self._tl_count = len(ids)
         return self._tl_count
 
+    def path_rows(self):
+        """每个玩家一行：英雄、最后出装的主路线（法术 / 物理输出 / 坦）、输赢、阵容和增幅（path_vec 的 ctx）"""
+        adv, gd = self.advisor, self.gd
+        aug_k = {}
+        for a in adv.all_index.values():
+            if a.get("id") and a["id"] not in aug_k:
+                aug_k[a["id"]] = adv.aug_kind_vec(a)
+        kc, trt = {}, {}
+
+        def ks(i):
+            if i not in kc:
+                s = None
+                if i in gd.items and gd.is_completed(i) and not gd.is_boots(i):
+                    s = kind_scores(norm({d: x for d, x in gd.item_vec(i)[0].items() if d in BUILD_DIMS}))
+                    s = s if max(s.values()) > 0 else None
+                kc[i] = s
+            return kc[i]
+
+        def tt(c):
+            if c not in trt:
+                trt[c] = adv.champ_traits(c)
+            return trt[c]
+        out = []
+        for g in self.games().values():
+            for r in g:
+                its = [s for s in (ks(i) for i in r.get("i") or []) if s]
+                if len(its) < 2:
+                    continue
+                main = Counter(max(s, key=s.get) for s in its).most_common(1)[0][0]
+                if main not in PATH_KINDS:
+                    continue
+                won = bool(r.get("w"))
+                ally = [x["c"] for x in g if bool(x.get("w")) == won and x is not r]
+                en = [x["c"] for x in g if bool(x.get("w")) != won]
+                al = [0.0, 0.0, 0.0]
+                for a in r.get("a") or []:
+                    v = aug_k.get(a)
+                    if v:
+                        al = [x + y for x, y in zip(al, v)]
+                ctx = al + [sum(1 for c in ally if tt(c)["ap"]), sum(1 for c in en if tt(c)["ap"]),
+                            sum(1 for c in ally if tt(c)["front"]), sum(1 for c in en if tt(c)["front"])]
+                out.append({"c": r["c"], "p": main, "w": 1 if won else 0, "ctx": ctx})
+        return out
+
+    def maybe_path(self, force=False):
+        """路线模型（2.14.1）：这个英雄走 法术 / 物理输出 / 坦 各自的胜率，再按阵容和增幅调整。
+           对局多了 10%（至少 100 局）才重练；存在 riotdb/pathmodel.json"""
+        path = os.path.join(self.dir, "pathmodel.json")
+        have = getattr(self, "path_model", None) or read_json(path)
+        if not isinstance(have, dict) or not have.get("beta"):
+            have = None
+        self.path_model = have
+        if getattr(self, "advisor", None) is None:
+            return have
+        n = len(self.games())
+        if not force and have and n < have.get("games", 0) + max(100, 0.1 * have.get("games", 0)):
+            return have
+        rows = self.path_rows()
+        if len(rows) < 2000:
+            return have
+        cnt = {}
+        for r in rows:
+            x = cnt.setdefault((r["c"], r["p"]), [0, 0])
+            x[0] += 1
+            x[1] += r["w"]
+        X, y = [], []
+        tot = {}
+        for (c, p), v in cnt.items():
+            t = tot.setdefault(c, [0, 0])
+            t[0] += v[0]
+            t[1] += v[1]
+        for r in rows:
+            k_n, k_w = cnt[(r["c"], r["p"])]
+            t = tot[r["c"]]
+            prior = (t[1] - r["w"] + 20) / (t[0] - 1 + 40)
+            X.append(path_vec(path_logit(k_n - 1, k_w - r["w"], prior), r["p"], r["ctx"]))   # 扣掉这一局，免得自己预测自己
+            y.append(r["w"])
+        beta = _fit_logit(X, y, lam=5.0)
+        model = {"beta": beta, "games": n, "rows": len(rows),
+                 "cp": {"{0}|{1}".format(c, p): v for (c, p), v in cnt.items()}}
+        write_json(path, model)
+        self.path_model = model
+        return model
+
     def maybe_refit(self, force=False):
         """新抓了 ≥30 局时间线（或还没有模型）就重新训练胜率模型"""
+        try:
+            self.maybe_path()
+        except Exception:  # noqa
+            log_crash("path model failed", sys.exc_info())
         have = load_winmodel()
         adv = getattr(self, "advisor", None)
         if have and have.get("comp") and getattr(self, "comp_model", None) is None:
