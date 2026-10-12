@@ -562,9 +562,22 @@ EN.update({
     '和已选「{0}」冲突：你已经是近战，攻击距离 / 远距离效果用不上': 'Conflicts with "{0}": you\'re melee now, range bonuses are wasted',
     '和已选「{0}」冲突：变近战后攻击距离 / 远距离效果就没了': 'Conflicts with "{0}": becoming melee wastes its range effects',
     '增幅「{0}」': 'Augment "{0}" ',
-    '延续你现在的出装路线': 'continues your current build path',
     '矛盾：': 'Conflicts: ',
-    '跟你已经出的装备方向不同（会变成两边都不强）': 'different direction from your items (ends up strong at neither)',
+    '偏离本局路线（{0}，由「{1}」定下），两边都不强': 'off this game\'s path ({0}, set by "{1}") — ends up strong at neither',
+    '偏离路线（{0}），但本局需要：{1}': 'off path ({0}), but needed this game: {1}',
+    '偏离路线（{0}）：纯防御装，输出会不够': 'off path ({0}): pure defense, damage will fall short',
+    '偏离预定路线（{0}）': 'off the planned path ({0})',
+    '契合本局路线（{0}）': 'fits this game\'s path ({0})',
+    '延续本局路线（{0}）': 'continues this game\'s path ({0})',
+    '本局路线 {0:+.1f}%': 'Build path {0:+.1f}%',
+    '本局路线：{0}（「{1}」不适合这个英雄，按英雄本身）· 同路线加分，换路线扣分':
+        'Build path: {0} ("{1}" doesn\'t suit this champion, using the champion\'s own) · on-path items up, switching down',
+    '本局路线：{0}（由「{1}」定下）· 同路线加分，换路线扣分':
+        'Build path: {0} (set by "{1}") · on-path items up, switching down',
+    '英雄本身': 'champion',
+    '跟本局路线（{0}）不合': 'doesn\'t fit this game\'s path ({0})',
+    '预定路线：{0}（按英雄和增幅）· 第一件大件出来后锁定':
+        'Planned path: {0} (from champion and augments) · locks after your first big item',
     '法术': 'AP',
 })
 

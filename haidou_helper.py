@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.13.1"
+APP_VERSION = "2.14.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -472,6 +472,18 @@ def norm(vec):
 
 def cosine(a, b):
     return sum(a.get(k, 0) * v for k, v in b.items())
+
+
+KIND_LABEL = {"ap": "法术", "atk": "物理输出", "tank": "坦", "sup": "辅助"}
+
+
+def kind_scores(v):
+    """一组（已归一化的）属性属于哪条路线的份量：法术 = 法强 + 法穿；物理输出 = 物攻 + 暴击 + 穿甲 + ½（攻速 + 命中特效）；
+       坦 = 0.6 ×（护甲 + 魔抗 + 生命）（很多输出装也带生命，所以打折）；辅助 = 治疗护盾"""
+    return {"ap": v.get("AP", 0) + v.get("MPEN", 0),
+            "atk": v.get("AD", 0) + v.get("CRIT", 0) + v.get("LETHAL", 0) + 0.5 * (v.get("AS", 0) + v.get("ONHIT", 0)),
+            "tank": 0.6 * (v.get("ARMOR", 0) + v.get("MR", 0) + v.get("HP", 0)),
+            "sup": v.get("HEALSHIELD", 0)}
 
 
 def add_into(dst, src, w=1.0):
@@ -2033,11 +2045,9 @@ class Advisor:
         out = []
         allowed = self.stats.item_allow if self.stats else None   # 海斗实际商店清单
         # 出装方向（2.13）：已经出的大件合起来是什么路线（坦 / 物理 / 法术 / 攻速…）；英雄本身打什么伤害
-        owned_big = [i for i in me.items if gd.is_completed(i) and not gd.is_boots(i)]
-        owned_dir = self.rule_vec(norm({d: v for d, v in self.items_profile(owned_big).items() if d in BUILD_DIMS}), rules) \
-            if owned_big else None
-        dir_w = 1.0 if len(owned_big) >= 2 else 0.5           # 只有 1 件时方向还不确定：力度减半
-        cp = self.rule_vec(norm({d: v for d, v in self.champ_profile(me.cid).items() if d in BUILD_DIMS}), rules)
+        route = self.build_route(me, my_augs, rules)
+        self._route = route
+        cp =self.rule_vec(norm({d: v for d, v in self.champ_profile(me.cid).items() if d in BUILD_DIMS}), rules)
         champ_ad = cp.get("AD", 0) + cp.get("CRIT", 0) + cp.get("LETHAL", 0)
         champ_ap = cp.get("AP", 0) + cp.get("MPEN", 0)
         for iid in gd.candidate_items(map_id, allowed):
@@ -2071,13 +2081,9 @@ class Advisor:
                 factors.append((-0.4, tr("你打的是物理伤害，这件的法强用不上")))
             elif i_ad > 0.35 and i_ad > i_ap and champ_ad < 0.25 * champ_ap:
                 factors.append((-0.4, tr("你打的是魔法伤害，这件的物攻用不上")))
-            # 出装方向一致：已经出了 2 件以上大件，跟它们方向差很多的扣分（针对对面的保命 / 克制装不算）
-            if owned_dir:
-                coh = cosine(owned_dir, nv)
-                if coh < 0.25 and not any(f > 0.05 for f, _ in factors):
-                    factors.append((-0.2 * dir_w, tr("跟你已经出的装备方向不同（会变成两边都不强）")))
-                elif coh > 0.6:
-                    factors.append((0.05 * dir_w, tr("延续你现在的出装路线")))
+            # 本局路线（2.14 定路线）：第一件大件定下路线后，同路线加分，换路线明显扣分；
+            # 针对对面需要的保命 / 克制装只轻微扣分，并写明「偏离路线但本局需要」
+            extra = self.route_factor(route, nv, factors)
             syn = [a["name"] for a in my_augs if not (AUG_RULES.get(a.get("id")) or {}).get("crit_cap")
                    and cosine(norm((AUG_RULES.get(a.get("id")) or {}).get("prof") or a["tags"]), nv) > 0.5]
             if syn:
@@ -2097,19 +2103,93 @@ class Advisor:
             hab = self.habit_item(me, iid)
             if hab:                         # 你的习惯：+最多 1%
                 factors = factors + [hab]
-            out.append(self.pack_item(iid, de, factors, fit, self.top_dims(prof, nv)))
+            if extra[1]:
+                factors.append((extra[2], extra[1]))
+            out.append(self.pack_item(iid, de, factors, fit, self.top_dims(prof, nv), extra=extra[0]))
         out = self.smooth(me, out)          # 推荐只看装备本身好不好，不看你现在身上有多少钱（也不显示差多少钱）
         boots = self.recommend_boots(me, t, prof, role, cs, gold, legend, phase, rules)
         return ([boots] if boots else []) + out[:k], prof
 
-    def pack_item(self, iid, de, factors, fit, dims, boots=False):
-        """一件装的推荐：总分 = 网上数据 Δ* + 本局调整（都是胜率百分点）"""
+    def build_route(self, me, my_augs, rules=None):
+        """本局出装路线（法术 / 物理输出 / 坦 / 辅助）：
+             · 还没大件：按英雄本身 + 已选增幅（转换属性的增幅已算进去）估一条「预定路线」，力度减半；
+             · 有大件：已出大件里最多的那条路线（一样多看先出的）——第一件大件就把路线定下来；
+               如果那条路线这个英雄根本用不上（份量 < 英雄主路线的 20%），仍按英雄主路线。"""
+        gd = self.gd
+        if rules is None:
+            rules = self.aug_rules(me, my_augs)
+        cp = self.rule_vec(norm({d: v for d, v in self.champ_profile(me.cid).items() if d in BUILD_DIMS}), rules)
+        sup = kind_scores(cp)
+        for a in my_augs:
+            r = AUG_RULES.get(a.get("id")) or {}
+            if r.get("crit_cap"):
+                continue
+            av = norm({d: v for d, v in (r.get("prof") or a.get("tags") or {}).items() if d in BUILD_DIMS})
+            if av:
+                add_into(sup, kind_scores(av), 0.35)
+        mx = max(sup.values()) or 1.0
+        rel = {k: v / mx for k, v in sup.items()}
+        best = max(rel, key=rel.get)
+        big = [i for i in me.items if gd.is_completed(i) and not gd.is_boots(i)]
+        kinds = []
+        for i in big:
+            ks = kind_scores(self.rule_vec(norm({d: x for d, x in gd.item_vec(i)[0].items() if d in BUILD_DIMS}), rules))
+            kinds.append(max(ks, key=ks.get) if any(ks.values()) else None)
+        known = [k for k in kinds if k]
+        if known:
+            cnt = Counter(known)
+            path = max(cnt, key=lambda k: (cnt[k], -known.index(k)))
+            locked = True
+            if rel.get(path, 0) < 0.2:
+                bad = gd.item_name(big[kinds.index(path)])
+                path, src = best, tr("英雄本身")
+                text = tr("本局路线：{0}（「{1}」不适合这个英雄，按英雄本身）· 同路线加分，换路线扣分").format(
+                    tr(KIND_LABEL[path]), bad)
+            else:
+                src = gd.item_name(big[kinds.index(path)])
+                text = tr("本局路线：{0}（由「{1}」定下）· 同路线加分，换路线扣分").format(tr(KIND_LABEL[path]), src)
+        else:
+            path, src, locked = best, tr("英雄本身"), False
+            text = tr("预定路线：{0}（按英雄和增幅）· 第一件大件出来后锁定").format(tr(KIND_LABEL[path]))
+        return {"kind": path, "label": tr(KIND_LABEL[path]), "locked": locked, "src": src, "rel": rel, "text": text}
+
+    def route_factor(self, route, nv, factors):
+        """一件装和本局路线的关系 → (总分额外调整, 说明, 说明的份量)。
+             同路线（这件在本路线的份量 ≥ 它最强那条的一半，例如带生命的法强装算坦路线可用）：+0.3；
+             针对对面需要（有 >0.1 的克制 / 保命因素）：几乎不扣，写明原因；
+             输出路线出纯坦装：英雄本身能坦时 −0.3，否则 −1.0；
+             换伤害路线（坦 → 法术、法术 ↔ 物理…）：−2.5（还没锁定时减半）"""
+        if not route or not nv:
+            return 0.0, "", 0.0
+        ks = kind_scores(nv)
+        top = max(ks.values())
+        if top <= 0:
+            return 0.0, "", 0.0
+        path, lab = route["kind"], route["label"]
+        w = 1.0 if route["locked"] else 0.5
+        if ks.get(path, 0) >= 0.5 * top:
+            return 0.3 * w, (tr("延续本局路线（{0}）").format(lab) if route["locked"] else ""), 0.05
+        need = [txt for f, txt in factors if f > 0.1]
+        if need:
+            return -0.2 * w, tr("偏离路线（{0}），但本局需要：{1}").format(lab, need[0]), -0.05
+        kind = max(ks, key=ks.get)
+        if kind == "tank" and path in ("ap", "atk"):
+            pen = 0.3 if route["rel"].get("tank", 0) >= 0.5 else 1.0
+            return -pen * w, tr("偏离路线（{0}）：纯防御装，输出会不够").format(lab), -0.1
+        why = tr("偏离本局路线（{0}，由「{1}」定下），两边都不强").format(lab, route["src"]) if route["locked"] else \
+            tr("偏离预定路线（{0}）").format(lab)
+        return -2.5 * w, why, -0.3
+
+    def pack_item(self, iid, de, factors, fit, dims, boots=False, extra=0.0):
+        """一件装的推荐：总分 = 网上数据 Δ* + 本局调整（都是胜率百分点）+ 路线调整"""
         adj = self.situ_pct(factors, fit)
-        total = de["d"] * 100 + adj
+        total = de["d"] * 100 + adj + extra
         fit_text = tr('契合你的{0}路线').format('/'.join(dims)) if dims else ""
         rf = [f for f in factors if f[0] > 0 or f[0] <= -0.05]
         why = self.reason(fit_text, rf)
         detail = tr("网上数据：") + de["text"] + "\n" + tr("本局调整 {0:+.1f}%：").format(adj) + why
+        if abs(extra) >= 0.05:
+            detail += "\n" + tr("本局路线 {0:+.1f}%").format(extra)
         return {"name": ("👟 " if boots else "") + self.gd.item_name(iid), "id": iid, "score": self.item_score(total),
                 "raw": total, "total": total, "d": de["d"] * 100, "ci": de["ci"] * 100 if de["ci"] else None,
                 "n": de["n"], "adj": adj, "has_data": de["has"], "data_text": de["text"],
@@ -2597,8 +2677,17 @@ class Advisor:
         owned = self.items_profile(me.items)
         if owned and bv and cosine(owned, bv) > 0.6:
             factors.append((0.06, tr("和你现有装备属性吻合")))
+        route = getattr(self, "_route", None)
+        if route and route["locked"] and bv:        # 定路线后：增幅也跟着路线走
+            ks = kind_scores(bv)
+            top = max(ks.values())
+            if top >= 0.3:
+                if ks.get(route["kind"], 0) >= 0.5 * top:
+                    factors.append((0.06, tr("契合本局路线（{0}）").format(route["label"])))
+                elif max(ks, key=ks.get) != "tank":
+                    factors.append((-0.3, tr("跟本局路线（{0}）不合").format(route["label"])))
         conflict = aug_conflict(a, my_augs)
-        if conflict:                     # 互相抵消的增幅（变近战 vs 加攻击距离 / 远距离任务）
+        if conflict:                   # 互相抵消的增幅（变近战 vs 加攻击距离 / 远距离任务）
             factors.append((-0.6, conflict))
         champ = (self.gd.champ(me.cid) or {}).get("id", me.cid)
         combo = getattr(self.gd, "am_combos", {}).get((str(champ).lower(), a["name"]))
@@ -3030,6 +3119,7 @@ class Advisor:
                 tips.append((66, tr('网上主流核心：{0}（胜率 {1:.1f}%）').format(names, core['wr'] * 100), False))
                 tips.sort(key=lambda x: -x[0])
                 tips = tips[:4]
+        route = getattr(self, "_route", None)
         diff = t["power_diff"]
         lead = tr('领先 {0:.1f}k').format(diff / 1000) if diff > 500 else tr('落后 {0:.1f}k').format(-diff / 1000) if diff < -500 else tr("均势")
         summary = (tr('{0}｜{1}｜人头 {2}:{3}｜敌方物理 {4}%').format(self.gd.champ_name(me.cid), lead, t['kills_ally'], t['kills_enemy'], round(t['ad_share'] * 100)) + (tr('｜威胁 {0}').format(t['carry_name']) if t['carry_name'] else "") +
@@ -3053,7 +3143,8 @@ class Advisor:
                 "stats_label": self.stats.label() if (self.stats and cs) else "",
                 "my_augs": [a["name"] for a in my_augs],
                 "guide": guide, "game_time": me.game_time,
-                "summary": summary, "gold": gold, "mode": mode}
+                "summary": summary, "gold": gold, "mode": mode,
+                "route": route["text"] if route else "", "route_locked": bool(route and route["locked"])}
 
 
 # --------------------------------------------------------------------------------------
@@ -4347,13 +4438,9 @@ class Engine:
         """一件大件属于哪条路线：法术 / 物理输出 / 坦 / 辅助。比各组属性的份量：
              法术 = 法强 + 法穿；物理输出 = 物攻 + 暴击 + 穿甲 + ½（攻速 + 命中特效）（纳什之牙这类法术攻速装算法术）；
              坦 = 0.6 ×（护甲 + 魔抗 + 生命）（很多输出装也带生命，所以打折）；辅助 = 治疗护盾"""
-        v = norm({d: x for d, x in self.gd.item_vec(iid)[0].items() if d in BUILD_DIMS})
-        score = {"ap": v.get("AP", 0) + v.get("MPEN", 0),
-                 "atk": v.get("AD", 0) + v.get("CRIT", 0) + v.get("LETHAL", 0) + 0.5 * (v.get("AS", 0) + v.get("ONHIT", 0)),
-                 "tank": 0.6 * (v.get("ARMOR", 0) + v.get("MR", 0) + v.get("HP", 0)),
-                 "sup": v.get("HEALSHIELD", 0)}
+        score = kind_scores(norm({d: x for d, x in self.gd.item_vec(iid)[0].items() if d in BUILD_DIMS}))
         k = max(score, key=score.get)
-        return k, tr({"ap": "法术", "atk": "物理输出", "tank": "坦", "sup": "辅助"}[k])
+        return k, tr(KIND_LABEL[k])
 
     def build_audit(self, g):
         """赛后：出装时间线 + 增幅，检查互相矛盾的地方 ——
@@ -8211,10 +8298,12 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             curve_cv.pack_forget()
         # 出装页
         normal = [] if has_brief else [x for x in tips if not x[2]][:2]
+        if rec.get("route"):                       # 本局路线（定路线）永远放第一行
+            normal = [(0, rec["route"], False, GOLD if rec.get("route_locked") else SUB)] + normal[:1]
         for i, lb in enumerate(tip_lbls):
             lb.pack_forget()
             if i < len(normal):
-                lb.config(text="▸" + normal[i][1])
+                lb.config(text="▸" + normal[i][1], fg=normal[i][3] if len(normal[i]) > 3 else FG)
                 lb.pack(fill="x", pady=(0, 1))
         fill_rows(item_rows, rec.get("items", [])[:4])
         # 增幅页
