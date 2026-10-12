@@ -362,6 +362,7 @@ EN.update({'{0:.1f} 万局': '{0:.1f}0k games', '{0} 局': '{0} games', '{0} {1:
 EN.update({'数据载入中': 'loading data'})
 EN.update({
     "——": " — ",
+    "物理输出": "physical damage",
     "你死 {0} 次（队友平均 {1:.0f}）→ 别第一个上": "You died {0}× (team avg {1:.0f}) → don't go in first",
     " · 每死一次 −{0:.0f}%": " · −{0:.0f}% per death",
     "三选一出现": "Augment choice appears",

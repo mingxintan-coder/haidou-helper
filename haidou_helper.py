@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.13.0"
+APP_VERSION = "2.13.1"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -2035,7 +2035,8 @@ class Advisor:
         # 出装方向（2.13）：已经出的大件合起来是什么路线（坦 / 物理 / 法术 / 攻速…）；英雄本身打什么伤害
         owned_big = [i for i in me.items if gd.is_completed(i) and not gd.is_boots(i)]
         owned_dir = self.rule_vec(norm({d: v for d, v in self.items_profile(owned_big).items() if d in BUILD_DIMS}), rules) \
-            if len(owned_big) >= 2 else None
+            if owned_big else None
+        dir_w = 1.0 if len(owned_big) >= 2 else 0.5           # 只有 1 件时方向还不确定：力度减半
         cp = self.rule_vec(norm({d: v for d, v in self.champ_profile(me.cid).items() if d in BUILD_DIMS}), rules)
         champ_ad = cp.get("AD", 0) + cp.get("CRIT", 0) + cp.get("LETHAL", 0)
         champ_ap = cp.get("AP", 0) + cp.get("MPEN", 0)
@@ -2074,9 +2075,9 @@ class Advisor:
             if owned_dir:
                 coh = cosine(owned_dir, nv)
                 if coh < 0.25 and not any(f > 0.05 for f, _ in factors):
-                    factors.append((-0.2, tr("跟你已经出的装备方向不同（会变成两边都不强）")))
+                    factors.append((-0.2 * dir_w, tr("跟你已经出的装备方向不同（会变成两边都不强）")))
                 elif coh > 0.6:
-                    factors.append((0.05, tr("延续你现在的出装路线")))
+                    factors.append((0.05 * dir_w, tr("延续你现在的出装路线")))
             syn = [a["name"] for a in my_augs if not (AUG_RULES.get(a.get("id")) or {}).get("crit_cap")
                    and cosine(norm((AUG_RULES.get(a.get("id")) or {}).get("prof") or a["tags"]), nv) > 0.5]
             if syn:
@@ -2531,7 +2532,7 @@ class Advisor:
         out.sort(key=lambda x: -x["raw"])
         if out and self._top is not None and out[0]["id"] != self._top:
             keep = next((i for i, x in enumerate(out) if x["id"] == self._top), None)
-            if keep is not None and out[keep]["raw"] >= out[0]["raw"] - 0.5:     # 差不到 0.5% 就不换第一
+            if keep is not None and out[keep]["raw"] >= out[0]["raw"] - 1.0:     # 差不到 1 个百分点就不换第一（2.13：原本 0.5，太容易来回换）
                 out.insert(0, out.pop(keep))
         if out:
             self._top = out[0]["id"]
@@ -4342,14 +4343,17 @@ class Engine:
                 text += tr(" · 每死一次 −{0:.0f}%").format(per * 100)
         return (tr("少死"), text, True)
 
-    ITEM_KIND = (("ap", ("AP", "MPEN"), "法术"), ("ad", ("AD", "CRIT", "LETHAL"), "物理"),
-                 ("as", ("AS", "ONHIT"), "攻速"), ("tank", ("ARMOR", "MR", "HP"), "坦"), ("sup", ("HEALSHIELD",), "辅助"))
-
     def item_kind(self, iid):
-        """一件大件属于哪条路线：法术 / 物理 / 攻速 / 坦 / 辅助（看属性比重最大的那组）"""
+        """一件大件属于哪条路线：法术 / 物理输出 / 坦 / 辅助。比各组属性的份量：
+             法术 = 法强 + 法穿；物理输出 = 物攻 + 暴击 + 穿甲 + ½（攻速 + 命中特效）（纳什之牙这类法术攻速装算法术）；
+             坦 = 0.6 ×（护甲 + 魔抗 + 生命）（很多输出装也带生命，所以打折）；辅助 = 治疗护盾"""
         v = norm({d: x for d, x in self.gd.item_vec(iid)[0].items() if d in BUILD_DIMS})
-        best = max(self.ITEM_KIND, key=lambda k: sum(v.get(d, 0) for d in k[1]))
-        return best[0], tr(best[2])
+        score = {"ap": v.get("AP", 0) + v.get("MPEN", 0),
+                 "atk": v.get("AD", 0) + v.get("CRIT", 0) + v.get("LETHAL", 0) + 0.5 * (v.get("AS", 0) + v.get("ONHIT", 0)),
+                 "tank": 0.6 * (v.get("ARMOR", 0) + v.get("MR", 0) + v.get("HP", 0)),
+                 "sup": v.get("HEALSHIELD", 0)}
+        k = max(score, key=score.get)
+        return k, tr({"ap": "法术", "atk": "物理输出", "tank": "坦", "sup": "辅助"}[k])
 
     def build_audit(self, g):
         """赛后：出装时间线 + 增幅，检查互相矛盾的地方 ——
@@ -4375,6 +4379,7 @@ class Engine:
         cp = norm({d: v for d, v in adv.champ_profile(g["champ"]).items() if d in BUILD_DIMS})
         ad = cp.get("AD", 0) + cp.get("CRIT", 0) + cp.get("LETHAL", 0)
         ap = cp.get("AP", 0) + cp.get("MPEN", 0)
+        ad += cp.get("AS", 0) + cp.get("ONHIT", 0)
         if 1206 in conv:                       # 转换恶作剧：魔攻变物攻
             ad, ap = ad + ap, 0
         if 1205 in conv:                       # 灵活转换：物攻变魔攻
@@ -4385,14 +4390,19 @@ class Engine:
             kinds.append((k, label, i))
             if k == "ap" and ap < 0.25 * ad:
                 issues.append(tr("「{0}」是法强装，但你打的是物理伤害").format(gd.item_name(i)))
-            elif k == "ad" and ad < 0.25 * ap:
+            elif k == "atk" and ad < 0.25 * ap and self.gd.item_vec(i)[0].get("AP", 0) <= 0:
                 issues.append(tr("「{0}」是物攻装，但你打的是魔法伤害").format(gd.item_name(i)))
         seq = []
         for k, label, i in kinds:
             if not seq or seq[-1][0] != k:
                 seq.append((k, label))
         switches = len(seq) - 1
-        if len(kinds) >= 3 and switches >= 2:          # 来回换（法术 → 坦 → 法术）或三条线各做一点
+        tags = set((gd.champ(g["champ"]) or {}).get("tags", []))
+        ok_kinds = {k for k, need in (("ap", ap >= 0.25), ("atk", ad >= 0.25),
+                                      ("tank", bool(tags & {"Tank", "Fighter"})), ("sup", "Support" in tags)) if need}
+        odd = {k for k, _, _ in kinds} - ok_kinds          # 英雄本身不走的路线
+        if len(kinds) >= 3 and switches >= 2 and (len({k for k, _ in seq}) >= 3 or odd):
+            # 来回换、而且换到英雄不走的路线（或三条线各做一点）才算；凯尔这种法术 + 攻速的混合英雄不算
             issues.append(tr("出装路线换了 {0} 次（{1}）：每条线都只做一半，哪边都不强").format(
                 switches, " → ".join(lbl for _, lbl in seq)))
         if issues:
