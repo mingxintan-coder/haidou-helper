@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.14.1"
+APP_VERSION = "2.14.2"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -6548,10 +6548,35 @@ class RiotCollector:
     CLIENT_TARGET = 5000      # 收满这么多局后只看你自己的新对局（每 15 分钟一次；模型只用最新的 2000 局）
     CLIENT_PAUSE_FULL = 900
 
+    PHASE_EVERY = 8
+    BUSY_PHASES = ("Lobby", "Matchmaking", "ReadyCheck", "ChampSelect", "GameStart", "InProgress", "Reconnect")
+
+    def client_busy(self, cred):
+        """在房间 / 排队 / 选英雄 / 对战：每 8 秒问一次客户端现在在哪个阶段（2.14.2：以前只在每轮开头问一次，
+           一轮要收 1～2 分钟，进了选英雄还会继续收，客户端就卡）"""
+        eng = getattr(self, "engine", None)
+        if eng is not None and (getattr(eng, "connected", False) or getattr(eng, "_cs_last", None)):
+            return True
+        now = time.time()
+        if now - getattr(self, "_phase_t", 0) >= self.PHASE_EVERY:
+            self._phase_t = now
+            try:
+                self._phase = lcu_get("/lol-gameflow/v1/gameflow-phase", cred, timeout=5)
+            except Exception:  # noqa
+                self._phase = None
+        return isinstance(getattr(self, "_phase", None), str) and self._phase in self.BUSY_PHASES
+
     def client_call(self, cred, path, halt):
         if halt():
             raise InterruptedError
+        if self.client_busy(cred):
+            self.status = tr("自建数据库：在房间 / 排队 / 选英雄 / 对战中，暂停收集")
+            self._next_pass = time.time() + 60
+            self._note_status()
+            raise InterruptedError
         time.sleep(self.CLIENT_GAP)
+        if halt() or self.client_busy(cred):
+            raise InterruptedError
         try:
             return lcu_get(path, cred, timeout=20)
         except urllib.error.HTTPError as e:
@@ -6614,12 +6639,11 @@ class RiotCollector:
             self.status = tr("自建数据库：等游戏客户端打开（从客户端收集）")
             self._note_status()
             return
-        phase = self.client_call(cred, "/lol-gameflow/v1/gameflow-phase", halt)
-        if isinstance(phase, str) and phase in ("ChampSelect", "GameStart", "InProgress", "Reconnect"):
-            self.status = tr("自建数据库：选英雄 / 对战中，暂停收集")
-            self._next_pass = time.time() + 60
-            self._note_status()
-            return                                   # 在房间、排队、选英雄时不打扰客户端
+        self._phase_t = 0
+        try:
+            self.client_call(cred, "/lol-gameflow/v1/gameflow-phase", halt)   # 在房间、排队、选英雄、对战时不打扰客户端
+        except InterruptedError:
+            return
         cur = self.client_call(cred, "/lol-summoner/v1/current-summoner", halt) or {}
         me = cur.get("puuid")                       # 每轮都问（换了帐号也跟得上）
         if not me:
@@ -8861,6 +8885,26 @@ def main():
     cfg = load_ui_cfg()
     set_lang(args.ui_lang or cfg.get("ui_lang", "zh"))
     args.lang = args.lang or cfg.get("data_lang") or default_data_lang(LANG)
+    if sys.platform.startswith("win") and not args.mock:
+        # 只开一个（2.14.2）：重新打开时旧的还开着，两个一起收集 / 一起刷新，电脑和客户端都会卡
+        try:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            k32.CreateMutexW.restype = ctypes.c_void_p
+            globals()["_SINGLE_MUTEX"] = k32.CreateMutexW(None, False, "HaidouHelperSingleInstance")
+            if k32.GetLastError() == 183:          # ERROR_ALREADY_EXISTS
+                try:
+                    import tkinter as tk
+                    import tkinter.messagebox as mb
+                    r = tk.Tk()
+                    r.withdraw()
+                    mb.showinfo(tr("海斗助手"), tr("海斗助手已经开着了（看看悬浮窗或工作列）。\n要重开请先关掉旧的。"))
+                    r.destroy()
+                except Exception:  # noqa
+                    pass
+                return
+        except Exception:  # noqa
+            pass
     print(tr('海斗助手 v{0}').format(APP_VERSION))
     install_crash_logging()
     # 已经有缓存：先用缓存马上开起来，几秒后背景再检查新版本（以前每次启动都要连好几个网站，很慢）

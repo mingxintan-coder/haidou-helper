@@ -563,6 +563,8 @@ EN.update({
     '和已选「{0}」冲突：变近战后攻击距离 / 远距离效果就没了': 'Conflicts with "{0}": becoming melee wastes its range effects',
     '增幅「{0}」': 'Augment "{0}" ',
     '矛盾：': 'Conflicts: ',
+    '海斗助手已经开着了（看看悬浮窗或工作列）。\n要重开请先关掉旧的。': 'Mayhem Helper is already running (check the overlay or taskbar).\nClose it first to restart.',
+    '自建数据库：在房间 / 排队 / 选英雄 / 对战中，暂停收集': 'Own DB: paused while in lobby / queue / champ select / game',
     '偏离本局路线（{0}，由「{1}」定下），两边都不强': 'off this game\'s path ({0}, set by "{1}") — ends up strong at neither',
     '偏离路线（{0}），但本局需要：{1}': 'off path ({0}), but needed this game: {1}',
     '偏离路线（{0}）：纯防御装，输出会不够': 'off path ({0}): pure defense, damage will fall short',
