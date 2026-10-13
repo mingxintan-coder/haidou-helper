@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.14.2"
+APP_VERSION = "2.15.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -1680,13 +1680,14 @@ class Advisor:
         return self._combine(ests, 0.0, tr("没有这个英雄的数据") if cs else tr("网上数据还没载入"))
 
     @staticmethod
-    def situ_pct(factors, fit, gate_fit=True, fit_w=2.0, fit_mid=0.6, cap=3.0):
+    def situ_pct(factors, fit, gate_fit=True, fit_w=2.0, fit_mid=0.6, cap=2.0):
         """本局调整（单位：胜率百分点，跟数据分开）：
              = 6 × Σ 本局因素（正面因素按契合度打折）+ fit_w × (契合度 − fit_mid)，限制在 ±cap
            （和数据同一个量级：常见装备之间真正的差距大约 ±2%）"""
         g = min(1.0, max(0.0, (fit - 0.3) / 0.4)) if gate_fit else 1.0
         v = 6 * sum(f * (g if f > 0 else 1) for f, _ in factors) + fit_w * (fit - fit_mid)
         # 软上限（2.13）：以前是硬切在 ±cap，好几件同时顶到 +3 就排不出先后，推荐会在不同路线之间乱跳
+        # 2.15 回测：装备的本局调整预测不了输赢（z≈−0.9），上限从 ±3 降到 ±2，让网上的大样本数据占主导
         return cap * math.tanh(v / cap)
 
     def bal(self, cid, key):
@@ -2097,9 +2098,7 @@ class Advisor:
                 factors.append((0.05, tr("我方领先，堆伤害滚雪球")))
             if t["power_diff"] < -2000 and ("SURVIVE" in special or (ehp and ehp[0] > 0.1)):
                 factors.append((0.06, tr("我方落后，先保命再反打")))
-            dbf = self.db_factor(me, "items", iid, 0.08)
-            if dbf:                         # 自建数据库：±最多 0.8%
-                factors = factors + [dbf]
+            # （2.15 回测：自建库「这个英雄出这件」的胜率样本太少，预测不了输赢，不再加减分；装备看网上的大样本数据）
             hab = self.habit_item(me, iid)
             if hab:                         # 你的习惯：+最多 1%
                 factors = factors + [hab]
@@ -2155,7 +2154,7 @@ class Advisor:
         cpm = model["cp"]
         tn = sum(cpm.get("{0}|{1}".format(champ, k), [0, 0])[0] for k in PATH_KINDS)
         tw = sum(cpm.get("{0}|{1}".format(champ, k), [0, 0])[1] for k in PATH_KINDS)
-        prior = (tw + 20) / (tn + 40)
+        prior = (tw + 0.5 * CHAMP_K) / (tn + CHAMP_K)
         for p in kinds or PATH_KINDS:
             n, w = cpm.get("{0}|{1}".format(champ, p), [0, 0])
             if p in online and online[p][0] > 0:
@@ -2191,7 +2190,8 @@ class Advisor:
         rel = {k: v / mx for k, v in sup.items()}
         best = max(rel, key=rel.get)
         # 胜率（2.14.1）：英雄用得上的路线（份量 ≥ 主路线 30%）里，按自建数据库 + 网上数据 + 阵容 + 增幅
-        # 预估胜率最高的那条；样本不够（< 30 局）或差不到 0.5 个百分点就还是按属性
+        # 预估胜率最高的那条；样本不够（< 30 局）或差不到 1 个百分点就还是按属性
+        # （2.15 回测：出装主路线比预估最高的低 1 个百分点以上的玩家，胜率 45.7%，在最高那条上的 50.5%）
         wr = {}
         try:
             wr = self.path_options(me, allies, enemies, my_augs, cs,
@@ -2201,7 +2201,7 @@ class Advisor:
         by_wr = False
         if wr:
             top = max(wr, key=lambda k: wr[k][0])
-            if wr[top][1] >= 30 and (best not in wr or top == best or wr[top][0] - wr[best][0] >= 0.005):
+            if wr[top][1] >= 30 and (best not in wr or top == best or wr[top][0] - wr[best][0] >= 0.01):
                 by_wr, best = True, top
         wr_text = " · ".join(tr("{0} {1:.1f}%").format(tr(KIND_LABEL[k]), v[0] * 100)
                              for k, v in sorted(wr.items(), key=lambda kv: -kv[1][0]) if v[1] >= 30)
@@ -2274,6 +2274,17 @@ class Advisor:
                 "price": self.gd.item_price(iid), "reason": why, "wr": de["wr"], "stat_text": detail,
                 "boots": boots, "hint": ""}
 
+    def db_aug(self, a):
+        """自建数据库的增幅胜率提升 (提升, 局数)；样本不到 30 局不算"""
+        db = getattr(self, "riotdb", None)
+        if db is None or not a.get("id"):
+            return None
+        try:
+            x = db.aug_lifts().get(a["id"])
+        except Exception:  # noqa
+            return None
+        return x if x and x[1] >= 30 else None
+
     def db_factor(self, me, kind, key, cap):
         """自建数据库（你用 Riot 密钥收集的海斗对局）：这个英雄出这件 / 拿这个增幅时的胜率，
         对比这个英雄的平均；有你段位的足够样本就只看你的段位。加分 = clamp(6 × 收缩后的胜率差, ±cap)"""
@@ -2301,7 +2312,7 @@ class Advisor:
         if abs(v) < 0.015:
             return None
         return (v, tr('{0} {1} 局里出现 {2} 次，胜率 {3:.0f}%（{4:+.0f}%）').format(
-            label, n_all, row[0], 100 * row[1] / row[0], 100 * (row[1] / row[0] - base)))
+            label, int(round(n_all)), int(round(row[0])), 100 * row[1] / row[0], 100 * (row[1] / row[0] - base)))
 
     def habit_summary(self, me):
         hp = self.habit_profile(me)
@@ -2371,14 +2382,14 @@ class Advisor:
         return syn[0], syn[1], name
 
     def champ_strength(self, cid, minus=(0, 0)):
-        """英雄强度（对数胜算，平均约 0）：自建数据库里这个英雄的胜率，往 50% 收缩（相当于先给 40 局五五开）。
+        """英雄强度（对数胜算，平均约 0）：自建数据库里这个英雄的胜率，往 50% 收缩（先给 CHAMP_K 局五五开）。
            minus＝(局数, 胜场) 训练时扣掉「这一局」本身，免得用答案预测答案"""
         c = self.gd.champ(cid) or {}
         db = getattr(self, "riotdb", None)
         x = db.champ(c.get("id", cid)) if db is not None else None
         n = (x["n"] if x else 0) - minus[0]
         w = (x["w"] if x else 0) - minus[1]
-        p = (w + 20) / (n + 40)
+        p = (w + 0.5 * CHAMP_K) / (n + CHAMP_K)
         return math.log(p / (1 - p))
 
     def champ_win_est(self, cid):
@@ -2393,7 +2404,7 @@ class Advisor:
         if base is None:
             db = getattr(self, "riotdb", None)
             x = db.champ(c.get("id", cid)) if db is not None else None
-            base = (x["w"] + 20) / (x["n"] + 40) if x else 0.5
+            base = (x["w"] + 0.5 * CHAMP_K) / (x["n"] + CHAMP_K) if x else 0.5
         store = getattr(self, "habits_store", None)
         if store is not None and store.enabled:
             hp = store.profile(c.get("id", cid))
@@ -2782,10 +2793,7 @@ class Advisor:
         if combo_f:
             situ += combo_f[0]
             factors.insert(0, combo_f)
-        dbf = self.db_factor(me, "augs", a.get("id"), 0.12) if a.get("id") else None
-        if dbf:                          # 自建数据库：±最多 0.12
-            situ += dbf[0]
-            factors.insert(0, dbf)
+        own = self.db_aug(a)            # 自建数据库：这张增幅（不分英雄）的胜率提升
         hab = self.habit_aug(me, a)
         if hab:                          # 你的习惯：+最多 0.15
             situ += hab[0]
@@ -2804,7 +2812,15 @@ class Advisor:
             if lift > 0:
                 combo_hint = txt
         adj = max(-4.0, min(4.0, adj))
-        total = de["d"] * 100 + adj
+        own_pct = 0.0
+        if own:
+            lift, n = own
+            # 网上已经有这个英雄拿这张的数据时，自建库只算一半（两边量的是同一件事）
+            own_pct = max(-3.0, min(3.0, 100 * lift * (0.5 if de["has"] else 1.0)))
+            if abs(own_pct) >= 0.3:
+                factors.insert(0, (0.1 if lift > 0 else -0.1,
+                                   tr("自建库：拿这张的玩家比同英雄平均 {0:+.1f}%（{1} 次）").format(lift * 100, int(round(n)))))
+        total = de["d"] * 100 + adj + own_pct
         rf = list(factors)
         if am_pick is not None and (am_pick >= 0.3 or am_pick < 0.03):
             rf.append((0.05 if am_pick >= 0.3 else -0.05, tr('国服选取率 {0:.0f}%').format(am_pick * 100)))
@@ -2813,7 +2829,9 @@ class Advisor:
                 "d": de["d"] * 100, "ci": de["ci"] * 100 if de["ci"] else None, "n": de["n"], "adj": adj,
                 "has_data": de["has"], "data_text": de["text"],
                 "rarity": a.get("rarity", 0), "reason": why, "known": bool(a.get("desc")), "wr": de["wr"],
-                "stat_text": tr("网上数据：") + de["text"] + "\n" + tr("本局调整 {0:+.1f}%：").format(adj) + why}
+                "own": own_pct,
+                "stat_text": tr("网上数据：") + de["text"] + "\n" + tr("本局调整 {0:+.1f}%：").format(adj) + why +
+                ("\n" + tr("自建库 {0:+.1f}%").format(own_pct) if abs(own_pct) >= 0.05 else "")}
 
     def recommend_augs(self, me, my_augs, t, candidates, k=5, cs=None):
         prof = self.my_profile(me, my_augs)
@@ -3930,6 +3948,10 @@ class Engine:
             time.sleep(5)                              # 让窗口先开起来
             self.ensure_seed()
             n = self.riotdb.import_seed()
+            try:
+                self.riotdb.compact()
+            except Exception:  # noqa
+                log_crash("compact failed", sys.exc_info())
             if n:
                 self.q.put(("data", tr("已并入附带的对局资料：新增 {0} 局").format(n)))
             m = self.riotdb.maybe_refit()
@@ -6277,6 +6299,10 @@ def wp_predict(model, m, gd, kd, ld, td, comp=0.0):
     return 1 / (1 + math.exp(-max(-30, min(30, z))))
 
 
+# 2.15 回测：自建库每个英雄只有一两百局，英雄胜率往 50% 只收缩 40 局时，拿来预测新版本的对局比瞎猜还差；
+# 收缩 200 局才不会帮倒忙（英雄本身强弱主要看网上的大样本数据）
+CHAMP_K = 200
+AUG_K = 200              # 增幅胜率（不分英雄）往 0 收缩的局数
 PATH_KINDS = ("ap", "atk", "tank")
 PATH_K0 = 100            # 英雄 × 路线胜率的先验（局数，50/50）
 
@@ -6336,6 +6362,7 @@ class RiotCollector:
         self.cfront = list(st.get("cfront", []))      # 客户端模式的待查玩家（客户端的 puuid 跟 Riot 接口的不一样）
         self.on_model = None
         self.lock = threading.Lock()
+        self.io = threading.RLock()                   # 整理档案（去重）时别同时写
         self.status = ""
         self.added = 0
         self._agg = None
@@ -6693,7 +6720,7 @@ class RiotCollector:
                     self.dlog("client {0}: {1}".format(mid, "unreadable" if full is None else "not a full Mayhem game"))
                     continue
                 rows, team_of, blue_win, players = parsed
-                with open(os.path.join(self.dir, "matches.jsonl"), "a", encoding="utf-8") as f:
+                with self.io, open(os.path.join(self.dir, "matches.jsonl"), "a", encoding="utf-8") as f:
                     for r in rows:
                         f.write(json.dumps(r, ensure_ascii=False) + "\n")
                 self.seen[mid] = None
@@ -6710,7 +6737,7 @@ class RiotCollector:
                     self._sample("timeline", tl)
                     trows = timeline_rows(tl, team_of, blue_win, mid) if tl else []
                     if trows:
-                        with open(os.path.join(self.dir, "timelines.jsonl"), "a", encoding="utf-8") as f:
+                        with self.io, open(os.path.join(self.dir, "timelines.jsonl"), "a", encoding="utf-8") as f:
                             for r in trows:
                                 f.write(json.dumps(r) + "\n")
                         self.tl_new += 1
@@ -6721,6 +6748,7 @@ class RiotCollector:
                         self.dlog(f"client {mid}: no timeline")
                 self.dlog(f"client {mid}: added" + ("" if mid in self.tl_done else " (no timeline)"))
                 self.status = tr('自建数据库：本次新增 {0} 局').format(self.added)
+                self.save_state()                    # 每收一局就记下来（中途关掉、重开也不会重复收）
             self.save_state()
         if self.added and self.on_new:
             self.on_new()
@@ -6768,7 +6796,7 @@ class RiotCollector:
                 if halt():
                     break
                 r["t"] = self.tier_of(api, r["u"], halt)
-        with open(os.path.join(self.dir, "matches.jsonl"), "a", encoding="utf-8") as f:
+        with self.io, open(os.path.join(self.dir, "matches.jsonl"), "a", encoding="utf-8") as f:
             for r in rows:
                 r.pop("u", None)
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
@@ -6813,7 +6841,7 @@ class RiotCollector:
             return
         rows = timeline_rows(tl, team_of, blue_win, mid)
         if rows:
-            with open(os.path.join(self.dir, "timelines.jsonl"), "a", encoding="utf-8") as f:
+            with self.io, open(os.path.join(self.dir, "timelines.jsonl"), "a", encoding="utf-8") as f:
                 for r in rows:
                     f.write(json.dumps(r) + "\n")
             self.tl_new += 1
@@ -6891,6 +6919,7 @@ class RiotCollector:
                 trt[c] = adv.champ_traits(c)
             return trt[c]
         out = []
+        pw = self.patch_weights()
         for g in self.games().values():
             for r in g:
                 its = [s for s in (ks(i) for i in r.get("i") or []) if s]
@@ -6909,7 +6938,7 @@ class RiotCollector:
                         al = [x + y for x, y in zip(al, v)]
                 ctx = al + [sum(1 for c in ally if tt(c)["ap"]), sum(1 for c in en if tt(c)["ap"]),
                             sum(1 for c in ally if tt(c)["front"]), sum(1 for c in en if tt(c)["front"])]
-                out.append({"c": r["c"], "p": main, "w": 1 if won else 0, "ctx": ctx})
+                out.append({"c": r["c"], "p": main, "w": 1 if won else 0, "ctx": ctx, "q": pw.get(r.get("v", ""), 0.1)})
         return out
 
     def maybe_path(self, force=False):
@@ -6929,10 +6958,10 @@ class RiotCollector:
         if len(rows) < 2000:
             return have
         cnt = {}
-        for r in rows:
+        for r in rows:                              # 英雄 × 路线的局数按版本加权
             x = cnt.setdefault((r["c"], r["p"]), [0, 0])
-            x[0] += 1
-            x[1] += r["w"]
+            x[0] += r["q"]
+            x[1] += r["w"] * r["q"]
         X, y = [], []
         tot = {}
         for (c, p), v in cnt.items():
@@ -6942,8 +6971,9 @@ class RiotCollector:
         for r in rows:
             k_n, k_w = cnt[(r["c"], r["p"])]
             t = tot[r["c"]]
-            prior = (t[1] - r["w"] + 20) / (t[0] - 1 + 40)
-            X.append(path_vec(path_logit(k_n - 1, k_w - r["w"], prior), r["p"], r["ctx"]))   # 扣掉这一局，免得自己预测自己
+            q = r["q"]
+            prior = (t[1] - q * r["w"] + 0.5 * CHAMP_K) / (t[0] - q + CHAMP_K)
+            X.append(path_vec(path_logit(k_n - q, k_w - q * r["w"], prior), r["p"], r["ctx"]))   # 扣掉这一局，免得自己预测自己
             y.append(r["w"])
         beta = _fit_logit(X, y, lam=5.0)
         model = {"beta": beta, "games": n, "rows": len(rows),
@@ -7020,14 +7050,8 @@ class RiotCollector:
                         tl_have.add(mt.group(1))
         new_rows = [r for r in seed.get("matches", []) if r.get("m") and r["m"] not in have]
         new_tl = [r for r in seed.get("timelines", []) if r.get("id") and r["id"] not in tl_have]
-        if new_rows:
-            with open(os.path.join(self.dir, "matches.jsonl"), "a", encoding="utf-8") as f:
-                for r in new_rows:
-                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
-        if new_tl:
-            with open(tl_path, "a", encoding="utf-8") as f:
-                for r in new_tl:
-                    f.write(json.dumps(r) + "\n")
+        with self.io:
+            self._seed_write(new_rows, new_tl, tl_path)
         with self.lock:
             for r in new_rows:
                 self.seen[r["m"]] = None
@@ -7045,6 +7069,69 @@ class RiotCollector:
         write_json(self.state_path, st)
         self.dlog("seed: +{0} games, +{1} timelines".format(games_added, len({r['id'] for r in new_tl})))
         return games_added
+
+    def _seed_write(self, new_rows, new_tl, tl_path):
+        if new_rows:
+            with self.io, open(os.path.join(self.dir, "matches.jsonl"), "a", encoding="utf-8") as f:
+                for r in new_rows:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        if new_tl:
+            with open(tl_path, "a", encoding="utf-8") as f:
+                for r in new_tl:
+                    f.write(json.dumps(r) + "\n")
+
+    def compact(self):
+        """整理数据库（2.15）：同一局被写了两次（例如收集到一半关掉、重开后又收一次）只留第一份，
+           不完整的局（不到 10 人）删掉；时间线同一局同一分钟只留一行。先写到 .tmp 再换掉，中途关掉也不会坏。
+           回传删掉的行数"""
+        removed = 0
+        with self.io:
+            for name, key in (("matches.jsonl", "m"), ("timelines.jsonl", None)):
+                path = os.path.join(self.dir, name)
+                if not os.path.exists(path):
+                    continue
+                keep, cnt, total = [], {}, 0
+                with open(path, encoding="utf-8") as f:
+                    lines = f.readlines()
+                parsed = []
+                for line in lines:
+                    total += 1
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    parsed.append((line if line.endswith("\n") else line + "\n", r))
+                if key:
+                    for _, r in parsed:
+                        cnt[r.get("m")] = cnt.get(r.get("m"), 0) + 1
+                    taken = {}
+                    for line, r in parsed:
+                        m = r.get("m")
+                        if not m or cnt[m] < 10 or taken.get(m, 0) >= 10:
+                            continue
+                        taken[m] = taken.get(m, 0) + 1
+                        keep.append(line)
+                else:
+                    seen = set()
+                    for line, r in parsed:
+                        k = (r.get("id"), r.get("m"))
+                        if k in seen:
+                            continue
+                        seen.add(k)
+                        keep.append(line)
+                if len(keep) == total:
+                    continue
+                tmp = path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.writelines(keep)
+                os.replace(tmp, path)
+                removed += total - len(keep)
+            if removed:
+                with self.lock:
+                    self._agg = self._games = self._lines = self._tl_count = None
+                    self._pairs = None
+                self.dlog("compact: removed {0} duplicate / broken lines".format(removed))
+        return removed
 
     def make_comp_fn(self, tl_rows):
         """给 fit_winmodel 用：comp_fn(训练用的对局, held=留出的对局) → {对局: 阵容胜算差（蓝 − 红）}。
@@ -7106,36 +7193,37 @@ class RiotCollector:
     # ---------- 统计 ----------
     def aggregate(self):
         """{英雄: {"n": 局数, "w": 胜场, "tiers": {段位: [n, w]}, "items": {装备: [n, w]}, "augs": {增幅: [n, w]},
-                   "items_t": {(段位, 装备): [n, w]}}}（只用最近两个版本）"""
+                   "items_t": {(段位, 装备): [n, w]}}}（局数按版本加权：旧版本打折，见 patch_weights）"""
         with self.lock:
             if self._agg is not None:
                 return self._agg
         rows = [r for g in self.games().values() for r in g]
-        patches = sorted({r.get("v", "") for r in rows}, key=ver_tuple)[-2:]
+        pw = self.patch_weights()
         agg = {}
         for r in rows:
-            if r.get("v") not in patches or not r.get("c"):
+            q = pw.get(r.get("v", ""), 0.1)          # 版本权重：旧版本的局打折
+            if not r.get("c"):
                 continue
             c = agg.setdefault(str(r["c"]).lower(), {"n": 0, "w": 0, "tiers": {}, "items": {}, "augs": {}, "items_t": {}})
-            w = 1 if r.get("w") else 0
-            c["n"] += 1
+            w = q if r.get("w") else 0
+            c["n"] += q
             c["w"] += w
             t = r.get("t")
             if t:
                 x = c["tiers"].setdefault(t, [0, 0])
-                x[0] += 1
+                x[0] += q
                 x[1] += w
             for i in set(r.get("i", [])):
                 x = c["items"].setdefault(i, [0, 0])
-                x[0] += 1
+                x[0] += q
                 x[1] += w
                 if t:
                     x = c["items_t"].setdefault((t, i), [0, 0])
-                    x[0] += 1
+                    x[0] += q
                     x[1] += w
             for a in set(r.get("a", [])):
                 x = c["augs"].setdefault(a, [0, 0])
-                x[0] += 1
+                x[0] += q
                 x[1] += w
         with self.lock:
             self._agg = agg
@@ -7166,34 +7254,80 @@ class RiotCollector:
                     g.append(r)
         out = {k: v for k, v in out.items() if k and len(v) == 10}
         self._games = (size, out)
+        self._pw = None
+        return out
+
+    def patch_weights(self):
+        """版本权重（2.15）：海斗每个版本都调平衡，旧版本的对局打折 —— 最新版本 1，往前每隔一个「有 ≥150 局」的版本减半，
+           最低 0.1（刚出的新版本局数还少时，上一个版本也算 1）。{版本: 权重}"""
+        g = self.games()
+        pw = getattr(self, "_pw", None)
+        if pw and pw[0] is g:
+            return pw[1]
+        cnt = {}
+        for rows in g.values():
+            v = rows[0].get("v", "")
+            cnt[v] = cnt.get(v, 0) + 1
+        out, k = {}, 0
+        for v in sorted(cnt, key=ver_tuple, reverse=True):
+            out[v] = max(0.1, 0.5 ** k)
+            if cnt[v] >= 150:
+                k += 1
+        self._pw = (g, out)
         return out
 
     def aug_pairs(self):
-        """增幅组合：{(a, b): [局数, 胜场]}、单张 {a: [局数, 胜场]}（每个玩家身上的增幅两两配对；最近两个版本）"""
+        """增幅组合：{(a, b): [局数, 胜场]}、单张 {a: [局数, 胜场]}（每个玩家身上的增幅两两配对；局数按版本加权）"""
         g = self.games()
         key = len(g)
         cache = getattr(self, "_pairs", None)
         if cache and cache[0] == key:
             return cache[1], cache[2]
         rows = [r for v in g.values() for r in v]
-        patches = sorted({r.get("v", "") for r in rows}, key=ver_tuple)[-2:]
+        pw = self.patch_weights()
         pairs, single = {}, {}
         for r in rows:
-            if r.get("v") not in patches:
-                continue
-            w = 1 if r.get("w") else 0
+            q = pw.get(r.get("v", ""), 0.1)
+            w = q if r.get("w") else 0
             augs = sorted(set(r.get("a") or []))
             for a in augs:
                 x = single.setdefault(a, [0, 0])
-                x[0] += 1
+                x[0] += q
                 x[1] += w
             for i in range(len(augs)):
                 for j in range(i + 1, len(augs)):
                     x = pairs.setdefault((augs[i], augs[j]), [0, 0])
-                    x[0] += 1
+                    x[0] += q
                     x[1] += w
         self._pairs = (key, pairs, single)
         return pairs, single
+
+    def aug_lifts(self):
+        """增幅胜率（2.15，不分英雄）：拿了这张增幅的玩家，比「同一个英雄的平均胜率」高多少，往 0 收缩 AUG_K 局，按版本加权。
+           回测（新版本后 40% 的对局当考题）：不分英雄的增幅胜率能预测输赢；分英雄算样本太少，反而更差。
+           {增幅编号: (提升, 局数)}"""
+        g = self.games()
+        cache = getattr(self, "_auglift", None)
+        if cache and cache[0] is g:
+            return cache[1]
+        agg = self.aggregate()
+        pw = self.patch_weights()
+        acc = {}
+        for rows in g.values():
+            for r in rows:
+                c = agg.get(str(r.get("c", "")).lower())
+                if not c:
+                    continue
+                q = pw.get(r.get("v", ""), 0.1)
+                e = (c["w"] + 0.5 * CHAMP_K) / (c["n"] + CHAMP_K)
+                y = 1.0 if r.get("w") else 0.0
+                for a in set(r.get("a") or []):
+                    x = acc.setdefault(a, [0.0, 0.0])
+                    x[0] += q
+                    x[1] += q * (y - e)
+        out = {a: (x[1] / (x[0] + AUG_K), x[0]) for a, x in acc.items()}
+        self._auglift = (g, out)
+        return out
 
     def synergy(self, aid, owned_ids, k=60, nmin=30):
         """候选增幅 aid 和你已有的增幅一起拿时，胜率比「两张各自的胜率平均」高多少（经验贝叶斯往 0 收缩：k 局的先验）。
