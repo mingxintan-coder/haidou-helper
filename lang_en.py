@@ -563,6 +563,7 @@ EN.update({
     '和已选「{0}」冲突：变近战后攻击距离 / 远距离效果就没了': 'Conflicts with "{0}": becoming melee wastes its range effects',
     '增幅「{0}」': 'Augment "{0}" ',
     '矛盾：': 'Conflicts: ',
+    '第 {0} 件 {1}：推荐第 {2}，跟第一名差不多 ✓': 'Item {0} {1}: ranked #{2}, about the same as #1 ✓',
     '{0}推荐检验：照推荐 {1} 局、没照 {2} 局，两边各要 5 局才比较（还差 {3} 局）': "{0} check: followed {1} games, didn't {2}; need 5 of each to compare ({3} to go)",
     '{0}照推荐的局 胜率 {1:.0f}%（{2} 局），没照的 {3:.0f}%（{4} 局）': "{0}: followed the recommendation {1:.0f}% WR ({2} games), didn't {3:.0f}% ({4} games)",
     '你选的 vs 推荐的：': 'Your picks vs recommended: ',

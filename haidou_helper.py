@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.17.0"
+APP_VERSION = "3.0.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -2141,6 +2141,10 @@ class Advisor:
                     sum(1 for x in tt if x["front"]), sum(1 for x in te if x["front"])]
         online = {}
         if cs and cs.get("core") and cs.get("n"):
+            # 3.0：核心出装的胜率是「做完三件的局」，本来就比英雄平均高（打得久、打得顺才做得完）；
+            # 只取各路线之间的「相对」差，接在自建库的英雄平均上，免得有网上核心出装的路线都被高估
+            tot = sum(c["pick"] for c in cs["core"]) or 1.0
+            core_mean = sum(c["pick"] * c["wr"] for c in cs["core"]) / tot
             for core in cs["core"]:
                 kk = [self.item_kind_id(i) for i in core["items"]]
                 kk = [k for k in kk if k]
@@ -2150,7 +2154,7 @@ class Advisor:
                 o = online.setdefault(k, [0.0, 0.0])
                 n_on = core["pick"] * cs["n"]
                 o[0] += n_on
-                o[1] += n_on * core["wr"]
+                o[1] += n_on * (core["wr"] - core_mean)
         out = {}
         cpm = model["cp"]
         tn = sum(cpm.get("{0}|{1}".format(champ, k), [0, 0])[0] for k in PATH_KINDS)
@@ -2160,7 +2164,8 @@ class Advisor:
             n, w = cpm.get("{0}|{1}".format(champ, p), [0, 0])
             if p in online and online[p][0] > 0:
                 scale = min(1.0, 3000 / online[p][0])
-                n, w = n + online[p][0] * scale, w + online[p][1] * scale
+                n_add = online[p][0] * scale
+                n, w = n + n_add, w + n_add * prior + online[p][1] * scale    # 英雄平均 + 这条路线比其他路线高多少
             out[p] = (path_score(model, path_logit(n, w, prior), p, ctx), int(n))
         return out
 
@@ -2398,7 +2403,7 @@ class Advisor:
 
     def champ_win_est(self, cid):
         """这个英雄（由你来玩）的预估胜率：
-             英雄本身＝网上海斗胜率（已下载的才用，按样本数往 50% 收缩）；没有就用自建数据库（先给 40 局五五开）；
+             英雄本身＝网上海斗胜率（已下载的才用，按样本数往 50% 收缩）；没有就用自建数据库（先给 CHAMP_K 局五五开）；
              你自己＝你玩这个英雄的胜率，以英雄本身为先验、给 8 局的份量（玩得多才会偏离）"""
         c = self.gd.champ(cid) or {}
         base = None
@@ -2807,8 +2812,7 @@ class Advisor:
             factors.insert(0, hab)
         # 本局调整（百分点）：本局因素 + 契合度（没数据时契合度更重要）+ 国服选取率（小幅）+ 稀有度（没数据时）
         adj = 6 * situ + (1.5 if de["has"] else 4.0) * (fit - 0.5) + 10 * pop * (0.5 if de["has"] else 1.0)
-        if not de["has"]:
-            adj += 0.5 * a.get("rarity", 0)
+        # （3.0：拿掉「没数据时稀有度越高越加分」—— 自建库里银 / 金 / 棱彩增幅的平均胜率提升都约 0，是偏差）
         syn = self.aug_synergy(a, my_augs)
         combo_hint = None
         if syn:                          # 自建数据库：和已有增幅一起拿的胜率提升（±最多 2 个百分点）
@@ -4317,8 +4321,9 @@ class Engine:
         for c in g.get("choices") or []:
             if c["k"] == "item":
                 n_big += 1
-                if c["rank"] == 1:
-                    txt = tr("第 {0} 件 {1}：推荐第 1 ✓").format(n_big, gd.item_name(c["pick"]))
+                if c["rank"] == 1 or (c["rank"] and (c.get("gap") or 0) >= -0.05):   # 第一名是平滑后的排序，分数差不多也算照推荐
+                    txt = tr("第 {0} 件 {1}：推荐第 1 ✓").format(n_big, gd.item_name(c["pick"])) if c["rank"] == 1 else \
+                        tr("第 {0} 件 {1}：推荐第 {2}，跟第一名差不多 ✓").format(n_big, gd.item_name(c["pick"]), c["rank"])
                 elif c["rank"]:
                     txt = tr("第 {0} 件 {1}：推荐第 {2}，比第一名「{3}」低 {4:.1f}%").format(
                         n_big, gd.item_name(c["pick"]), c["rank"], gd.item_name(c["top"]), -c["gap"])
@@ -4595,7 +4600,7 @@ class Engine:
             half = len(b) // 2
             u = min(max(me.game_time / 60, 0), 30) / 10
             p = self._wp_now[0] if getattr(self, "_wp_now", None) else 0.5
-            per = (b[3] + b[3 + half] * u) * p * (1 - p)
+            per = model.get("scale", 1.0) * (b[3] + b[3 + half] * u) * p * (1 - p)
             if per > 0.01:
                 text += tr(" 每座 +{0:.0f}%").format(per * 100)
         return (tr("推塔"), text, True)
@@ -4615,7 +4620,7 @@ class Engine:
             b = model["beta"]
             half = len(b) // 2
             u = min(max(me.game_time / 60, 0), 30) / 10
-            per = (b[1] + b[1 + half] * u) * p * (1 - p)          # 人头差每少 1，胜率大约少这么多
+            per = model.get("scale", 1.0) * (b[1] + b[1 + half] * u) * p * (1 - p)   # 人头差每少 1，胜率大约少这么多
             if per > 0.005:
                 text += tr(" · 每死一次 −{0:.0f}%").format(per * 100)
         return (tr("少死"), text, True)
@@ -4770,7 +4775,9 @@ class Engine:
                         tot += x[0]
                 self._aug_wp_cache = cache = (names, tot)
             aug = cache[1]
-        p = wp_predict(model, *f, comp=comp, aug=aug)
+        team = str(state[2].team).upper()
+        side = 1.0 if team in ("ORDER", "100", "BLUE") else -1.0 if team in ("CHAOS", "200", "RED") else 0.0
+        p = wp_predict(model, *f, comp=comp, aug=aug, side=side)
         if p is None:
             return None
         g = self.cur_game
@@ -6238,11 +6245,12 @@ WP_FEATS = ("gd", "kd", "ld", "td")
 WP_MIN_GAMES = 150
 
 
-def wp_vector(m, gd, kd, ld, td, comp=None):
-    """comp＝阵容的胜算差（2.5 起的模型才有）：开局时经济人头都差不多，阵容决定大部分；时间越久越看场上"""
+def wp_vector(m, gd, kd, ld, td, comp=None, side=None):
+    """comp＝阵容的胜算差（2.5 起的模型才有）：开局时经济人头都差不多，阵容决定大部分；时间越久越看场上。
+       side＝蓝方 +1 / 红方 −1（3.0：你的库里蓝方赢 52.9%，以前的模型左右对称、没算这个，红方的胜率会偏高）"""
     u = min(max(m, 0), 30) / 10
     x = [gd, kd, ld, td] + ([comp] if comp is not None else [])
-    return x + [v * u for v in x]
+    return x + [v * u for v in x] + ([side] if side is not None else [])
 
 
 def timeline_rows(tl, team_of, blue_win, mid=""):
@@ -6349,8 +6357,8 @@ def aug_frac(m):
 
 
 def _row_x(r, comp_of=None, aug_of=None):
-    if aug_of is not None:                  # v3：增幅强度（只有你自己的增幅看得到，所以每局只用一个玩家的）
-        return wp_vector(r["m"], r["gd"], r["kd"], r["ld"], r["td"], aug_of.get(r["id"], 0.0) * aug_frac(r["m"]))
+    if aug_of is not None:                  # v3：增幅强度（只有你自己的增幅看得到，所以每局只用一个玩家的）+ 蓝红方
+        return wp_vector(r["m"], r["gd"], r["kd"], r["ld"], r["td"], aug_of.get(r["id"], 0.0) * aug_frac(r["m"]), 1.0)
     comp = comp_of.get(r["id"], 0.0) if comp_of is not None else None
     return wp_vector(r["m"], r["gd"], r["kd"], r["ld"], r["td"], comp)
 
@@ -6413,7 +6421,7 @@ def fit_winmodel(rows, comp_fn=None, aug_fn=None):
         beta_all = _fit_logit(*_sym(rows, None, aug_all))
         return {"beta": beta_all, "games": len(games), "rows": len(rows), "test_games": len(test_ids),
                 "acc8": acc8, "acc_early": acc_e, "logloss": ll, "logloss_raw": base_ll, "scale": scale,
-                "date": time.strftime("%Y-%m-%d %H:%M"), "v": 3}
+                "date": time.strftime("%Y-%m-%d %H:%M"), "v": 3, "side": 1}
     comp_tr = comp_fn(sorted(set(games) - test_ids), held=test_ids) if comp_fn else None
     beta = _fit_logit(*_sym(train, comp_tr))
     acc8, acc_e, ll = _wp_eval(beta, test, comp_tr)
@@ -6443,12 +6451,12 @@ def fit_comp(diffs, wins, lam=3.0):
     return _fit_logit(X, y, lam=lam)
 
 
-def wp_predict(model, m, gd, kd, ld, td, comp=0.0, aug=0.0):
-    """我方胜率（输入都是 我方 − 敌方；aug＝你已选增幅的胜率提升总和，v3 模型才用）"""
+def wp_predict(model, m, gd, kd, ld, td, comp=0.0, aug=0.0, side=0.0):
+    """我方胜率（输入都是 我方 − 敌方；aug＝你已选增幅的胜率提升总和，v3 模型才用；side＝我方是蓝方 +1 / 红方 −1）"""
     if not model or not model.get("beta"):
         return None
     if model.get("v") == 3:
-        vec = wp_vector(m, gd, kd, ld, td, aug)
+        vec = wp_vector(m, gd, kd, ld, td, aug, side if len(model["beta"]) == 11 else None)
     else:
         vec = wp_vector(m, gd, kd, ld, td, comp) if model.get("v") == 2 else wp_vector(m, gd, kd, ld, td)
     z = model.get("scale", 1.0) * sum(b * v for b, v in zip(model["beta"], vec))
@@ -7163,7 +7171,7 @@ class RiotCollector:
         adv = getattr(self, "advisor", None)
         if have and have.get("comp") and getattr(self, "comp_model", None) is None:
             self.comp_model = have["comp"]
-        old_kind = have and adv is not None and have.get("v") != 3   # 旧版模型：有资料就重练成新版（v3＝含你的增幅强度、有校准）
+        old_kind = have and adv is not None and (have.get("v") != 3 or not have.get("side"))   # 旧版模型：重练成新版（v3＝含你的增幅强度、校准、蓝红方）
         if not force and have and not old_kind and self.tl_new < max(30, 0.25 * (have.get("games") or 0)):
             return have                             # 多了 25%（至少 30 局）才重新训练
         path = os.path.join(self.dir, "timelines.jsonl")
@@ -7306,9 +7314,11 @@ class RiotCollector:
                 os.replace(tmp, path)
                 removed += total - len(keep)
             if removed:
-                with self.lock:
+                lk = self.__dict__.setdefault("_glock", threading.Lock())
+                with lk, self.lock:
                     self._agg = self._games = self._lines = self._tl_count = None
                     self._pairs = None
+                    self._gpart, self._gpos = None, 0
                 self.dlog("compact: removed {0} duplicate / broken lines".format(removed))
         return removed
 
@@ -7446,7 +7456,15 @@ class RiotCollector:
         return self.aggregate().get(str(champ_id).lower())
 
     def games(self):
-        """{对局编号: 10 行}（同一局写过两次的只留第一份；档案没变就用上次读的）"""
+        """{对局编号: 10 行}（同一局写过两次的只留第一份；档案没变就用上次读的）。
+           收集线程和分析线程都会叫：加锁，免得两边同时接着读、同一行被加两次"""
+        lk = self.__dict__.get("_glock")
+        if lk is None:
+            lk = self.__dict__.setdefault("_glock", threading.Lock())
+        with lk:
+            return self._games_locked()
+
+    def _games_locked(self):
         path = os.path.join(self.dir, "matches.jsonl")
         try:
             size = os.path.getsize(path)
@@ -7455,18 +7473,24 @@ class RiotCollector:
         cache = getattr(self, "_games", None)
         if cache and cache[0] == size:
             return cache[1]
-        out = {}
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                try:
-                    r = json.loads(line)
-                except ValueError:
-                    continue
-                g = out.setdefault(r.get("m"), [])
-                if len(g) < 10:
-                    g.append(r)
-        out = {k: v for k, v in out.items() if k and len(v) == 10}
-        self._games = (size, out)
+        # 3.0：只读新加的部分（以前档案一变就整个重读 3～4MB，收集时每几秒一次，界面会顿一下）
+        part, pos = (self._gpart, self._gpos) if cache and getattr(self, "_gpart", None) is not None \
+            and getattr(self, "_gpos", 0) <= size and getattr(self, "_gpos", 0) == cache[0] else ({}, 0)
+        with open(path, "rb") as f:
+            f.seek(pos)
+            data = f.read()
+        end = data.rfind(b"\n") + 1                 # 最后一行可能还在写：只读到最后一个换行
+        for line in data[:end].decode("utf-8", "replace").splitlines():
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            g = part.setdefault(r.get("m"), [])
+            if len(g) < 10:
+                g.append(r)
+        self._gpart, self._gpos = part, pos + end
+        out = {k: v for k, v in part.items() if k and len(v) == 10}
+        self._games = (pos + end, out)
         self._pw = None
         return out
 
