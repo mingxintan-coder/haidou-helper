@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.0.3"
+APP_VERSION = "3.0.4"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -949,6 +949,18 @@ class GameData:
                 v[d] = 0.5
         self._vec_cache[iid] = (v, special)
         return v, special
+
+    FX_GENERIC = {"主动", "主动─", "主动─消耗", "任务", "喝下", "Active", "Active -", "Quest", "Consume"}
+
+    def item_effects(self, iid):
+        """一件装的唯一被动 / 主动效果名称（描述里的 <passive>／<active> 标签，例如 死亡之帽「魔法心血」、中娅沙漏「时间暂停」）。
+           同名效果不叠加（3.0.4）"""
+        cache = self.__dict__.setdefault("_fx_cache", {})
+        if iid not in cache:
+            d = (self.items.get(iid) or {}).get("description", "")
+            names = {re.sub(r"[：:\s]+$", "", n).strip() for _, n in re.findall(r"<(passive|active)>([^<]+)</\1>", d)}
+            cache[iid] = {n for n in names if n and n not in self.FX_GENERIC}
+        return cache[iid]
 
     def candidate_items(self, map_id, allowed=None):
         seen, out = set(), []
@@ -2094,7 +2106,11 @@ class Advisor:
         # 出装方向（2.13）：已经出的大件合起来是什么路线（坦 / 物理 / 法术 / 攻速…）；英雄本身打什么伤害
         route = self.build_route(me, my_augs, rules, allies, enemies, cs)
         self._route = route
-        cp =self.rule_vec(norm({d: v for d, v in self.champ_profile(me.cid).items() if d in BUILD_DIMS}), rules)
+        cp = self.rule_vec(norm({d: v for d, v in self.champ_profile(me.cid).items() if d in BUILD_DIMS}), rules)
+        owned_fx = {}                       # 你身上已有的唯一效果 → 哪件装（含增幅送的，例如乌莉特的法帽＝死亡之帽＋中娅沙漏）
+        for i in me.items:
+            for n in gd.item_effects(i):
+                owned_fx.setdefault(n, gd.item_name(i))
         champ_ad = cp.get("AD", 0) + cp.get("CRIT", 0) + cp.get("LETHAL", 0)
         champ_ap = cp.get("AP", 0) + cp.get("MPEN", 0)
         for iid in gd.candidate_items(map_id, allowed):
@@ -2121,6 +2137,11 @@ class Advisor:
                 factors.append((-0.15, tr("攻速已接近上限")))
             rfac, neutral = self.rule_factors(rules, raw_nv, nv, base_id, crit_now)
             factors += rfac
+            fx = gd.item_effects(iid)
+            dup = [n for n in fx if n in owned_fx]
+            if dup:                         # 3.0.4：同名的唯一被动 / 主动不叠加
+                factors.append((-0.6 if len(dup) == len(fx) else -0.25,
+                                tr("你的「{0}」已经有「{1}」，这件的效果不叠加").format(owned_fx[dup[0]], dup[0])))
             # 伤害类型不对：物理英雄出法强装（或反过来），属性一半白费
             i_ad = nv.get("AD", 0) + nv.get("CRIT", 0) + nv.get("LETHAL", 0)
             i_ap = nv.get("AP", 0) + nv.get("MPEN", 0)
