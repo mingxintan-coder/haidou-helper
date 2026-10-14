@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.0.1"
+APP_VERSION = "3.0.2"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -525,6 +525,39 @@ def log_crash(title, exc_info=None):
         pass
 
 
+PERF = {"steps": [], "ui_gap": [], "t0": 0.0}
+
+
+def perf_note(kind, sec, extra=""):
+    """效能记录（3.0.2）：分析一次 / 界面两次刷新之间花了多久；每分钟把平均和最慢的写进 perf.log（只在本机），
+       下次觉得卡时可以看是哪里慢。单次超过 1 秒的另外记一笔"""
+    try:
+        lst = PERF.setdefault(kind, [])
+        lst.append(sec)
+        now = time.time()
+        if sec >= 1.0:
+            _perf_write(time.strftime("%H:%M:%S ") + "SLOW {0} {1:.2f}s {2}".format(kind, sec, extra))
+        if now - PERF["t0"] >= 60:
+            PERF["t0"] = now
+            parts = []
+            for k in ("steps", "ui_gap", "lcu"):
+                v = PERF.get(k) or []
+                if v:
+                    parts.append("{0} n={1} avg={2:.3f}s max={3:.2f}s".format(k, len(v), sum(v) / len(v), max(v)))
+                PERF[k] = []
+            if parts:
+                _perf_write(time.strftime("%Y-%m-%d %H:%M:%S ") + APP_VERSION + " " + " | ".join(parts))
+    except Exception:  # noqa
+        pass
+
+
+def _perf_write(line):
+    path = os.path.join(APP_DIR, "perf.log")
+    mode = "w" if os.path.exists(path) and os.path.getsize(path) > 300000 else "a"
+    with open(path, mode, encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
 def install_crash_logging():
     """背景线程出错、Python 本身当掉（例如显示卡驱动、tkinter 崩溃）都记下来，方便查问题"""
     def thread_hook(args):
@@ -543,6 +576,23 @@ def install_crash_logging():
 STARTUP_OFFLINE = {"on": False}     # 启动时有缓存就先不连网（开得快）；连网检查交给背景的数据更新
 
 
+_LOCAL_OPENER = {}
+
+
+def local_opener():
+    """连本机（游戏 / 客户端）用的连线器，只建一次（3.0.2）。
+       以前每次都 ssl.create_default_context()：会把系统所有根证书读一遍（Windows 上每次几十毫秒），
+       选英雄时每秒问客户端好几次、对局中每 1.5 秒问一次游戏，CPU 都花在这里。本机连线本来就不验证证书，用空的就好"""
+    op = _LOCAL_OPENER.get("op")
+    if op is None:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE        # 游戏客户端使用自签名证书，且只连本机
+        op = _LOCAL_OPENER["op"] = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                                                urllib.request.HTTPSHandler(context=ctx))
+    return op
+
+
 def http_json(url, timeout=10, local=False):
     if STARTUP_OFFLINE["on"] and not local and threading.current_thread() is threading.main_thread():
         raise OSError("startup: using cache")
@@ -551,11 +601,7 @@ def http_json(url, timeout=10, local=False):
         hd["Accept"] = "application/vnd.github.raw"   # 直接拿文件内容（GitHub API 只缓存 60 秒，比 raw 的 5 分钟新）
     req = urllib.request.Request(url, headers=hd)
     if local:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE  # 游戏客户端使用自签名证书，且只连本机
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
-                                             urllib.request.HTTPSHandler(context=ctx))
+        opener = local_opener()
     else:
         opener = urllib.request.build_opener()
     with opener.open(req, timeout=timeout) as r:
@@ -3975,6 +4021,10 @@ class Engine:
                     self.q.put(("data", msg))
             except Exception:  # noqa
                 log_crash("icon / shortcut failed", sys.exc_info())
+            for _ in range(240):                       # 3.0.2：对局中打开的话，重活（并资料、整理、训练）等打完再做
+                if not self.connected:
+                    break
+                time.sleep(15)
             n = self.riotdb.import_seed()
             try:
                 self.riotdb.compact()
@@ -5419,7 +5469,11 @@ class Engine:
         while not stop.is_set():
             self.beat = time.time()
             try:
-                self.q.put(self.step())
+                t0 = time.perf_counter()
+                out = self.step()
+                if self.connected:
+                    perf_note("steps", time.perf_counter() - t0, "analyze" if out and out[0] == "rec" else "")
+                self.q.put(out)
             except Exception as e:  # 推荐演算法异常不应让挂件崩溃
                 self.q.put(("status", tr('分析出错：{0}').format(e)))
                 if time.time() - getattr(self, "_last_err_log", 0) > 60:
@@ -6100,16 +6154,32 @@ def lcu_credentials():
     return None
 
 
+def client_memory_mb():
+    """游戏客户端（LeagueClientUx，可能有好几个进程）用了多少内存（MB）；读不到回传 None。只在 Windows"""
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        import subprocess
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq LeagueClientUx*", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, timeout=10, creationflags=0x08000000).stdout
+    except Exception:  # noqa
+        return None
+    tot = 0
+    for line in out.splitlines():
+        cols = [c.strip('"') for c in line.split('","')]
+        if len(cols) >= 5 and cols[0].lower().startswith("leagueclientux"):
+            digits = re.sub(r"[^\d]", "", cols[4])
+            if digits:
+                tot += int(digits) // 1024
+    return tot or None
+
+
 def lcu_get(path, cred, timeout=10):
     import base64
     port, pw = cred
     req = urllib.request.Request(f"https://127.0.0.1:{port}{path}", headers={
         "Authorization": "Basic " + base64.b64encode(f"riot:{pw}".encode()).decode(), "Accept": "application/json"})
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE            # 客户端用自签名证书，而且只连本机
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ctx))
-    with opener.open(req, timeout=timeout) as r:
+    with local_opener().open(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
@@ -6121,11 +6191,7 @@ def lcu_send(method, path, cred, body=None, timeout=10):
     req = urllib.request.Request(f"https://127.0.0.1:{port}{path}", data=data, method=method, headers={
         "Authorization": "Basic " + base64.b64encode(f"riot:{pw}".encode()).decode(),
         "Accept": "application/json", "Content-Type": "application/json"})
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ctx))
-    with opener.open(req, timeout=timeout) as r:
+    with local_opener().open(req, timeout=timeout) as r:
         raw = r.read()
         return json.loads(raw.decode("utf-8")) if raw else None
 
@@ -6828,6 +6894,7 @@ class RiotCollector:
                 self.dlog("status: " + self.status)
 
     # ---------- 从游戏客户端收集（2.2） ----------
+    CLIENT_MEM_MAX = 2000     # 客户端（所有 LeagueClientUx 进程）内存超过这么多 MB 就暂停收集（3.0.2）
     CLIENT_GAP = 2.0          # 每次问客户端之间至少隔 2 秒（客户端会再去问 Riot 伺服器，别催太急，免得客户端卡）
     CLIENT_BATCH = 20         # 每一轮最多新收几局
     CLIENT_PAUSE = 30         # 两轮之间隔 30 秒（一直快速收；对战中暂停）
@@ -6930,6 +6997,15 @@ class RiotCollector:
             self.client_call(cred, "/lol-gameflow/v1/gameflow-phase", halt)   # 在房间、排队、选英雄、对战时不打扰客户端
         except InterruptedError:
             return
+        mem = client_memory_mb()
+        if mem:
+            self.dlog("client memory {0} MB".format(mem))
+            if mem > self.CLIENT_MEM_MAX:
+                # 3.0.2：客户端一直被问对局资料，内存会越吃越多、整台电脑变卡；超过上限就先停，重开客户端后再继续
+                self.status = tr("自建数据库：游戏客户端已用 {0} MB 内存，先暂停收集（重开客户端后会继续）").format(mem)
+                self._next_pass = time.time() + 600
+                self._note_status()
+                return
         cur = self.client_call(cred, "/lol-summoner/v1/current-summoner", halt) or {}
         me = cur.get("puuid")                       # 每轮都问（换了帐号也跟得上）
         if not me:
@@ -9199,10 +9275,16 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             pass
 
     def poll():
+        now = time.perf_counter()
+        last = st.get("poll_t")
+        if last is not None and engine.connected:
+            perf_note("ui_gap", now - last - (0.06 if engine.scanning else 0.3))     # 界面被卡住多久（扣掉本来就要等的）
+        st["poll_t"] = now
         try:
             poll_once()
         except Exception:  # noqa
             log_ui_error()
+        st["poll_t"] = time.perf_counter()
         root.after(60 if engine.scanning else 300, poll)     # 识别中刷新快一点
 
     def poll_once():

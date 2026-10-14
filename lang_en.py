@@ -563,6 +563,7 @@ EN.update({
     '和已选「{0}」冲突：变近战后攻击距离 / 远距离效果就没了': 'Conflicts with "{0}": becoming melee wastes its range effects',
     '增幅「{0}」': 'Augment "{0}" ',
     '矛盾：': 'Conflicts: ',
+    '自建数据库：游戏客户端已用 {0} MB 内存，先暂停收集（重开客户端后会继续）': 'Own DB: game client is using {0} MB of memory, collection paused (restart the client to resume)',
     '图标还没下载好，稍后再试': 'Icon not downloaded yet, try again later',
     '已在桌面建好「海斗助手」快捷方式（新图标）': 'Created a "Mayhem Helper" desktop shortcut (new icon)',
     '已建好': 'Done',
