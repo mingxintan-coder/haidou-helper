@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.16.0"
+APP_VERSION = "2.17.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -2822,8 +2822,15 @@ class Advisor:
         own_pct = 0.0
         if own:
             lift, n = own
-            # 网上已经有这个英雄拿这张的数据时，自建库只算一半（两边量的是同一件事）
-            own_pct = max(-3.0, min(3.0, 100 * lift * (0.5 if de["has"] else 1.0)))
+            if de["has"]:
+                # 2.17：网上和自建库按「各自有多准」加权平均（样本多、误差小的那边份量大），取代固定各一半
+                var_on = (de["ci"] / 1.96) ** 2 if de.get("ci") else 0.25 / max(1.0, de.get("n") or 1.0)
+                var_own = 0.25 / (n + AUG_K)
+                w_own = var_on / (var_on + var_own)
+                own_pct = 100 * w_own * (lift - de["d"])          # 加权平均 − 网上数据本身 = 自建库带来的修正
+            else:
+                own_pct = 100 * lift
+            own_pct = max(-3.0, min(3.0, own_pct))
             if abs(own_pct) >= 0.3:
                 factors.insert(0, (0.1 if lift > 0 else -0.1,
                                    tr("自建库：拿这张的玩家比同英雄平均 {0:+.1f}%（{1} 次）").format(lift * 100, int(round(n)))))
@@ -4281,8 +4288,11 @@ class Engine:
                 score = dict(p_items)
                 top_id, top_s = p_items[0]
                 rank = order.index(i) + 1 if i in score else None
+                ser = g.get("wp") or []
                 ch.append({"k": "item", "t": int(me.game_time), "pick": i, "rank": rank,
-                           "gap": round(score[i] - top_s, 2) if i in score else None, "top": top_id})
+                           "gap": round(score[i] - top_s, 2) if i in score else None, "top": top_id,
+                           # 2.17：买的时候局势如何（胜率）—— 客户端的对局时间线没有购买记录，只能从你自己的对局累积
+                           "wp": round(ser[-1][1], 3) if ser and len(ser[-1]) > 1 else None})
             done_a = {c["pick"] for c in ch if c["k"] == "aug"}
             for n in rec.get("my_augs", []):
                 if n in done_a or n in g.get("augs", []):
@@ -4747,7 +4757,20 @@ class Engine:
                     cz = 0.0
                 self._comp_cache = cache = (key, cz)
             comp = cache[1]
-        p = wp_predict(model, *f, comp=comp)
+        aug = 0.0
+        if model.get("v") == 3:              # 你已选增幅的胜率提升总和（自建库，不分英雄）
+            names = tuple(self.history[-1].get("my_augs") or []) if getattr(self, "history", None) else ()
+            cache = getattr(self, "_aug_wp_cache", None)
+            if not cache or cache[0] != names:
+                tot = 0.0
+                for n in names:
+                    a = self.advisor.find_aug(n)
+                    x = self.advisor.db_aug(a, state[2], 0) if a else None
+                    if x:
+                        tot += x[0]
+                self._aug_wp_cache = cache = (names, tot)
+            aug = cache[1]
+        p = wp_predict(model, *f, comp=comp, aug=aug)
         if p is None:
             return None
         g = self.cur_game
@@ -6320,11 +6343,22 @@ def _fit_logit(X, y, lam=1.0, iters=12):
     return beta
 
 
-def _sym(rows, comp_of=None):
+def aug_frac(m):
+    """第 m 分钟大约已经拿了几成的增幅（海斗：开局 1 张，之后大约每 5 分钟 1 张，最多 4 张）"""
+    return min(1.0, (1 + m / 5) / 4)
+
+
+def _row_x(r, comp_of=None, aug_of=None):
+    if aug_of is not None:                  # v3：增幅强度（只有你自己的增幅看得到，所以每局只用一个玩家的）
+        return wp_vector(r["m"], r["gd"], r["kd"], r["ld"], r["td"], aug_of.get(r["id"], 0.0) * aug_frac(r["m"]))
+    comp = comp_of.get(r["id"], 0.0) if comp_of is not None else None
+    return wp_vector(r["m"], r["gd"], r["kd"], r["ld"], r["td"], comp)
+
+
+def _sym(rows, comp_of=None, aug_of=None):
     X, y = [], []
     for r in rows:
-        comp = comp_of.get(r["id"], 0.0) if comp_of is not None else None
-        x = wp_vector(r["m"], r["gd"], r["kd"], r["ld"], r["td"], comp)
+        x = _row_x(r, comp_of, aug_of)
         X.append(x)
         y.append(r["w"])
         X.append([-v for v in x])          # 蓝红对调：左右对称，不需要截距
@@ -6332,12 +6366,11 @@ def _sym(rows, comp_of=None):
     return X, y
 
 
-def _wp_eval(beta, rows, comp_of=None):
+def _wp_eval(beta, rows, comp_of=None, aug_of=None, scale=1.0):
     hit = tot = hit_e = tot_e = 0
     ll = 0.0
     for r in rows:
-        comp = comp_of.get(r["id"], 0.0) if comp_of is not None else None
-        z = sum(b * v for b, v in zip(beta, wp_vector(r["m"], r["gd"], r["kd"], r["ld"], r["td"], comp)))
+        z = scale * sum(b * v for b, v in zip(beta, _row_x(r, comp_of, aug_of)))
         p = min(1 - 1e-6, max(1e-6, 1 / (1 + math.exp(-max(-30, min(30, z))))))
         ll -= r["w"] * math.log(p) + (1 - r["w"]) * math.log(1 - p)
         ok = (p > 0.5) == (r["w"] == 1)
@@ -6350,7 +6383,7 @@ def _wp_eval(beta, rows, comp_of=None):
     return (hit / tot if tot else None), (hit_e / tot_e if tot_e else None), (ll / len(rows) if rows else None)
 
 
-def fit_winmodel(rows, comp_fn=None):
+def fit_winmodel(rows, comp_fn=None, aug_fn=None):
     """训练 + 留出 1/5 的对局检验（准确率分开看第 8 分钟以后、前 5 分钟）。
        comp_fn(对局编号列表) → {对局编号: 阵容胜算差（蓝 − 红）}：给了就训练含阵容的 2.5 版模型（v=2）。
        回传模型 dict（存成 winmodel.json）"""
@@ -6368,6 +6401,19 @@ def fit_winmodel(rows, comp_fn=None):
     test_ids = {g for g in games if int(hashlib.md5(str(g).encode()).hexdigest(), 16) % 5 == 0}
     train = [r for r in rows if r["id"] not in test_ids]
     test = [r for r in rows if r["id"] in test_ids]
+    if aug_fn is not None:
+        # v3（2.17）：阵容项拿掉（回测：阵容模型跟猜硬币一样，加进来反而更不准），换成「你的增幅强度」
+        aug_tr = aug_fn(sorted(set(games) - test_ids), held=test_ids)
+        beta = _fit_logit(*_sym(train, None, aug_tr))
+        base_ll = _wp_eval(beta, test, None, aug_tr)[2]
+        # 校准：留出的对局上找一个温度（胜率整体放大 / 缩小），让「说 70% 的时候真的赢七成」
+        scale = min((0.8 + 0.05 * k for k in range(11)), key=lambda c: _wp_eval(beta, test, None, aug_tr, c)[2])
+        acc8, acc_e, ll = _wp_eval(beta, test, None, aug_tr, scale)
+        aug_all = aug_fn(games)
+        beta_all = _fit_logit(*_sym(rows, None, aug_all))
+        return {"beta": beta_all, "games": len(games), "rows": len(rows), "test_games": len(test_ids),
+                "acc8": acc8, "acc_early": acc_e, "logloss": ll, "logloss_raw": base_ll, "scale": scale,
+                "date": time.strftime("%Y-%m-%d %H:%M"), "v": 3}
     comp_tr = comp_fn(sorted(set(games) - test_ids), held=test_ids) if comp_fn else None
     beta = _fit_logit(*_sym(train, comp_tr))
     acc8, acc_e, ll = _wp_eval(beta, test, comp_tr)
@@ -6397,12 +6443,15 @@ def fit_comp(diffs, wins, lam=3.0):
     return _fit_logit(X, y, lam=lam)
 
 
-def wp_predict(model, m, gd, kd, ld, td, comp=0.0):
-    """我方胜率（输入都是 我方 − 敌方）"""
+def wp_predict(model, m, gd, kd, ld, td, comp=0.0, aug=0.0):
+    """我方胜率（输入都是 我方 − 敌方；aug＝你已选增幅的胜率提升总和，v3 模型才用）"""
     if not model or not model.get("beta"):
         return None
-    vec = wp_vector(m, gd, kd, ld, td, comp) if model.get("v") == 2 else wp_vector(m, gd, kd, ld, td)
-    z = sum(b * v for b, v in zip(model["beta"], vec))
+    if model.get("v") == 3:
+        vec = wp_vector(m, gd, kd, ld, td, aug)
+    else:
+        vec = wp_vector(m, gd, kd, ld, td, comp) if model.get("v") == 2 else wp_vector(m, gd, kd, ld, td)
+    z = model.get("scale", 1.0) * sum(b * v for b, v in zip(model["beta"], vec))
     return 1 / (1 + math.exp(-max(-30, min(30, z))))
 
 
@@ -6682,7 +6731,7 @@ class RiotCollector:
     CLIENT_GAP = 2.0          # 每次问客户端之间至少隔 2 秒（客户端会再去问 Riot 伺服器，别催太急，免得客户端卡）
     CLIENT_BATCH = 20         # 每一轮最多新收几局
     CLIENT_PAUSE = 30         # 两轮之间隔 30 秒（一直快速收；对战中暂停）
-    CLIENT_TARGET = 5000      # 收满这么多局后只看你自己的新对局（每 15 分钟一次；模型只用最新的 2000 局）
+    CLIENT_TARGET = 10000     # 收满这么多局后只看你自己的新对局（每 15 分钟一次）；2.17 从 5000 提高：回测一直显示样本不够
     CLIENT_PAUSE_FULL = 900
 
     PHASE_EVERY = 8
@@ -6791,6 +6840,11 @@ class RiotCollector:
                 self.cfront.remove(me)
             self.cfront.insert(0, me)                # 每轮都先看你自己（打完新的一局马上收）
         own_only = self.total_games() >= self.CLIENT_TARGET       # 收满了：只收你自己的新对局（名单留着不删）
+        pws = sorted(self.patch_weights(), key=ver_tuple, reverse=True)
+        keep = [v for v in pws if v][:2]                         # 最新两个版本
+
+        def old_patch(v):
+            return len(keep) == 2 and ver_tuple(v) < ver_tuple(keep[1])
         limit = self.CLIENT_BATCH
         batch, looked = 0, 0
         while self.cfront and batch < limit and looked < 60 and not halt():
@@ -6819,6 +6873,9 @@ class RiotCollector:
                 mid = "{0}_{1}".format(g.get("platformId") or self.cfg.get("platform") or "NA1", gid)
                 if not gid or mid in self.seen:
                     continue
+                gv = ".".join(str(g.get("gameVersion", "")).split(".")[:2])
+                if gv and old_patch(gv):
+                    continue                     # 2.17：只收最新和上一个版本（更旧的在统计里只算 1/4 以下，不值得花时间收）
                 full = self.client_call(cred, f"/lol-match-history/v1/games/{gid}", halt)
                 self._sample("game", full)
                 parsed = self.parse_client_game(full, mid)
@@ -7106,7 +7163,7 @@ class RiotCollector:
         adv = getattr(self, "advisor", None)
         if have and have.get("comp") and getattr(self, "comp_model", None) is None:
             self.comp_model = have["comp"]
-        old_kind = have and adv is not None and have.get("v") != 2   # 旧版模型（没有阵容）：有资料就重练成新版
+        old_kind = have and adv is not None and have.get("v") != 3   # 旧版模型：有资料就重练成新版（v3＝含你的增幅强度、有校准）
         if not force and have and not old_kind and self.tl_new < max(30, 0.25 * (have.get("games") or 0)):
             return have                             # 多了 25%（至少 30 局）才重新训练
         path = os.path.join(self.dir, "timelines.jsonl")
@@ -7122,7 +7179,15 @@ class RiotCollector:
                 if all(k in r for k in ("id", "m", "gd", "kd", "ld", "td", "w")):
                     rows.append(r)
         comp_fn = self.make_comp_fn(rows) if adv is not None else None
-        model = fit_winmodel(rows, comp_fn)
+        aug_fn = self.make_aug_fn(rows)
+        model = fit_winmodel(rows, None, aug_fn)
+        if model and comp_fn is not None:
+            try:                                # 阵容模型还是单独训练（选英雄页看准确率决定显示不显示）
+                games_all = sorted({r["id"] for r in rows})
+                test_ids = {g for g in games_all if int(hashlib.md5(str(g).encode()).hexdigest(), 16) % 5 == 0}
+                comp_fn(sorted(set(games_all) - test_ids), held=test_ids)
+            except Exception:  # noqa
+                pass
         if model:
             if comp_fn and getattr(self, "_comp_last", None):
                 model["comp"] = self._comp_last
@@ -7246,6 +7311,40 @@ class RiotCollector:
                     self._pairs = None
                 self.dlog("compact: removed {0} duplicate / broken lines".format(removed))
         return removed
+
+    def make_aug_fn(self, tl_rows):
+        """给 fit_winmodel 用：aug_fn(训练用的对局) → {对局: 某一个玩家的增幅提升总和（蓝方为正）}。
+           对局中只看得到你自己的增幅，所以训练时每局也只用一个玩家（按对局编号固定抽一个）；
+           增幅提升只用「训练用的对局」算，而且扣掉这一局本身（不偷看答案）"""
+        games = self.games()
+        blue_w = {}
+        for r in tl_rows:
+            blue_w[r["id"]] = r["w"]
+
+        def aug_fn(ids, held=None):
+            ids = [g for g in ids if g in games]
+            tabs, champ = self._aug_tables([games[g] for g in ids])
+            glob = tabs["glob"]
+            pw = self.patch_weights()
+            out = {}
+            for g in list(ids) + list(held or []):
+                rows = games.get(g)
+                if not rows or g not in blue_w:
+                    continue
+                pick = rows[int(hashlib.md5(str(g).encode()).hexdigest(), 16) % len(rows)]
+                c = str(pick.get("c", "")).lower()
+                n, w = champ.get(c, (0, 0))
+                e = (w + 0.5 * CHAMP_K) / (n + CHAMP_K)
+                q = pw.get(pick.get("v", ""), 0.1) if g not in (held or ()) else 0.0
+                d = (1.0 if pick.get("w") else 0.0) - e
+                tot = 0.0
+                for a in dict.fromkeys(pick.get("a") or []):
+                    na, sa = glob.get(a, (0.0, 0.0))
+                    tot += (sa - q * d) / (na - q + AUG_K)        # 扣掉这一局
+                blue = bool(pick.get("w")) == bool(blue_w[g])
+                out[g] = tot if blue else -tot
+            return out
+        return aug_fn
 
     def make_comp_fn(self, tl_rows):
         """给 fit_winmodel 用：comp_fn(训练用的对局, held=留出的对局) → {对局: 阵容胜算差（蓝 − 红）}。
