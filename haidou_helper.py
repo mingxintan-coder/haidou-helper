@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "2.15.0"
+APP_VERSION = "2.16.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -2106,6 +2106,7 @@ class Advisor:
                 factors.append((extra[2], extra[1]))
             out.append(self.pack_item(iid, de, factors, fit, self.top_dims(prof, nv), extra=extra[0]))
         out = self.smooth(me, out)          # 推荐只看装备本身好不好，不看你现在身上有多少钱（也不显示差多少钱）
+        self._item_snap = [(x["id"], x["total"]) for x in out]      # 赛后「你选的 vs 推荐的」用（按推荐顺序）
         boots = self.recommend_boots(me, t, prof, role, cs, gold, legend, phase, rules)
         return ([boots] if boots else []) + out[:k], prof
 
@@ -2274,13 +2275,16 @@ class Advisor:
                 "price": self.gd.item_price(iid), "reason": why, "wr": de["wr"], "stat_text": detail,
                 "boots": boots, "hint": ""}
 
-    def db_aug(self, a):
-        """自建数据库的增幅胜率提升 (提升, 局数)；样本不到 30 局不算"""
+    def db_aug(self, a, me=None, slot=0):
+        """自建数据库的增幅胜率提升 (提升, 局数)；样本不到 30 局不算。
+           算法（不分英雄 / 按英雄类型 / 按第几次选）由自建库自己验证后决定（choose_aug_mode）"""
         db = getattr(self, "riotdb", None)
         if db is None or not a.get("id"):
             return None
         try:
-            x = db.aug_lifts().get(a["id"])
+            m = db.aug_lifts()
+            cls = db.champ_class((self.gd.champ(me.cid) or {}).get("id", me.cid)) if me is not None else "?"
+            x = db._aug_lift(m["tabs"], m["mode"], a["id"], cls, slot)
         except Exception:  # noqa
             return None
         return x if x and x[1] >= 30 else None
@@ -2576,13 +2580,13 @@ class Advisor:
            分数 = 100 × (0.55 × 海斗胜率项 + 0.25 × 你的战绩项 + 0.20 × 阵容项)
              海斗胜率项 = clamp(0.5 + 8 × (胜率 − 50%) × n/(n+5000), 0, 1)        （还没下载到 = 0.5）
              你的战绩项 = ½ × √(min(局数, 20)/20) + ½ × clamp(0.5 + 2 × (平滑胜率 − 50%), 0, 1)
-             阵容项     = 0.3 + 补上队伍缺的（前排 / 魔法伤害 / 开团 / 治疗保护）每项 +0.25，最高 1"""
+             阵容项     = 0.3 + 补上队伍缺的（前排 / 魔法伤害）每项 +0.35，最高 1"""
         store = getattr(self, "habits_store", None)
         tr_team = [self.champ_traits(c) for c in team]
+        # 2.16 回测（最新版本最后 40% 的对局）：队伍没有前排、魔法伤害太少时输得多（两段资料方向一致）；
+        # 「没有开团」「没有治疗保护」前后两段资料方向相反（是噪音），不再当成队伍缺的
         need = {"front": not any(x["front"] for x in tr_team),
-                "ap": sum(1 for x in tr_team if x["ap"]) <= (0 if len(team) < 3 else 1),
-                "engage": not any(x["engage"] for x in tr_team),
-                "sustain": not any(x["sustain"] for x in tr_team)}
+                "ap": sum(1 for x in tr_team if x["ap"]) <= (0 if len(team) < 3 else 1)}
         label = {"front": tr("前排"), "ap": tr("魔法伤害"), "engage": tr("开团"), "sustain": tr("治疗/保护")}
         out = []
         for cid in cands:
@@ -2610,7 +2614,7 @@ class Advisor:
                     U = 0.25
             t = self.champ_traits(cid)
             fills = [k for k in need if need[k] and t[k]]
-            C = min(1.0, 0.3 + 0.25 * len(fills))
+            C = min(1.0, 0.3 + 0.35 * len(fills))
             if fills:
                 reasons.append(tr('补上队伍缺的{0}').format(tr("、").join(label[k] for k in fills)))
             score = 100 * (0.55 * W + 0.25 * U + 0.20 * C)
@@ -2618,6 +2622,9 @@ class Advisor:
                 cwp = self.comp_wp_vs_avg(list(team) + [cid])
             except Exception:  # noqa
                 cwp = None
+            cm = getattr(getattr(self, "riotdb", None), "comp_model", None)
+            if not cm or (cm.get("acc") or 0) < 0.53:
+                cwp = None            # 阵容模型留出对局的准确率不到 53%（你的库：50.5%，跟猜硬币一样）→ 不显示「阵容 xx%」
             out.append({"id": cid, "name": c["name"], "score": int(round(score)), "raw": score / 100, "wr": wr,
                         "comp_wp": cwp,
                         "reason": tr("，").join(reasons) or tr("暂无数据"), "mine": cid == mine,
@@ -2793,7 +2800,7 @@ class Advisor:
         if combo_f:
             situ += combo_f[0]
             factors.insert(0, combo_f)
-        own = self.db_aug(a)            # 自建数据库：这张增幅（不分英雄）的胜率提升
+        own = self.db_aug(a, me, len(my_augs))   # 自建数据库：这张增幅的胜率提升（my_augs＝已选的 → 这是第几次选）
         hab = self.habit_aug(me, a)
         if hab:                          # 你的习惯：+最多 0.15
             situ += hab[0]
@@ -2839,11 +2846,13 @@ class Advisor:
         if candidates:
             res = [self.score_aug(a, prof, t, my_augs, me, cs, stage) for a in candidates]
             res.sort(key=lambda x: -x["raw"])
+            self._cand_snap = {x["name"]: x["total"] for x in res}
             return res
         mine = {a["name"] for a in my_augs}
         res = [self.score_aug(a, prof, t, my_augs, me, cs, stage) for a in self.aug_index.values()
                if a["name"] not in mine and a.get("desc")]
         res.sort(key=lambda x: -x["raw"])
+        self._aug_snap = {x["name"]: x["total"] for x in res}     # 赛后「你选的 vs 推荐的」用
         return res[:k]
 
     # ---------- 战术 ----------
@@ -4220,6 +4229,10 @@ class Engine:
                 g["active_key"] = sv[0]
         g["was_dead"] = me.is_dead
         items = [i for i in me.items if self.gd.is_completed(i)]
+        try:
+            self.track_choices(g, items, rec, me)       # 要在 g["items"] 更新之前（才知道哪件是新的）
+        except Exception:  # noqa
+            pass
         # 复盘用：新买的成品装备，是不是在「买之前那次」推荐的前 3 名里
         top = getattr(self, "_last_top", None)
         follow = g.setdefault("item_follow", [])
@@ -4247,6 +4260,68 @@ class Engine:
             for a in names:
                 if a not in g["offered"]:
                     g["offered"].append(a)
+
+    def track_choices(self, g, items, rec, me):
+        """赛后「你选的 vs 推荐的」（2.16）：
+             装备 —— 新做好的大件，在「买之前那一刻」的推荐清单里排第几、比第一名低多少分；
+             增幅 —— 新选的增幅：识别到三选一时跟那三张里最好的比，没识别到就看它在所有增幅里排前百分之几。
+           用的是上一次刷新的推荐（这一次刷新时装备已经在身上，不会再出现在推荐里）"""
+        adv = self.advisor
+        ch = g.setdefault("choices", [])
+        prev = getattr(self, "_snap_prev", None)
+        if prev is not None:
+            p_items, p_augs, p_cand = prev
+            done = {c["pick"] for c in ch if c["k"] == "item"}
+            for i in items:
+                if i in done or i in g.get("items", []) or self.gd.is_boots(i):
+                    continue
+                order = [x for x, _ in p_items]
+                if not order:
+                    continue
+                score = dict(p_items)
+                top_id, top_s = p_items[0]
+                rank = order.index(i) + 1 if i in score else None
+                ch.append({"k": "item", "t": int(me.game_time), "pick": i, "rank": rank,
+                           "gap": round(score[i] - top_s, 2) if i in score else None, "top": top_id})
+            done_a = {c["pick"] for c in ch if c["k"] == "aug"}
+            for n in rec.get("my_augs", []):
+                if n in done_a or n in g.get("augs", []):
+                    continue
+                if p_cand and n in p_cand:
+                    best = max(p_cand, key=p_cand.get)
+                    ch.append({"k": "aug", "t": int(me.game_time), "pick": n, "offered": True,
+                               "gap": round(p_cand[n] - p_cand[best], 2), "top": best})
+                elif p_augs and n in p_augs:
+                    vals = sorted(p_augs.values(), reverse=True)
+                    pct = vals.index(p_augs[n]) / max(1, len(vals) - 1)
+                    ch.append({"k": "aug", "t": int(me.game_time), "pick": n, "offered": False, "pct": round(pct, 3)})
+        self._snap_prev = (list(getattr(adv, "_item_snap", []) or []),
+                           dict(getattr(adv, "_aug_snap", {}) or {}),
+                           dict(getattr(adv, "_cand_snap", {}) or {}) if rec.get("cand_mode") else {})
+
+    def choice_lines(self, g):
+        """复盘里的「你选的 vs 推荐的」"""
+        gd = self.gd
+        out = []
+        n_big = 0
+        for c in g.get("choices") or []:
+            if c["k"] == "item":
+                n_big += 1
+                if c["rank"] == 1:
+                    txt = tr("第 {0} 件 {1}：推荐第 1 ✓").format(n_big, gd.item_name(c["pick"]))
+                elif c["rank"]:
+                    txt = tr("第 {0} 件 {1}：推荐第 {2}，比第一名「{3}」低 {4:.1f}%").format(
+                        n_big, gd.item_name(c["pick"]), c["rank"], gd.item_name(c["top"]), -c["gap"])
+                else:
+                    txt = tr("第 {0} 件 {1}：不在推荐清单里（推荐「{2}」）").format(n_big, gd.item_name(c["pick"]), gd.item_name(c["top"]))
+            else:
+                if c.get("offered"):
+                    txt = tr("增幅 {0}：三选一里最好的 ✓").format(c["pick"]) if c["gap"] >= -0.05 else \
+                        tr("增幅 {0}：比三选一里的「{1}」低 {2:.1f}%").format(c["pick"], c["top"], -c["gap"])
+                else:
+                    txt = tr("增幅 {0}：在所有增幅里排前 {1:.0f}%").format(c["pick"], max(1, c["pct"] * 100))
+            out.append(txt)
+        return out
 
     def fetch_intel(self, g):
         """队友 / 对手情报（像 Porofessor）：从客户端读这局 10 个人的最近 20 局 —— 海斗胜率、这个英雄玩过几次、连胜连败"""
@@ -4798,6 +4873,7 @@ class Engine:
         if g is None:
             g, self.cur_game = self.cur_game, None
             self._last_top = self._last_offer = None
+            self._snap_prev = None
             self.reset_manual()
         gid, self._game_id = getattr(self, "_game_id", None), None
         if g and g["len"] >= 300:           # 打了 5 分钟以上的才算（重开、掉线不记）
@@ -5061,6 +5137,9 @@ class Engine:
                     break
         if practice:
             detail = (detail + "\n" if detail else "") + tr("下局练习：") + practice
+        cl = self.choice_lines(g)
+        if cl:                                           # 你选的 vs 推荐的
+            detail = (detail + "\n" if detail else "") + tr("你选的 vs 推荐的：") + "；".join(cl)
         for line in g.get("build_audit") or []:          # 出装 / 增幅的时间线和矛盾
             detail = (detail + "\n" if detail else "") + line
         cres = g.get("challenge_res") or []
@@ -5628,6 +5707,29 @@ class HabitStore:
             pass
         return out
 
+    def rec_check(self):
+        """推荐检验（2.16）：你照推荐的局 vs 没照推荐的局，胜率差多少（要打开习惯记录才会累积）。
+             装备照推荐＝这局做好的大件里，至少 60% 是当时推荐的前 3 名；
+             增幅照推荐＝三选一选了最好的那张，或（没识别到三选一时）选的在所有增幅的前 20%"""
+        games = [g for g in self.games if g.get("win") is not None and g.get("choices")]
+        out = []
+        for kind, label, ok in (("item", tr("出装"), lambda c: c.get("rank") is not None and c["rank"] <= 3),
+                                ("aug", tr("增幅"), lambda c: (c["gap"] >= -0.05) if c.get("offered") else c.get("pct", 1) <= 0.2)):
+            yes, no = [], []
+            for g in games:
+                cs = [c for c in g["choices"] if c["k"] == kind]
+                if not cs:
+                    continue
+                (yes if sum(1 for c in cs if ok(c)) / len(cs) >= 0.6 else no).append(1 if g["win"] else 0)
+            if len(yes) >= 5 and len(no) >= 5:
+                out.append(tr("{0}照推荐的局 胜率 {1:.0f}%（{2} 局），没照的 {3:.0f}%（{4} 局）").format(
+                    label, 100 * sum(yes) / len(yes), len(yes), 100 * sum(no) / len(no), len(no)))
+            else:
+                need = max(0, 5 - len(yes)) + max(0, 5 - len(no))
+                out.append(tr("{0}推荐检验：照推荐 {1} 局、没照 {2} 局，两边各要 5 局才比较（还差 {3} 局）").format(
+                    label, len(yes), len(no), need))
+        return out
+
     def weakness(self, gd, advisor=None):
         """弱点报告：输在哪个阶段、死得多不多、怎么死的、哪些英雄你玩得比一般人差 → 最该先改的一件事"""
         games = [g for g in self.games if g.get("champ") and g.get("win") is not None]
@@ -5673,6 +5775,11 @@ class HabitStore:
                 issues.append((dc["first"] / dc["deaths"], tr("常常团战第一个倒下：站在前排后面，等对面关键技能交了再进")))
             if dc["alone"] / dc["deaths"] >= 0.25:
                 issues.append((dc["alone"] / dc["deaths"], tr("常常落单被抓：跟着队友走，别一个人去吃血包 / 清兵")))
+        # ④' 推荐检验
+        try:
+            out += self.rec_check()
+        except Exception:  # noqa
+            pass
         # ④ 关键时刻的原因（输的局）
         cats = Counter(m.get("cat") for g in games if not g["win"] for m in g.get("moments") or [] if m.get("kind") == "drop")
         cats.pop(None, None)
@@ -6303,6 +6410,7 @@ def wp_predict(model, m, gd, kd, ld, td, comp=0.0):
 # 收缩 200 局才不会帮倒忙（英雄本身强弱主要看网上的大样本数据）
 CHAMP_K = 200
 AUG_K = 200              # 增幅胜率（不分英雄）往 0 收缩的局数
+AUG_K2 = 400             # 按英雄类型 / 第几次选：往「不分英雄」收缩的局数
 PATH_KINDS = ("ap", "atk", "tank")
 PATH_K0 = 100            # 英雄 × 路线胜率的先验（局数，50/50）
 
@@ -6363,6 +6471,8 @@ class RiotCollector:
         self.on_model = None
         self.lock = threading.Lock()
         self.io = threading.RLock()                   # 整理档案（去重）时别同时写
+        am = read_json(os.path.join(self.dir, "augmode.json")) if os.path.exists(os.path.join(self.dir, "augmode.json")) else None
+        self.aug_mode = am.get("mode", "glob") if isinstance(am, dict) else "glob"
         self.status = ""
         self.added = 0
         self._agg = None
@@ -6954,6 +7064,10 @@ class RiotCollector:
         n = len(self.games())
         if not force and have and n < have.get("games", 0) + max(100, 0.1 * have.get("games", 0)):
             return have
+        try:
+            self.choose_aug_mode()
+        except Exception:  # noqa
+            log_crash("aug mode check failed", sys.exc_info())
         rows = self.path_rows()
         if len(rows) < 2000:
             return have
@@ -7302,32 +7416,103 @@ class RiotCollector:
         self._pairs = (key, pairs, single)
         return pairs, single
 
+    def champ_class(self, champ):
+        """英雄类型（法师 / 射手 / 坦克 / 战士 / 刺客 / 辅助）：英雄资料的第一个标签"""
+        return ((self.gd.champ(champ) or {}).get("tags") or ["?"])[0]
+
+    def _aug_tables(self, game_list):
+        """增幅统计表：不分英雄 / 按英雄类型 / 按第几次选（第 1 次 vs 之后）。
+           每格 [局数, Σ(输赢 − 同英雄平均胜率)]，按版本加权"""
+        pw = self.patch_weights()
+        champ = {}
+        for rows in game_list:
+            for r in rows:
+                q = pw.get(r.get("v", ""), 0.1)
+                x = champ.setdefault(str(r.get("c", "")).lower(), [0.0, 0.0])
+                x[0] += q
+                x[1] += q * (1 if r.get("w") else 0)
+        tabs = {"glob": {}, "class": {}, "slot": {}}
+        cls = {}
+        for rows in game_list:
+            for r in rows:
+                c = str(r.get("c", "")).lower()
+                n, w = champ.get(c, (0, 0))
+                e = (w + 0.5 * CHAMP_K) / (n + CHAMP_K)
+                q = pw.get(r.get("v", ""), 0.1)
+                d = (1.0 if r.get("w") else 0.0) - e
+                k = cls.get(c) or cls.setdefault(c, self.champ_class(r.get("c", "")))
+                for i, a in enumerate(dict.fromkeys(r.get("a") or [])):
+                    for t, key in (("glob", a), ("class", (k, a)), ("slot", (min(i, 1), a))):
+                        x = tabs[t].setdefault(key, [0.0, 0.0])
+                        x[0] += q
+                        x[1] += q * d
+        return tabs, champ
+
+    @staticmethod
+    def _aug_lift(tabs, mode, a, cls, slot):
+        """一张增幅的胜率提升：不分英雄的往 0 收缩 AUG_K 局；按类型 / 按第几次选的再往「不分英雄」收缩 AUG_K2 局"""
+        n, s_ = tabs["glob"].get(a, (0.0, 0.0))
+        g = s_ / (n + AUG_K)
+        if mode == "class":
+            n2, s2 = tabs["class"].get((cls, a), (0.0, 0.0))
+            return (s2 + AUG_K2 * g) / (n2 + AUG_K2), n
+        if mode == "slot":
+            n2, s2 = tabs["slot"].get((min(slot, 1), a), (0.0, 0.0))
+            return (s2 + AUG_K2 * g) / (n2 + AUG_K2), n
+        return g, n
+
     def aug_lifts(self):
-        """增幅胜率（2.15，不分英雄）：拿了这张增幅的玩家，比「同一个英雄的平均胜率」高多少，往 0 收缩 AUG_K 局，按版本加权。
-           回测（新版本后 40% 的对局当考题）：不分英雄的增幅胜率能预测输赢；分英雄算样本太少，反而更差。
-           {增幅编号: (提升, 局数)}"""
+        """增幅胜率（2.15）：拿了这张增幅的玩家，比「同一个英雄的平均胜率」高多少。回传 {"tabs", "mode"}"""
         g = self.games()
         cache = getattr(self, "_auglift", None)
         if cache and cache[0] is g:
             return cache[1]
-        agg = self.aggregate()
-        pw = self.patch_weights()
-        acc = {}
-        for rows in g.values():
-            for r in rows:
-                c = agg.get(str(r.get("c", "")).lower())
-                if not c:
-                    continue
-                q = pw.get(r.get("v", ""), 0.1)
-                e = (c["w"] + 0.5 * CHAMP_K) / (c["n"] + CHAMP_K)
-                y = 1.0 if r.get("w") else 0.0
-                for a in set(r.get("a") or []):
-                    x = acc.setdefault(a, [0.0, 0.0])
-                    x[0] += q
-                    x[1] += q * (y - e)
-        out = {a: (x[1] / (x[0] + AUG_K), x[0]) for a, x in acc.items()}
+        tabs, _ = self._aug_tables(list(g.values()))
+        out = {"tabs": tabs, "mode": getattr(self, "aug_mode", "glob")}
         self._auglift = (g, out)
         return out
+
+    def choose_aug_mode(self):
+        """自动验证（2.16）：最新版本最后 40% 的对局当考题，其余算增幅表，比较三种算法预测输赢的准确度（对数损失）：
+             不分英雄 / 按英雄类型 / 按第几次选。细分的比不分英雄好（损失少 0.0003 以上）才用细分的。
+           2.16 用你的 2584 局测：细分两种都比不分英雄差 → 先用不分英雄；对局多了会自动再测"""
+        g = self.games()
+        games = sorted(g.items())
+        vers = sorted({rows[0].get("v", "") for _, rows in games}, key=ver_tuple)
+        if not vers:
+            return "glob"
+        newest = [k for k, rows in games if rows[0].get("v") == vers[-1]]
+        if len(newest) < 200:
+            return getattr(self, "aug_mode", "glob")
+        test = set(newest[int(len(newest) * 0.6):])
+        tabs, champ = self._aug_tables([rows for k, rows in games if k not in test])
+        cls = {}
+        loss = {"glob": 0.0, "class": 0.0, "slot": 0.0}
+        n_rows = 0
+        for k in test:
+            for r in g[k]:
+                c = str(r.get("c", "")).lower()
+                n, w = champ.get(c, (0, 0))
+                p0 = (w + 0.5 * CHAMP_K) / (n + CHAMP_K)
+                k_ = cls.get(c) or cls.setdefault(c, self.champ_class(r.get("c", "")))
+                y = bool(r.get("w"))
+                n_rows += 1
+                for mode in loss:
+                    p = p0 + sum(self._aug_lift(tabs, mode, a, k_, i)[0]
+                                 for i, a in enumerate(dict.fromkeys(r.get("a") or [])))
+                    p = min(0.97, max(0.03, p))
+                    loss[mode] += -math.log(p if y else 1 - p)
+        loss = {m: v / max(1, n_rows) for m, v in loss.items()}
+        best = min(("class", "slot"), key=lambda m: loss[m])
+        self.aug_mode = best if loss[best] < loss["glob"] - 0.0003 else "glob"
+        self.aug_check = {"loss": loss, "mode": self.aug_mode, "test_games": len(test), "games": len(g)}
+        self.dlog("aug mode check: {0}".format(self.aug_check))
+        try:
+            write_json(os.path.join(self.dir, "augmode.json"), self.aug_check)
+        except OSError:
+            pass
+        self._auglift = None
+        return self.aug_mode
 
     def synergy(self, aid, owned_ids, k=60, nmin=30):
         """候选增幅 aid 和你已有的增幅一起拿时，胜率比「两张各自的胜率平均」高多少（经验贝叶斯往 0 收缩：k 局的先验）。
