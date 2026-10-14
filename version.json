@@ -1,7 +1,9 @@
 {
- "version": "3.0.0",
+ "version": "3.0.1",
  "date": "2026-10-13",
  "notes": [
+  "新程序图标：视窗、工作列都用它",
+  "第一次打开会在桌面建「海斗助手」快捷方式（新图标、不会跳出黑色命令视窗），以后不用再点 .bat；⋯ 选单可以重建",
   "3.0 全面检查：修正定路线高估「有网上核心出装」路线的偏差、拿掉增幅稀有度加分（数据显示没差）",
   "实时胜率加入蓝红方；检查校准：说 75% 时实际赢 75%，没有明显偏差",
   "修正卡顿：自建数据库只读新增部分（以前收集时每次整个重读 3～4MB），多线程读取加锁",
@@ -9,9 +11,11 @@
   "回测：增幅推荐分数高的一半玩家胜率 52.5%，低的一半 47.5%"
  ],
  "files": {
-  "haidou_helper.py": "6eb2887eb90a4b3a65c5f6f0268099c830defffcb751bc591150c753b1fc1233",
-  "lang_en.py": "e2d4f1bdbc88f507fd7e30adfa702fd1cc924fb210ce6118c2ee015fddf0a554",
-  "README.md": "091dcc9ec6b5f2c4fd001daf74a85d341b3474382b152491bccd6144765253b9",
-  "seed_db.json.gz": "ffb9458061fcaaa4eaa82425fac6e38deb741855b6dbbe2c3e60aa9480827252"
+  "haidou_helper.py": "2af1adffe0b0dcd111f017ff02dc76e8c46df22649c1b0c76f481e46c7ed6d94",
+  "lang_en.py": "5fa3a2aeef2b7c9c6ec850e3f06f6a8fd6c98bf3f192bc1119b2319a4e0bb559",
+  "README.md": "d700a7e5cd147e1170fb1e3ee3387fb5501e57c6c589fc6f8778976850c50182",
+  "seed_db.json.gz": "ffb9458061fcaaa4eaa82425fac6e38deb741855b6dbbe2c3e60aa9480827252",
+  "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
+  "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  }
 }

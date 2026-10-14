@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.0.0"
+APP_VERSION = "3.0.1"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -3967,6 +3967,14 @@ class Engine:
         try:
             time.sleep(5)                              # 让窗口先开起来
             self.ensure_seed()
+            try:                                       # 3.0：图标（旧版更新上来时没有）＋ 第一次建桌面快捷方式
+                ensure_file("icon.ico")
+                ensure_file("icon.png")
+                ok, msg = create_shortcut()
+                if msg:
+                    self.q.put(("data", msg))
+            except Exception:  # noqa
+                log_crash("icon / shortcut failed", sys.exc_info())
             n = self.riotdb.import_seed()
             try:
                 self.riotdb.compact()
@@ -5455,7 +5463,91 @@ def check_app_version():
 API_BASE = "https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/"
 RAW_BASE = "https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/"
 MIRROR_BASE = "https://cdn.jsdelivr.net/gh/mingxintan-coder/haidou-helper@main/"
-UPDATABLE = ("haidou_helper.py", "lang_en.py", "README.md", "seed_db.json.gz")    # 一键更新只会替换这几个文件
+UPDATABLE = ("haidou_helper.py", "lang_en.py", "README.md", "seed_db.json.gz", "icon.ico", "icon.png")    # 一键更新只会替换这几个文件
+PROG_DIR = os.path.dirname(os.path.abspath(__file__))
+ICON_ICO = os.path.join(PROG_DIR, "icon.ico")
+ICON_PNG = os.path.join(PROG_DIR, "icon.png")
+
+
+def ensure_file(name):
+    """程序资料夹里缺某个随程序附带的文件（从旧版一键更新上来时，旧版不知道有这个文件）：照 version.json 的校验码下载一份"""
+    path = os.path.join(PROG_DIR, name)
+    if os.path.exists(path):
+        return True
+    try:
+        man = http_json(VERSION_URLS[0], timeout=15)
+    except Exception:  # noqa
+        return False
+    sha = ((man or {}).get("files") or {}).get(name)
+    if not sha:
+        return False
+    for base in (API_BASE, RAW_BASE, MIRROR_BASE):
+        try:
+            url = (base + name + "?ref=main") if base == API_BASE else (base + name + "?v=" + sha[:8])
+            hd = {"User-Agent": f"haidou-helper/{APP_VERSION}"}
+            if base == API_BASE:
+                hd["Accept"] = "application/vnd.github.raw"
+            with urllib.request.urlopen(urllib.request.Request(url, headers=hd), timeout=60) as r:
+                got = r.read()
+        except Exception:  # noqa
+            continue
+        if hashlib.sha256(got).hexdigest() == sha:
+            with open(path + ".new", "wb") as f:
+                f.write(got)
+            os.replace(path + ".new", path)
+            return True
+    return False
+
+
+def set_app_icon(win):
+    """视窗 / 工作列图标（3.0）：Windows 用 icon.ico，其他系统用 icon.png；所有之后开的小视窗也一起套用"""
+    try:
+        if sys.platform.startswith("win") and os.path.exists(ICON_ICO):
+            win.iconbitmap(default=ICON_ICO)
+        elif os.path.exists(ICON_PNG):
+            import tkinter as tk
+            img = tk.PhotoImage(file=ICON_PNG)
+            win.iconphoto(True, img)
+            win._icon_ref = img                 # 留住参照，不然图会被回收
+    except Exception:  # noqa
+        pass
+
+
+def create_shortcut(force=False):
+    """在桌面建「海斗助手」快捷方式（3.0）：用自己的图标，直接用 pythonw 开（不会多一个黑色命令视窗）。
+       只在 Windows；第一次开 3.0 时自动建一次，之后只有从选单按才重建。回传 (成功?, 说明)"""
+    if not sys.platform.startswith("win"):
+        return False, tr("只有 Windows 能建桌面快捷方式")
+    cfg = load_ui_cfg()
+    if cfg.get("shortcut") and not force:
+        return False, ""
+    if not os.path.exists(ICON_ICO):
+        return False, tr("图标还没下载好，稍后再试")
+    exe = sys.executable or "python.exe"
+    pyw = os.path.join(os.path.dirname(exe), "pythonw.exe")
+    target, args = (pyw, '"{0}"'.format(os.path.join(PROG_DIR, "haidou_helper.py"))) if os.path.exists(pyw) else \
+        (os.path.join(PROG_DIR, "start.bat"), "")
+
+    def q(x):
+        return "'" + str(x).replace("'", "''") + "'"
+    ps = ("$d=[Environment]::GetFolderPath('Desktop');"
+          "$s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d {0}));"
+          "$s.TargetPath={1};$s.Arguments={2};$s.WorkingDirectory={3};$s.IconLocation={4};"
+          "$s.Description={5};$s.WindowStyle=7;$s.Save()").format(
+        q(tr("海斗助手") + ".lnk"), q(target), q(args), q(PROG_DIR), q(ICON_ICO + ",0"), q(tr("海斗助手")))
+    try:
+        import subprocess
+        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+                           capture_output=True, text=True, timeout=30, creationflags=0x08000000)
+        ok = r.returncode == 0
+    except Exception as e:  # noqa
+        return False, tr("建快捷方式失败：{0}").format(e)
+    if ok:
+        cfg = load_ui_cfg()
+        cfg["shortcut"] = 1
+        save_ui_cfg(cfg)
+        return True, tr("已在桌面建好「海斗助手」快捷方式（新图标）")
+    return False, tr("建快捷方式失败：{0}").format((r.stderr or "").strip()[:80])
 SEED_FILE = "seed_db.json.gz"      # 随程序附带的海斗对局资料（整理自作者用客户端收集的对局：每局 10 人的英雄 / 装备 / 增幅 / 输赢 + 时间线）
 
 
@@ -8008,6 +8100,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     cfg = load_ui_cfg()
     root = tk.Tk()
     root.title(tr("海斗助手"))
+    set_app_icon(root)
     root.overrideredirect(True)
     root.attributes("-topmost", True)
     try:
@@ -8759,6 +8852,14 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         st["status_hold"] = time.time() + 20
         up.check_now()
     menu.add_command(label=tr('更新（当前 v{0}）').format(APP_VERSION), command=check_update)
+
+    def make_shortcut():
+        def run():
+            ok, msg = create_shortcut(force=True)
+            engine.q.put(("data", msg or tr("已建好")))
+        threading.Thread(target=run, daemon=True).start()
+    if sys.platform.startswith("win"):
+        menu.add_command(label=tr("建桌面快捷方式（带图标）"), command=make_shortcut)
     menu.add_command(label=tr("关闭海斗助手"), command=root.destroy)
 
     def open_menu():
@@ -9317,6 +9418,11 @@ def main():
         try:  # 高分屏下截图坐标与实际一致
             import ctypes
             ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:  # noqa
+            pass
+        try:  # 工作列用自己的图标（不然会显示成 Python 的图标）
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("haidou.helper")
         except Exception:  # noqa
             pass
         try:  # 降低本程序的 CPU 优先级，游戏永远优先

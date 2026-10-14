@@ -1,6 +1,6 @@
 # 海斗助手（海克斯大乱斗 实时出装 / 增幅 / 战术推荐）
 
-**下载最新版：** [haidou-helper-main.zip](https://github.com/mingxintan-coder/haidou-helper/archive/refs/heads/main.zip)（解压后双击 `start.bat`）
+**下载最新版：** [haidou-helper-main.zip](https://github.com/mingxintan-coder/haidou-helper/archive/refs/heads/main.zip)（解压后第一次双击 `start.bat`；之后用桌面上自动建好的「海斗助手」图标打开）
 
 > **English:** Mayhem Helper — a live build/augment advisor overlay for League of Legends ARAM: Mayhem.
 > Download the zip above, unzip, double-click `start.bat`. Switch the interface to English in the ⋯ menu →
@@ -109,6 +109,13 @@
 - **关键时刻**（赛后复盘）：每 10 秒记一次胜率，找出 2 分钟内**掉最多**（≥12 个百分点）和**涨最多**的一段，
   配上那段时间双方阵亡数，按规则判断原因：你第一个阵亡 → 站太前；开打时我方已少人 → 人数不利还接团；
   阵亡比对面多 2 个以上 → 团战换人吃亏；没人阵亡却掉 → 丢塔 / 兵线；否则经济被追上 → 对面装备成型。
+
+## 3.0.1：程序图标
+
+- 新图标（金色六边形 + 上升的胜率线 + 增幅星光），视窗、工作列都用它。
+- 第一次开 3.0.1 会在桌面建「海斗助手」快捷方式：用新图标、直接用 pythonw 开（不会多一个黑色命令视窗），
+  以后不用再点 .bat。删掉了或想重建：⋯ → 建桌面快捷方式（带图标）。原来指向 .bat 的旧快捷方式可以删掉。
+- 图标原图由 tools/make_icon.py 画出（icon.ico 含 16～256 像素各尺寸）。
 
 ## 3.0：全面检查（偏差、卡顿、错误）
 
