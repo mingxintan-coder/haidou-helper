@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.0.4"
+APP_VERSION = "3.0.5"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -1104,6 +1104,12 @@ MELEE_RULE = {"ids": [(RANGED_ONLY_ITEMS, -0.35, "你变近战，这件的远程
               "neutral_ids": MELEE_GOOD_ITEMS, "loose_ids": MELEE_GOOD_ITEMS}
 
 
+# 装备任务增幅（3.0.5）：做出这几件就送奖励（按增幅编号，各语言通用）；描述里写了「拥有 A 和 B」的也会自动认
+QUEST_ITEMS = {156: (3089, 3157), 1156: (3089, 3157),            # 乌莉特的法帽：死亡之帽＋中娅沙漏
+               1361: (3068, 6664),                                # 伊卡西亚殒落：日炎圣盾＋虚伪光彩
+               2141: (3748, 3074, 6698),                          # 究极九头蛇：三把九头蛇
+               319: (3031, 4015, 3146)}                           # 三神器（尤娜拉）
+
 # 描述里没有属性词、但玩法很明确的增幅（多为符文类）
 AUG_EXTRA_TAGS = {
     "地狱三头犬": {"AS": 2, "ONHIT": 2, "AD": 1}, "不死魔舞": {"HP": 2, "SUSTAIN": 2, "MS": 1},
@@ -2107,6 +2113,18 @@ class Advisor:
         route = self.build_route(me, my_augs, rules, allies, enemies, cs)
         self._route = route
         cp = self.rule_vec(norm({d: v for d, v in self.champ_profile(me.cid).items() if d in BUILD_DIMS}), rules)
+        owned_base = {i % 10000 if i >= 100000 else i for i in me.items} | {gd.item_name(i) for i in me.items}
+        quest_need = {}                     # 3.0.5：已选的装备任务增幅还差哪几件 → (增幅名, 奖励说明)
+        owned_names = {gd.item_name(i) for i in me.items}
+        for a in my_augs:
+            req = self.quest_items(a)
+            mr = re.search(r"奖励：\s*获得(.+?)[。.]", a.get("desc", "")) or \
+                re.search(r"(?i:reward):\s*(?i:gain|receive|get)\s+(?:an?\s+|the\s+)?(.+?)\.", a.get("desc", ""))
+            if req and mr and mr.group(1).strip() in owned_names:
+                continue                    # 奖励已经拿到了（任务装备可能被换掉）：不再推
+            miss = [i for i in req if i not in owned_base and gd.item_name(i) not in owned_base]
+            for i in miss:
+                quest_need[i] = (a["name"], [gd.item_name(x) for x in miss])
         owned_fx = {}                       # 你身上已有的唯一效果 → 哪件装（含增幅送的，例如乌莉特的法帽＝死亡之帽＋中娅沙漏）
         for i in me.items:
             for n in gd.item_effects(i):
@@ -2124,7 +2142,8 @@ class Advisor:
             fit = cosine(prof, nv)
             base_id = iid % 10000 if iid >= 100000 else iid
             loose = any(base_id in r.get("loose_ids", ()) for _, r in rules)
-            if fit < (0.25 if loose else 0.35):
+            quest = quest_need.get(base_id)
+            if fit < (0.25 if loose else 0.35) and not quest:
                 continue
             ehp = self.ehp_factor(iid, me, t, prof, role)
             factors = self.counter_factors(vec, special, t, prof, ehp_done=ehp is not None, phase=phase)
@@ -2152,6 +2171,8 @@ class Advisor:
             # 本局路线（2.14 定路线）：第一件大件定下路线后，同路线加分，换路线明显扣分；
             # 针对对面需要的保命 / 克制装只轻微扣分，并写明「偏离路线但本局需要」
             extra = self.route_factor(route, nv, factors)
+            if quest:                       # 增幅任务要的装备：一定排前面（做完就送奖励），也不算偏离路线
+                extra = (3.0, tr("增幅任务「{0}」：还差 {1}，做出来就完成").format(quest[0], "、".join(quest[1])), 0.3)
             syn = [a["name"] for a in my_augs if not (AUG_RULES.get(a.get("id")) or {}).get("crit_cap")
                    and cosine(norm((AUG_RULES.get(a.get("id")) or {}).get("prof") or a["tags"]), nv) > 0.5]
             if syn:
@@ -2346,6 +2367,28 @@ class Advisor:
                 "n": de["n"], "adj": adj, "has_data": de["has"], "data_text": de["text"],
                 "price": self.gd.item_price(iid), "reason": why, "wr": de["wr"], "stat_text": detail,
                 "boots": boots, "hint": ""}
+
+    def quest_items(self, a):
+        """装备任务增幅要做出的装备编号（没有就回传 ()）"""
+        cache = self.__dict__.setdefault("_quest_cache", {})
+        key = (a.get("id"), a.get("name"))
+        if key in cache:
+            return cache[key]
+        req = QUEST_ITEMS.get(a.get("id"), ())
+        if not req:
+            m = re.search(r"(?:拥有|持有)(.+?)[。.]\s*奖励", a.get("desc", "")) or \
+                re.search(r"(?i:\b(?:own|hold)\b)(.+?)\.\s*(?i:reward)", a.get("desc", ""))
+            if m:
+                by_name = {}
+                for i, it in self.gd.items.items():
+                    if self.gd.is_completed(i) and i < 100000:
+                        by_name.setdefault(it["name"], i)
+                parts = [x.strip() for x in re.split(r"、|，以及|以及|和|,|\band\b", m.group(1)) if x.strip()]
+                ids = [by_name.get(x) for x in parts]
+                if ids and all(ids):
+                    req = tuple(ids)
+        cache[key] = req
+        return req
 
     def db_aug(self, a, me=None, slot=0):
         """自建数据库的增幅胜率提升 (提升, 局数)；样本不到 30 局不算。
@@ -2855,6 +2898,18 @@ class Advisor:
                     factors.append((0.06 * rw, tr("契合本局路线（{0}）").format(route["label"])))
                 elif max(ks, key=ks.get) != "tank":
                     factors.append((-0.3 * rw, tr("跟本局路线（{0}）不合").format(route["label"])))
+        req = self.quest_items(a)
+        if req:                             # 3.0.5：装备任务增幅 —— 要做的装备适不适合你、已经有几件
+            have = {i % 10000 if i >= 100000 else i for i in me.items}
+            got = [i for i in req if i in have]
+            fits = [cosine(prof, norm({d: v for d, v in self.gd.item_vec(i)[0].items() if d in BUILD_DIMS})) for i in req]
+            names = "＋".join(self.gd.item_name(i) for i in req)
+            if got:
+                factors.append((0.12 * len(got), tr("任务要 {0}，你已经有 {1} 件").format(names, len(got))))
+            if min(fits) < 0.35:
+                factors.append((-0.35, tr("任务要 {0}，跟你的出装路线不合").format(names)))
+            elif not got:
+                factors.append((0.04, tr("任务要做出 {0}（选了之后出装会改推这几件）").format(names)))
         conflict = aug_conflict(a, my_augs)
         if conflict:                   # 互相抵消的增幅（变近战 vs 加攻击距离 / 远距离任务）
             factors.append((-0.6, conflict))
