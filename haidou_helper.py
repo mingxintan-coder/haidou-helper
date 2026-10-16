@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.0.5"
+APP_VERSION = "3.0.6"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -2125,6 +2125,10 @@ class Advisor:
             miss = [i for i in req if i not in owned_base and gd.item_name(i) not in owned_base]
             for i in miss:
                 quest_need[i] = (a["name"], [gd.item_name(x) for x in miss])
+        upg = {}                            # 3.0.6：已选的「升级某件装备」增幅 → 那几件装备加分
+        for a in my_augs:
+            for i in self.upgrade_items(a):
+                upg.setdefault(i, a["name"])
         owned_fx = {}                       # 你身上已有的唯一效果 → 哪件装（含增幅送的，例如乌莉特的法帽＝死亡之帽＋中娅沙漏）
         for i in me.items:
             for n in gd.item_effects(i):
@@ -2171,6 +2175,9 @@ class Advisor:
             # 本局路线（2.14 定路线）：第一件大件定下路线后，同路线加分，换路线明显扣分；
             # 针对对面需要的保命 / 克制装只轻微扣分，并写明「偏离路线但本局需要」
             extra = self.route_factor(route, nv, factors)
+            if base_id in upg and not quest:  # 增幅强化了这件：加分（偏离路线的话照样扣，但扣得少）
+                extra = (extra[0] + 1.2, (extra[1] + "；" if extra[1] else "") +
+                         tr("增幅「{0}」强化了这件").format(upg[base_id]), max(extra[2], 0.2))
             if quest:                       # 增幅任务要的装备：一定排前面（做完就送奖励），也不算偏离路线
                 extra = (3.0, tr("增幅任务「{0}」：还差 {1}，做出来就完成").format(quest[0], "、".join(quest[1])), 0.3)
             syn = [a["name"] for a in my_augs if not (AUG_RULES.get(a.get("id")) or {}).get("crit_cap")
@@ -2293,6 +2300,17 @@ class Advisor:
         except Exception:  # noqa
             wr = {}
         by_wr = False
+        popular = None                  # 3.0.6：网上这个英雄最多人走的路线（主流核心出装）当预设，比只看英雄属性准
+        if cs and cs.get("core"):
+            kk = [self.item_kind_id(i) for i in cs["core"][0]["items"]]
+            kk = [k for k in kk if k]
+            if kk:
+                k0 = Counter(kk).most_common(1)[0][0]
+                if rel.get(k0, 0) >= 0.2:
+                    popular, best = k0, k0
+        pm = getattr(getattr(self, "riotdb", None), "path_model", None) or {}
+        if wr and not pm.get("valid"):
+            wr = {}                     # 3.0.6：路线模型没通过自己的验证（考题上没比较准）：不按胜率换路线，也不显示胜率
         if wr:
             top = max(wr, key=lambda k: wr[k][0])
             if wr[top][1] >= 30 and (best not in wr or top == best or wr[top][0] - wr[best][0] >= 0.01):
@@ -2321,6 +2339,8 @@ class Advisor:
             path, src, locked = best, tr("英雄本身"), False
             text = (tr("预定路线：{0}（按阵容和增幅，预估胜率 {1}）· 第一件大件出来后锁定").format(tr(KIND_LABEL[path]), wr_text)
                     if by_wr and wr_text else
+                    tr("预定路线：{0}（网上主流出装）· 第一件大件出来后锁定").format(tr(KIND_LABEL[path]))
+                    if popular == path else
                     tr("预定路线：{0}（按英雄和增幅）· 第一件大件出来后锁定").format(tr(KIND_LABEL[path])))
         return {"kind": path, "label": tr(KIND_LABEL[path]), "locked": locked, "src": src, "rel": rel, "text": text,
                 "wr": wr, "by_wr": by_wr}
@@ -2389,6 +2409,36 @@ class Advisor:
                     req = tuple(ids)
         cache[key] = req
         return req
+
+    UPGRADE_RE = re.compile(r"^(?:升级|(?i:upgrade))\s*[:：]?\s*")
+
+    def upgrade_items(self, a):
+        """「升级某件装备」类增幅（3.0.6，例如 升级中娅沙漏、升级闪耀剑、升级荆棘之甲）强化的是哪几件装备：
+           增幅名去掉「升级」后的装备名，加上描述里提到的装备名 / 装备的唯一效果名（例如「魔法弯刀」→ 有这个效果的所有装备）"""
+        cache = self.__dict__.setdefault("_upg_cache", {})
+        key = (a.get("id"), a.get("name"))
+        if key in cache:
+            return cache[key]
+        out = ()
+        if self.UPGRADE_RE.match(a.get("name", "")):
+            target = self.UPGRADE_RE.sub("", a.get("name", "")).strip()
+            text = target + " " + a.get("desc", "")
+            by_name, by_fx, by_part = [], [], []
+            for i, it in self.gd.items.items():
+                if i >= 100000 or not self.gd.is_completed(i) or self.gd.is_boots(i):
+                    continue
+                nm = it.get("name", "")
+                fx = self.gd.item_effects(i)
+                if len(nm) >= 2 and nm in text:
+                    by_name.append(i)
+                if any(len(f) >= 2 and f in text for f in fx):
+                    by_fx.append(i)
+                if len(target) >= 2 and any(target in f for f in fx):
+                    by_part.append(i)
+            # 先认装备名（最准）；描述里没写装备名才用效果名（例如「魔法弯刀」→ 有这个效果的装备）；再不行用增幅名的一部分
+            out = tuple(sorted(set(by_name or by_fx or by_part)))
+        cache[key] = out
+        return out
 
     def db_aug(self, a, me=None, slot=0):
         """自建数据库的增幅胜率提升 (提升, 局数)；样本不到 30 局不算。
@@ -2898,6 +2948,21 @@ class Advisor:
                     factors.append((0.06 * rw, tr("契合本局路线（{0}）").format(route["label"])))
                 elif max(ks, key=ks.get) != "tank":
                     factors.append((-0.3 * rw, tr("跟本局路线（{0}）不合").format(route["label"])))
+        ups = self.upgrade_items(a)
+        if ups:                             # 3.0.6：升级某件装备 —— 你有没有这件、会不会出这件
+            have = {i % 10000 if i >= 100000 else i for i in me.items}
+            names = "、".join(self.gd.item_name(i) for i in ups[:3]) + ("…" if len(ups) > 3 else "")
+            named = [self.gd.item_name(i) for i in me.items if len(self.gd.item_name(i)) >= 2
+                     and self.gd.item_name(i) in a.get("desc", "")]   # 增幅送的装备（例如乌莉特的法帽）编号不在清单里，按名字认
+            if any(i in have for i in ups) or named:
+                factors.append((0.25, tr("你已经有 {0}，这张马上生效").format(
+                    next((self.gd.item_name(i) for i in ups if i in have), named[0] if named else ""))))
+            else:
+                fits = [cosine(prof, norm({d: v for d, v in self.gd.item_vec(i)[0].items() if d in BUILD_DIMS})) for i in ups]
+                if max(fits) >= 0.45:
+                    factors.append((0.03, tr("要出 {0} 才有效（选了之后出装会加推）").format(names)))
+                else:
+                    factors.append((-0.4, tr("要出 {0} 才有效，跟你的出装路线不合").format(names)))
         req = self.quest_items(a)
         if req:                             # 3.0.5：装备任务增幅 —— 要做的装备适不适合你、已经有几件
             have = {i % 10000 if i >= 100000 else i for i in me.items}
@@ -6986,7 +7051,8 @@ class RiotCollector:
     CLIENT_PAUSE_FULL = 900
 
     PHASE_EVERY = 8
-    BUSY_PHASES = ("Lobby", "Matchmaking", "ReadyCheck", "ChampSelect", "GameStart", "InProgress", "Reconnect")
+    # 3.0.6：不再在「房间 / 排队」暂停 —— 你常常开着房间等朋友，收集几乎停摆（两天只多了几十局）；房间里收集不影响游戏
+    BUSY_PHASES = ("ReadyCheck", "ChampSelect", "GameStart", "InProgress", "Reconnect")
 
     def client_busy(self, cred):
         """在房间 / 排队 / 选英雄 / 对战：每 8 秒问一次客户端现在在哪个阶段（2.14.2：以前只在每轮开头问一次，
@@ -7007,7 +7073,7 @@ class RiotCollector:
         if halt():
             raise InterruptedError
         if self.client_busy(cred):
-            self.status = tr("自建数据库：在房间 / 排队 / 选英雄 / 对战中，暂停收集")
+            self.status = tr("自建数据库：选英雄 / 对战中，暂停收集")
             self._next_pass = time.time() + 60
             self._note_status()
             raise InterruptedError
@@ -7365,7 +7431,8 @@ class RiotCollector:
                         al = [x + y for x, y in zip(al, v)]
                 ctx = al + [sum(1 for c in ally if tt(c)["ap"]), sum(1 for c in en if tt(c)["ap"]),
                             sum(1 for c in ally if tt(c)["front"]), sum(1 for c in en if tt(c)["front"])]
-                out.append({"c": r["c"], "p": main, "w": 1 if won else 0, "ctx": ctx, "q": pw.get(r.get("v", ""), 0.1)})
+                out.append({"c": r["c"], "p": main, "w": 1 if won else 0, "ctx": ctx, "q": pw.get(r.get("v", ""), 0.1),
+                            "m": r.get("m", "")})
         return out
 
     def maybe_path(self, force=False):
@@ -7388,6 +7455,20 @@ class RiotCollector:
         rows = self.path_rows()
         if len(rows) < 2000:
             return have
+        beta, cnt = self._fit_path(rows)
+        model = {"beta": beta, "games": n, "rows": len(rows),
+                 "cp": {"{0}|{1}".format(c, p): v for (c, p), v in cnt.items()}}
+        try:
+            model.update(self._check_path(rows))
+        except Exception:  # noqa
+            model["valid"] = False
+        self.dlog("path model check: {0}".format({k: model.get(k) for k in ("valid", "check")}))
+        write_json(path, model)
+        self.path_model = model
+        return model
+
+    @staticmethod
+    def _fit_path(rows):
         cnt = {}
         for r in rows:                              # 英雄 × 路线的局数按版本加权
             x = cnt.setdefault((r["c"], r["p"]), [0, 0])
@@ -7406,12 +7487,36 @@ class RiotCollector:
             prior = (t[1] - q * r["w"] + 0.5 * CHAMP_K) / (t[0] - q + CHAMP_K)
             X.append(path_vec(path_logit(k_n - q, k_w - q * r["w"], prior), r["p"], r["ctx"]))   # 扣掉这一局，免得自己预测自己
             y.append(r["w"])
-        beta = _fit_logit(X, y, lam=5.0)
-        model = {"beta": beta, "games": n, "rows": len(rows),
-                 "cp": {"{0}|{1}".format(c, p): v for (c, p), v in cnt.items()}}
-        write_json(path, model)
-        self.path_model = model
-        return model
+        return _fit_logit(X, y, lam=5.0), cnt
+
+    def _check_path(self, rows):
+        """路线模型自己验证（3.0.6）：较新的 40% 对局当考题，其余训练。出装主路线在「预估最高」1 个百分点内的玩家，
+           胜率要比偏离 1 个百分点以上的高 2 个百分点以上（两边各 ≥300 人），才用胜率来换预定路线；
+           否则只按英雄和增幅定路线。你的库（3285 局）：48.8% vs 48.4% —— 没有效，先不用"""
+        rows = sorted(rows, key=lambda r: r.get("m", ""))
+        cut = int(len(rows) * 0.6)
+        train, test = rows[:cut], rows[cut:]
+        beta, cnt = self._fit_path(train)
+        mod = {"beta": beta}
+        tot = {}
+        for (c, p), v in cnt.items():
+            t = tot.setdefault(c, [0, 0])
+            t[0] += v[0]
+            t[1] += v[1]
+        near, far = [], []
+        for r in test:
+            t = tot.get(r["c"], [0, 0])
+            prior = (t[1] + 0.5 * CHAMP_K) / (t[0] + CHAMP_K)
+            opts = {p: path_score(mod, path_logit(*cnt.get((r["c"], p), [0, 0]), prior), p, r["ctx"])
+                    for p in PATH_KINDS if cnt.get((r["c"], p), [0])[0] >= 30}
+            if len(opts) < 2 or r["p"] not in opts:
+                continue
+            (near if max(opts.values()) - opts[r["p"]] < 0.01 else far).append(r["w"])
+        if not near or not far:
+            return {"valid": False, "check": None}
+        a, b = sum(near) / len(near), sum(far) / len(far)
+        ok = len(near) >= 300 and len(far) >= 300 and a - b >= 0.02
+        return {"valid": ok, "check": [round(a, 3), len(near), round(b, 3), len(far)]}
 
     def maybe_refit(self, force=False):
         """新抓了 ≥30 局时间线（或还没有模型）就重新训练胜率模型"""
