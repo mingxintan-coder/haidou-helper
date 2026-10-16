@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.0.6"
+APP_VERSION = "3.0.7"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5520,6 +5520,7 @@ class Engine:
             return sel or ("status", tr("等待对局…"))
         self.fails = 0
         if not self.connected or self.last_state is None:
+            self._ime_start = False
             self.advisor._ema_cid = None                # 新的一局：平滑从头开始
             self.advisor._eaug_seen = {}
             self._dumped = False
@@ -5528,6 +5529,14 @@ class Engine:
         if state[2] is None:
             return ("status", tr("已连接，等待玩家数据…"))
         self.check_game_end(raw)
+        me0 = state[2]
+        if getattr(self, "ime_fix", True):
+            # 3.0.7：复活（离开商店时间）、开局 75 秒后，游戏的中文输入法自动切回英文，免得技能键被输入法吃掉
+            was = getattr(self, "_ime_dead", None)
+            if (was and not me0.is_dead) or (me0.game_time > 75 and not getattr(self, "_ime_start", False)):
+                self._ime_start = me0.game_time > 75
+                threading.Thread(target=game_ime_to_english, daemon=True).start()
+            self._ime_dead = me0.is_dead
         try:
             self._wp_now = self.wp_sample(raw, state)
         except Exception:  # noqa
@@ -6299,6 +6308,43 @@ def lcu_credentials():
             if port and token:
                 return int(port.group(1)), token.group(1)
     return None
+
+
+def game_ime_to_english():
+    """把游戏视窗的中文输入法切回英文模式（3.0.7）：在商店用中文搜装备后，出了泉水技能键（QWER）会被输入法吃掉。
+       只在游戏视窗（RiotWindowClass）在前面时动手；关掉输入法的「中文」状态（等于按一下 Shift），不换键盘、不动其他程式。
+       回传 True＝有切换"""
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32, imm32 = ctypes.windll.user32, ctypes.windll.imm32
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        buf = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, buf, 64)
+        if buf.value != "RiotWindowClass":
+            return False
+        imm32.ImmGetDefaultIMEWnd.restype = wintypes.HWND
+        ime = imm32.ImmGetDefaultIMEWnd(hwnd)
+        if not ime:
+            return False
+        WM_IME_CONTROL, IMC_GETOPENSTATUS, IMC_SETOPENSTATUS = 0x0283, 0x0005, 0x0006
+        IMC_GETCONVERSIONMODE, IMC_SETCONVERSIONMODE = 0x0001, 0x0002
+        user32.SendMessageW.restype = ctypes.c_ssize_t
+        user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        is_open = user32.SendMessageW(ime, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0)
+        mode = user32.SendMessageW(ime, WM_IME_CONTROL, IMC_GETCONVERSIONMODE, 0)
+        if not is_open and not (mode & 0x0001):      # 已经是英文（IME_CMODE_NATIVE 没开）
+            return False
+        user32.SendMessageW(ime, WM_IME_CONTROL, IMC_SETCONVERSIONMODE, mode & ~0x0001)   # 中文 → 英文（微软拼音等）
+        user32.SendMessageW(ime, WM_IME_CONTROL, IMC_SETOPENSTATUS, 0)                    # 其他输入法：关掉
+        return True
+    except Exception:  # noqa
+        return False
 
 
 def client_memory_mb():
@@ -8828,7 +8874,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 set_expanded(True)
             return
         rec = current["rec"]
-        busy = bool(rec and rec.get("auto_cand"))          # 屏幕上正在三选一
+        # 屏幕上正在三选一 / 阵亡买装备中 / 刚手动刷新：都不自动收起（3.0.7：以前你移到游戏去选卡、买装备，浮窗就缩成一行）
+        busy = bool(rec and (rec.get("auto_cand") or rec.get("cand_mode") or rec.get("shop"))) or \
+            now < st.get("keep_open_until", 0)
         if inside or busy:
             return
         if now < st["hold_until"] or now - st["left_at"] < 1.0:
@@ -8852,6 +8900,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     size_var = tk.DoubleVar(value=st["k"])
 
     def force_scan():
+        st["keep_open_until"] = time.time() + 25         # 3.0.7：手动刷新后 25 秒内不自动收起（让你看完结果）
         if scanner is not None and scanner.available:
             set_status(tr("识别中…"))
             st["status_hold"] = time.time() + 15
@@ -8910,13 +8959,14 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         sm.add_checkbutton(label=label, variable=snd_vars[kind], command=lambda k=kind: toggle_sound(k))
     menu.add_cascade(label=tr("声音提示"), menu=sm)
     am = tk.Menu(menu, tearoff=0, bg=CARD, fg=FG, activebackground="#2b3a57", activeforeground=FG)
-    auto_cfg = dict({"accept": True, "spells": True, "itemset": True}, **(load_ui_cfg().get("auto") or {}))
+    auto_cfg = dict({"accept": True, "spells": True, "itemset": True, "ime": True}, **(load_ui_cfg().get("auto") or {}))
     auto_vars = {}
 
     def apply_auto():
         engine.auto_accept = bool(auto_cfg["accept"])
         engine.auto_spells = bool(auto_cfg["spells"])
         engine.auto_itemset = bool(auto_cfg["itemset"])
+        engine.ime_fix = bool(auto_cfg.get("ime", True))
 
     def toggle_auto_opt(k):
         auto_cfg[k] = bool(auto_vars[k].get())
@@ -8925,7 +8975,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         save_ui_cfg(c)
         apply_auto()
     for k, label in (("accept", tr("自动接受对局")), ("spells", tr("自动换成推荐的召唤师技能")),
-                     ("itemset", tr("自动放推荐装备页到游戏商店"))):
+                     ("itemset", tr("自动放推荐装备页到游戏商店")),
+                     ("ime", tr("复活后把游戏的中文输入法切回英文"))):
         auto_vars[k] = tk.BooleanVar(value=auto_cfg[k])
         am.add_checkbutton(label=label, variable=auto_vars[k], command=lambda k=k: toggle_auto_opt(k))
     menu.add_cascade(label=tr("自动操作"), menu=am)
@@ -9477,6 +9528,19 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         root.after(60 if engine.scanning else 300, poll)     # 识别中刷新快一点
 
     def poll_once():
+        # 3.0.7：不是你按「—」最小化的，却被缩到工作列 / 藏起来（点游戏、游戏抢前景时 Windows 会这样做）：马上还原并回到最上层
+        try:
+            now = time.time()
+            if not st.get("minimized") and root.state() != "normal":
+                root.deiconify()
+                root.overrideredirect(True)
+                root.attributes("-topmost", True)
+                root.after(50, fit)
+            elif not st.get("minimized") and now - st.get("top_t", 0) > 2:
+                st["top_t"] = now
+                root.attributes("-topmost", True)       # 游戏抢回前景后，偶尔会盖住浮窗：每 2 秒重新放到最上层
+        except tk.TclError:
+            pass
         try:
             engine.overlay_rect = (root.winfo_rootx(), root.winfo_rooty(),
                                    root.winfo_rootx() + root.winfo_width(), root.winfo_rooty() + root.winfo_height())
