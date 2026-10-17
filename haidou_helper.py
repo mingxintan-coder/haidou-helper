@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.0.8"
+APP_VERSION = "3.0.9"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -2175,11 +2175,14 @@ class Advisor:
             # 本局路线（2.14 定路线）：第一件大件定下路线后，同路线加分，换路线明显扣分；
             # 针对对面需要的保命 / 克制装只轻微扣分，并写明「偏离路线但本局需要」
             extra = self.route_factor(route, nv, factors)
+            lead = ""
             if base_id in upg and not quest:  # 增幅强化了这件：加分（3.0.8：1.2 → 2.0，选了「升级」增幅就该出那件）
                 extra = (extra[0] + 2.0, (extra[1] + "；" if extra[1] else "") +
                          tr("增幅「{0}」强化了这件").format(upg[base_id]), max(extra[2], 0.2))
+                lead = tr("增幅「{0}」强化了这件").format(upg[base_id])
             if quest:                       # 增幅任务要的装备：一定排前面（做完就送奖励），也不算偏离路线
                 extra = (3.0, tr("增幅任务「{0}」：还差 {1}，做出来就完成").format(quest[0], "、".join(quest[1])), 0.3)
+                lead = extra[1]
             syn = [a["name"] for a in my_augs if not (AUG_RULES.get(a.get("id")) or {}).get("crit_cap")
                    and cosine(norm((AUG_RULES.get(a.get("id")) or {}).get("prof") or a["tags"]), nv) > 0.5]
             if syn:
@@ -2198,8 +2201,13 @@ class Advisor:
             if hab:                         # 你的习惯：+最多 1%
                 factors = factors + [hab]
             if extra[1]:
-                factors.append((extra[2], extra[1]))
-            out.append(self.pack_item(iid, de, factors, fit, self.top_dims(prof, nv), extra=extra[0]))
+                factors.append((extra[2], extra[1] if not lead or extra[1] == lead else extra[1].replace("；" + lead, "")))
+            out.append(self.pack_item(iid, de, factors, fit, self.top_dims(prof, nv), extra=extra[0], lead=lead))
+        aug_key = tuple(sorted(str(x.get("id") or x.get("name")) for x in my_augs))
+        if getattr(self, "_ema_augs", None) != aug_key:     # 3.0.8：刚选了增幅（任务 / 升级…）→ 不沿用旧排序，马上改推
+            self._ema_augs = aug_key
+            if getattr(self, "_ema_cid", None) == me.cid:
+                self._ema, self._top = {}, None
         out = self.smooth(me, out)          # 推荐只看装备本身好不好，不看你现在身上有多少钱（也不显示差多少钱）
         self._item_snap = [(x["id"], x["total"]) for x in out]      # 赛后「你选的 vs 推荐的」用（按推荐顺序）
         boots = self.recommend_boots(me, t, prof, role, cs, gold, legend, phase, rules)
@@ -2372,13 +2380,15 @@ class Advisor:
             tr("偏离预定路线（{0}）").format(lab)
         return -2.5 * w, why, -0.3
 
-    def pack_item(self, iid, de, factors, fit, dims, boots=False, extra=0.0):
+    def pack_item(self, iid, de, factors, fit, dims, boots=False, extra=0.0, lead=""):
         """一件装的推荐：总分 = 网上数据 Δ* + 本局调整（都是胜率百分点）+ 路线调整"""
         adj = self.situ_pct(factors, fit)
         total = de["d"] * 100 + adj + extra
         fit_text = tr('契合你的{0}路线').format('/'.join(dims)) if dims else ""
         rf = [f for f in factors if f[0] > 0 or f[0] <= -0.05]
-        why = self.reason(fit_text, rf)
+        why = self.reason(fit_text, [f for f in rf if f[1] != lead])
+        if lead:                            # 3.0.8：增幅任务 / 升级增幅的说明一定放最前面（以前被有效生命等理由挤掉）
+            why = lead + ("，" + why if why else "。")
         detail = tr("网上数据：") + de["text"] + "\n" + tr("本局调整 {0:+.1f}%：").format(adj) + why
         if abs(extra) >= 0.05:
             detail += "\n" + tr("本局路线 {0:+.1f}%").format(extra)

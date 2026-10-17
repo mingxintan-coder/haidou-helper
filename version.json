@@ -1,14 +1,15 @@
 {
- "version": "3.0.8",
+ "version": "3.0.9",
  "date": "2026-10-16",
  "notes": [
-  "三选一关掉但没抓到你点哪张时，浮窗会问「刚才选了哪张？」，点一下记下，出装跟着调整（以前没按 F8 识别就不知道你选了升级 / 任务增幅）",
-  "选了「升级某件装备」的增幅后，被强化的装备加分更多，稳定排在推荐前面"
+  "选了任务 / 升级增幅后，要做的装备马上排到第一（以前会被排序平滑挡住，例如伊卡西亚的陨落要的日炎圣盾＋空寂辉光）",
+  "任务 / 升级增幅要的装备，理由第一句写明是哪个增幅要的",
+  "三选一关掉但没抓到你点哪张时，浮窗会问「刚才选了哪张？」，点一下记下（3.0.8）"
  ],
  "files": {
-  "haidou_helper.py": "50bf4bb641651baf69052a05d664f18dd403f3988cc50723b9bd9ab932ff7d0f",
+  "haidou_helper.py": "167710d37e9d272eddcbb77b085432b940e2209efa50e530880c4fd449d2f21f",
   "lang_en.py": "cda8b5b0fe4976b6e20a1bee056d46a207bdcdf3027b3f331657195f2cee75d3",
-  "README.md": "18e77c4959f96982e3cb29ed970aadf848b5065b0c1fdc4fb10411ab90a6b244",
+  "README.md": "fdad7dcc7d139d1759fc7c1b965ba16f860fed0c569c880ecf202b0904d2ae5a",
   "seed_db.json.gz": "ffb9458061fcaaa4eaa82425fac6e38deb741855b6dbbe2c3e60aa9480827252",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
