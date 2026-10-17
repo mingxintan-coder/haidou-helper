@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.0.9"
+APP_VERSION = "3.1.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -824,13 +824,16 @@ class GameData:
         combos = {}
         for c in am.get("combos", []):
             types = {str(x).lower() for x in c.get("types", [])}
-            kind = "good" if types & AM_GOOD else "bad" if types & AM_BAD else None
+            # 3.1：保留标签种类（神 / 强 / 黑科技 / 陷阱 / 娱乐），各自的胜率差别很大（见 AM_TAG_PCT）
+            kind = max((t for t in types if t in AM_TAG_PCT), key=lambda t: abs(AM_TAG_PCT[t]), default=None)
             if not kind:
                 continue
             for sid in c.get("augmentIds", []):
                 a = slug_to_id.get(sid)
                 if a is not None:
-                    combos[(str(c.get("championId", "")).lower(), a["name"])] = kind
+                    k2 = (str(c.get("championId", "")).lower(), a["name"])
+                    if k2 not in combos or abs(AM_TAG_PCT[kind]) > abs(AM_TAG_PCT[combos[k2]]):
+                        combos[k2] = kind
         self.am_combos = combos
         self.am_matched = matched
         return matched
@@ -2990,8 +2993,8 @@ class Advisor:
             factors.append((-0.6, conflict))
         champ = (self.gd.champ(me.cid) or {}).get("id", me.cid)
         combo = getattr(self.gd, "am_combos", {}).get((str(champ).lower(), a["name"]))
-        combo_f = (0.15, tr("arammayhem.com 标注为这个英雄的强力组合")) if combo == "good" else \
-            (-0.2, tr("arammayhem.com 标注为这个英雄的陷阱组合")) if combo == "bad" else None
+        tag_pct = AM_TAG_PCT.get(combo, 0.0)
+        combo_f = ((0.15 if tag_pct > 0 else -0.2), tr(AM_TAG_TEXT[combo])) if combo in AM_TAG_TEXT else None
         gate = 0.6 if not bv else min(1.0, max(0.2, (fit - 0.2) / 0.4))
         situ = sum(v * (gate if v > 0 else 1) for v, _ in factors)
         de = self.data_effect_aug(a, cs, stage, [m["id"] for m in my_augs if m.get("id")])
@@ -2999,8 +3002,7 @@ class Advisor:
         # 编辑整理的「这个英雄 + 这个增幅」强力 / 陷阱组合不受契合度打折（是针对这个英雄的）
         am_pick = a.get("am_pick")
         pop = 0.12 * (math.sqrt(min(am_pick, 0.6) / 0.6) - 0.4) if am_pick is not None else 0.0
-        if combo_f:
-            situ += combo_f[0]
+        if combo_f:                      # 3.1：直接按回测的胜率差加减（不再经过本局因素换算）
             factors.insert(0, combo_f)
         own = self.db_aug(a, me, len(my_augs))   # 自建数据库：这张增幅的胜率提升（my_augs＝已选的 → 这是第几次选）
         hab = self.habit_aug(me, a)
@@ -3014,12 +3016,13 @@ class Advisor:
         combo_hint = None
         if syn:                          # 自建数据库：和已有增幅一起拿的胜率提升（±最多 2 个百分点）
             lift, n, partner = syn
-            adj += max(-2.0, min(2.0, 0.6 * lift * 100))
+            # 3.1 回测：自建库的「两张一起拿」提升只有很弱的预测力（z≈1）→ 份量减半，上限 ±1
+            adj += max(-1.0, min(1.0, 0.3 * lift * 100))
             txt = tr("和「{0}」一起拿 胜率 {1:+.0f}%（自建库 {2} 次）").format(partner, lift * 100, n)
             factors.insert(0, (0.1 if lift > 0 else -0.1, txt))
             if lift > 0:
                 combo_hint = txt
-        adj = max(-4.0, min(4.0, adj))
+        adj = max(-4.0, min(4.0, adj + tag_pct))
         own_pct = 0.0
         if own:
             lift, n = own
@@ -3055,13 +3058,51 @@ class Advisor:
             res = [self.score_aug(a, prof, t, my_augs, me, cs, stage) for a in candidates]
             res.sort(key=lambda x: -x["raw"])
             self._cand_snap = {x["name"]: x["total"] for x in res}
+            try:
+                self._reroll = self.aug_reroll(me, my_augs, t, candidates, res, prof, cs, stage)
+            except Exception:  # noqa
+                self._reroll = None
             return res
+        self._reroll = None
         mine = {a["name"] for a in my_augs}
         res = [self.score_aug(a, prof, t, my_augs, me, cs, stage) for a in self.aug_index.values()
                if a["name"] not in mine and a.get("desc")]
         res.sort(key=lambda x: -x["raw"])
         self._aug_snap = {x["name"]: x["total"] for x in res}     # 赛后「你选的 vs 推荐的」用
         return res[:k]
+
+    REROLL_MIN = 0.8                # 刷新一张平均能多赚这么多（胜率百分点）才建议刷
+
+    def aug_reroll(self, me, my_augs, t, candidates, res, prof, cs, stage):
+        """3.1：三选一要不要刷新（重骰）一张卡。
+           你最后只会拿一张，所以刷新的价值＝E[max(★ 那张, 刷出来的新卡)] − ★ 那张；
+           新卡＝同稀有度、还没拿过、不在眼前三张里的增幅，每张机会一样（用同一套评分算每张的分数）。
+           要刷就刷分数最低的那张（另外两张反正不会拿）。"""
+        if len(res) < 2:
+            return None
+        rar = Counter(a.get("rarity", 0) for a in candidates).most_common(1)[0][0]
+        key = (me.cid, tuple(sorted(a["name"] for a in candidates)), tuple(sorted(a["name"] for a in my_augs)), rar)
+        cache = getattr(self, "_reroll_cache", None)
+        if cache and cache[0] == key and time.time() - cache[1] < 30:
+            pool_scores = cache[2]
+        else:
+            skip = {a["name"] for a in my_augs} | {a["name"] for a in candidates}
+            pool = [a for a in self.aug_index.values()
+                    if a["name"] not in skip and a.get("desc") and a.get("rarity", 0) == rar]
+            pool_scores = [self.score_aug(a, prof, t, my_augs, me, cs, stage)["total"] for a in pool]
+            self._reroll_cache = (key, time.time(), pool_scores)
+        if len(pool_scores) < 8:
+            return None
+        best, worst = res[0], res[-1]
+        gain = sum(max(best["total"], x) for x in pool_scores) / len(pool_scores) - best["total"]
+        better = sum(1 for x in pool_scores if x > best["total"]) / len(pool_scores)
+        if gain >= self.REROLL_MIN:
+            text = tr("↻ 建议刷新「{0}」：刷出比 ★ 更好的机会 {1:.0f}%，平均多 {2:+.1f}%").format(worst["name"], better * 100, gain)
+            act = "reroll"
+        else:
+            text = tr("不用刷新：★「{0}」已经比 {1:.0f}% 的同级增幅好").format(best["name"], (1 - better) * 100)
+            act = "keep"
+        return {"act": act, "card": worst["name"], "gain": gain, "better": better, "text": text}
 
     # ---------- 战术 ----------
     def tactics(self, me, allies, enemies, t, prof, my_augs):
@@ -3451,6 +3492,7 @@ class Advisor:
             fa = self.all_index.get(a.get("name"))
             a["howto"] = aug_howto(fa) if fa else ""
         return {"items": items, "augs": augs, "tips": tips, "cand_mode": bool(cands), "auto_cand": auto, "shop": shop,
+                "aug_reroll": getattr(self, "_reroll", None) if cands else None,
                 "brief": self.brief(me, allies, enemies, t, prof, guide, ealerts), "enemy_augs": ealerts,
                 "coach": self.coach(me, my_augs),
                 "eaug_visible": any(p.augments for p in allies + enemies),
@@ -4479,6 +4521,9 @@ class Engine:
         if rec.get("cand_mode") and rec.get("augs"):
             names = [a["name"] for a in rec["augs"]]
             self._last_offer = (names, names[0])
+            offs = g.setdefault("offers", [])       # 3.1：每次三选一（赛后用结算数据补「选了 ★ 没」）
+            if not offs or set(offs[-1][0]) != set(names):
+                offs.append((names, names[0]))
             for a in names:
                 if a not in g["offered"]:
                     g["offered"].append(a)
@@ -5166,7 +5211,7 @@ class Engine:
         self.habits.add_game(g)                        # 先存，复盘里的「这个英雄 N 局」才包含这一局
         self.q.put(("review", self.review(g)))
         full["mvp"] = mv_full
-        self.post_game_async(full, gid)                # 背景读结算数据（伤害、承伤、治疗、控制），读到再重算高手
+        self.post_game_async(full, gid, rec=g)         # 背景读结算数据（伤害、承伤、治疗、控制），读到再重算高手
         self.import_history_async(delay=60)            # 客户端结算后会更新对局记录，补上编号以免重复
 
     @staticmethod
@@ -5237,7 +5282,7 @@ class Engine:
                     out[n]["score"] -= mb
         return out
 
-    def post_game_async(self, g, gid=None):
+    def post_game_async(self, g, gid=None, rec=None):
         """对局结束后读客户端的结算数据（最多试 2 分钟），重算「向高手学」。
            gid＝这局的编号（选英雄时记下的）；不知道时只接受名字和这局对得上的结算资料"""
         if isinstance(self.source, MockGame) or not g.get("roster"):
@@ -5273,14 +5318,79 @@ class Engine:
             except OSError:
                 pass
             g["post"] = got[2]
+            fix = ""
+            try:
+                fix = self.fix_augs_from_post(rec if rec is not None else g, got[1])
+                if rec is not None:
+                    for k in ("augs", "aug_follow"):
+                        if k in rec:
+                            g[k] = rec[k]
+            except Exception:  # noqa
+                fix = ""
             try:
                 g["mvp"] = self.mvp_lessons(g)
                 rv = self.review(g)
-                rv["text"] += tr(" · 已用结算数据更新")
+                rv["text"] += tr(" · 已用结算数据更新") + ("\n" + fix if fix else "")
                 self.q.put(("review", rv))
             except Exception:  # noqa
                 pass
         threading.Thread(target=run, daemon=True).start()
+
+    def fix_augs_from_post(self, g, data):
+        """3.1：结算数据里有你实际拿的增幅 → 改正助手记的（没抓到你点哪张、点错），
+           顺便补上「这次选了 ★ 没有」（赛后报告的跟随率才准）。回传一行说明（没改就回传空字串）"""
+        if not isinstance(data, dict):
+            return ""
+        st = None
+        lp = data.get("localPlayer")
+        if isinstance(lp, dict):
+            st = lp.get("stats")
+        if st is None:                                   # 对局详情格式：participants 里找自己
+            me = (getattr(self, "my_riot_id", "") or "").split("#")[0]
+            ids = {pi.get("participantId"): (pi.get("player") or {}) for pi in data.get("participantIdentities") or []}
+            for p in data.get("participants") or []:
+                pl = ids.get(p.get("participantId"), {})
+                if me and (pl.get("gameName") or pl.get("summonerName")) == me:
+                    st = p.get("stats") or {}
+        if not isinstance(st, dict):
+            return ""
+        by_id = {a.get("id"): a["name"] for a in self.gd.augments if a.get("id")}
+        actual = []
+        for i in range(1, 7):
+            v = st.get(f"playerAugment{i}") or st.get(f"PLAYER_AUGMENT_{i}") or 0
+            try:
+                n = by_id.get(int(v))
+            except (TypeError, ValueError):
+                n = None
+            if n and n not in actual:
+                actual.append(n)
+        if not actual:
+            return ""
+        def same(a, b):
+            fa, fb = self.advisor.find_aug(a), self.advisor.find_aug(b)
+            return a == b or (fa is not None and fb is not None and fa.get("id") and fa.get("id") == fb.get("id"))
+        rec = g.setdefault("augs", [])
+        added = [n for n in actual if not any(same(n, r) for r in rec)]
+        wrong = [r for r in rec if not any(same(n, r) for n in actual)]
+        if not added and not wrong:
+            return ""
+        af = g.setdefault("aug_follow", [])
+        af[:] = [x for x in af if x[0] not in wrong]
+        for n in added:
+            off = next((o for o in g.get("offers", []) if any(same(n, c) for c in o[0])), None)
+            if off:
+                af.append((n, same(n, off[1])))
+        rec[:] = list(actual)
+        try:
+            self.habits.save()
+        except Exception:  # noqa
+            pass
+        parts = []
+        if added:
+            parts.append(tr("补上 {0}").format(tr("、").join(added)))
+        if wrong:
+            parts.append(tr("去掉记错的 {0}").format(tr("、").join(wrong)))
+        return tr("增幅已按结算数据改正：") + tr("；").join(parts)
 
     def mvp_lessons(self, g):
         """这局表现比你好的玩家：全场最强 + 和你同定位里最强（最多 2 个），他们做对了什么。回传 [dict]
@@ -5870,8 +5980,18 @@ def install_update(manifest, log=print):
 # --------------------------------------------------------------------------------------
 AM_BASE = "https://arammayhem.com/data/v1/latest/"
 AM_ATTRIBUTION = "Data: arammayhem.com (CC BY 4.0)"
-AM_GOOD = {"god", "strong", "op", "best", "core"}
-AM_BAD = {"trap", "weak", "bad", "avoid"}
+# 3.1 回测（自建库 3350 局，扣掉英雄强度和增幅本身的胜率后还剩下的差别）：
+#   god +4.6%（1030 次）、strong +3.1%（1122）、blackTech +1.9%（165）、trap −5.0%（157）、entertainment −11%（75）
+#   网上的英雄 × 增幅数据已经反映了一部分 → 只取大约一半
+AM_TAG_PCT = {"god": 2.0, "op": 2.0, "best": 2.0, "strong": 1.3, "core": 1.3, "blacktech": 0.6,
+              "trap": -2.0, "weak": -1.5, "bad": -2.0, "avoid": -2.0, "entertainment": -2.5}
+AM_TAG_TEXT = {"god": "arammayhem.com 标注为这个英雄的神级组合", "op": "arammayhem.com 标注为这个英雄的神级组合",
+               "best": "arammayhem.com 标注为这个英雄的神级组合",
+               "strong": "arammayhem.com 标注为这个英雄的强力组合", "core": "arammayhem.com 标注为这个英雄的强力组合",
+               "blacktech": "arammayhem.com 标注为这个英雄的黑科技组合",
+               "trap": "arammayhem.com 标注为这个英雄的陷阱组合", "weak": "arammayhem.com 标注为这个英雄的陷阱组合",
+               "bad": "arammayhem.com 标注为这个英雄的陷阱组合", "avoid": "arammayhem.com 标注为这个英雄的陷阱组合",
+               "entertainment": "arammayhem.com 标注为这个英雄的娱乐组合（好玩但不太赢）"}
 
 
 def load_arammayhem(log=print):
@@ -8353,6 +8473,8 @@ def format_rec(rec):
         mark = tr(" ←选它") if rec["cand_mode"] and i == 1 else ""
         lines.append(tr(' {0}. {1:<10} {2:>5}%  [{3}｜本局 {4:+.1f}] {5}{6}').format(
             i, a['name'], fmt_total(a), fmt_data(a), a.get('adj', 0), a['reason'], mark))
+    if rec.get("aug_reroll"):
+        lines.append(" " + rec["aug_reroll"]["text"])
     return "\n".join(lines)
 
 
@@ -8824,6 +8946,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     aug_head = tk.Label(pages["augs"], text="", bg=BG, fg=SUB, font=F["small"], anchor="w")
     aug_head.pack(fill="x", pady=(0, 2))
     aug_rows = make_rows(pages["augs"], 4)
+    reroll_lbl = tk.Label(pages["augs"], text="", bg=BG, fg=SUB, font=F["small"], anchor="w", justify="left")   # 3.1：要不要刷新
+    wraps.append(reroll_lbl)
     howto_lbl = tk.Label(pages["augs"], text="", bg="#1f2a1c", fg=GREEN, font=F["small"], anchor="w", justify="left",
                          padx=6, pady=3)
     wraps.append(howto_lbl)
@@ -9458,6 +9582,15 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         aug_head.config(text=(tr("识别到三选一 · ★ 推荐 · 点卡片记为已选") if rec.get("auto_cand") else
                               tr("三选一评分 · ★ 推荐 · 点卡片记为已选")) if cand else tr("当前局势推荐的增幅"),
                         fg=GOLD if cand else SUB)
+        rr = rec.get("aug_reroll") if cand else None
+        if rr:
+            reroll_lbl.config(text=rr["text"], fg=GOLD if rr["act"] == "reroll" else DIM)
+            if mine_lbl.winfo_manager():
+                reroll_lbl.pack(fill="x", pady=(1, 0), before=mine_lbl)
+            else:
+                reroll_lbl.pack(fill="x", pady=(1, 0))
+        else:
+            reroll_lbl.pack_forget()
         mine_lbl.config(text=tr("已选增幅：") + (tr("、").join(mine_names) if mine_names else tr("（还没有）")))
         mine_lbl.pack(fill="x", pady=(2, 0))
         ea = rec.get("enemy_augs") or []

@@ -998,3 +998,10 @@ COMBOS_EN = {'Aatrox': {'notes': ['Use E to adjust so all three Q casts land wit
          'style': 'E lands, long-range Q one-shots'},
  'Zyra': {'notes': ['E root, Q seeds bloom into plants', 'R knocks up and empowers plants'],
           'style': 'Blanket the field with seeds, set up with E root'}}
+EN.update({'arammayhem.com 标注为这个英雄的神级组合': 'arammayhem.com lists this as a god-tier combo for this champion',
+           'arammayhem.com 标注为这个英雄的黑科技组合': 'arammayhem.com lists this as an off-meta tech combo for this champion',
+           'arammayhem.com 标注为这个英雄的娱乐组合（好玩但不太赢）': 'arammayhem.com lists this as a just-for-fun combo for this champion (fun, but loses more)'})
+EN.update({'↻ 建议刷新「{0}」：刷出比 ★ 更好的机会 {1:.0f}%，平均多 {2:+.1f}%': '↻ Reroll "{0}": {1:.0f}% chance to beat ★, worth {2:+.1f}% on average',
+           '不用刷新：★「{0}」已经比 {1:.0f}% 的同级增幅好': 'No need to reroll: ★ "{0}" already beats {1:.0f}% of same-tier augments'})
+EN.update({'补上 {0}': 'added {0}', '去掉记错的 {0}': 'removed wrongly recorded {0}',
+           '增幅已按结算数据改正：': 'Augments corrected from end-of-game data: '})
