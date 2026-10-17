@@ -563,6 +563,8 @@ EN.update({
     '和已选「{0}」冲突：变近战后攻击距离 / 远距离效果就没了': 'Conflicts with "{0}": becoming melee wastes its range effects',
     '增幅「{0}」': 'Augment "{0}" ',
     '矛盾：': 'Conflicts: ',
+    '刚才三选一选了哪张？点一下记下（出装会跟着调整）': 'Which augment did you just pick? Click to record it (item recs will adjust)',
+    '都没选 / 不记': 'None / skip',
     '复活后把游戏的中文输入法切回英文': 'Switch the game\'s Chinese IME back to English after respawn',
     '预定路线：{0}（网上主流出装）· 第一件大件出来后锁定': 'Planned path: {0} (most popular online build) · locks after your first big item',
     '增幅「{0}」强化了这件': 'Augment "{0}" upgrades this item',

@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.0.7"
+APP_VERSION = "3.0.8"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -2175,8 +2175,8 @@ class Advisor:
             # 本局路线（2.14 定路线）：第一件大件定下路线后，同路线加分，换路线明显扣分；
             # 针对对面需要的保命 / 克制装只轻微扣分，并写明「偏离路线但本局需要」
             extra = self.route_factor(route, nv, factors)
-            if base_id in upg and not quest:  # 增幅强化了这件：加分（偏离路线的话照样扣，但扣得少）
-                extra = (extra[0] + 1.2, (extra[1] + "；" if extra[1] else "") +
+            if base_id in upg and not quest:  # 增幅强化了这件：加分（3.0.8：1.2 → 2.0，选了「升级」增幅就该出那件）
+                extra = (extra[0] + 2.0, (extra[1] + "；" if extra[1] else "") +
                          tr("增幅「{0}」强化了这件").format(upg[base_id]), max(extra[2], 0.2))
             if quest:                       # 增幅任务要的装备：一定排前面（做完就送奖励），也不算偏离路线
                 extra = (3.0, tr("增幅任务「{0}」：还差 {1}，做出来就完成").format(quest[0], "、".join(quest[1])), 0.3)
@@ -4009,6 +4009,8 @@ def scanner_loop(engine, scanner, stop, enabled, interval=3.0, clicker=None, hot
                             engine.set_auto([])
                             if pending_pick is not None:
                                 engine.add_pick(pending_pick)
+                            elif cur:                  # 3.0.8：没抓到你点哪张 → 浮窗问你选了哪张（点一下记下）
+                                engine.ask_pick([n for n, _ in cur])
                             if clicker is not None:
                                 clicker.active.clear()
                                 try:
@@ -5469,6 +5471,25 @@ class Engine:
             self.manual_dirty = "picked:" + name
         self.wake.set()
 
+    def ask_pick(self, names):
+        """三选一关了、但没抓到你点哪张：浮窗显示这几张让你补点（45 秒内）"""
+        with self.lock:
+            mine = set(self.manual.get("mine", []) + self.manual.get("picked", []))
+            if any(n in mine for n in names):
+                return
+            self._confirm = (list(names), time.time())
+            self.manual_dirty = "confirm"
+        self.wake.set()
+
+    def confirm_pick(self, name):
+        self._confirm = None
+        if name:
+            self.add_pick(name)
+        else:
+            with self.lock:
+                self.manual_dirty = "confirm_off"
+            self.wake.set()
+
     def set_auto(self, offers):
         """offers: [(name, desc)]，空列表表示三选一界面消失"""
         vals = [f"{n}|{d}" for n, d in offers]
@@ -5560,7 +5581,8 @@ class Engine:
         lsig = live_signature(state)
         with self.lock:
             stats_new, self.stats_dirty = self.stats_dirty, False
-        if sig == self.last_sig and lsig == getattr(self, "last_lsig", None) and not stats_new:
+        cfd = dirty in ("confirm", "confirm_off")      # 3.0.8：补点提示出现 / 关掉，局势没变也要刷新浮窗
+        if sig == self.last_sig and lsig == getattr(self, "last_lsig", None) and not stats_new and not cfd:
             return ("status", tr("监控中"))
         quiet = sig == self.last_sig and not stats_new  # 只有阵亡/击杀/血量变化：更新战术，不弹出窗口
         changes = (describe_live(self.gd, self.last_state, state) if quiet
@@ -5607,6 +5629,9 @@ class Engine:
         if g and g.get("wp"):                          # 悬浮窗的迷你胜率曲线：最近 6 分钟
             t_now = g["wp"][-1][0]
             rec["wp_series"] = [(x[0], x[1]) for x in g["wp"] if t_now - x[0] <= 360]
+        cf = getattr(self, "_confirm", None)
+        if cf and time.time() - cf[1] < 45 and not any(n in rec.get("my_augs", []) for n in cf[0]):
+            rec["confirm"] = cf[0]
         rec["changes"] = changes
         rec["quiet"] = quiet
         rec["time"] = time.strftime("%H:%M:%S")
@@ -8774,6 +8799,18 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     item_rows = make_rows(pages["items"], 4)
 
     # 增幅页
+    confirm_box = tk.Frame(pages["augs"], bg="#2a2412")          # 3.0.8：「刚才选了哪张？」补点
+    confirm_lbl = tk.Label(confirm_box, text=tr("刚才三选一选了哪张？点一下记下（出装会跟着调整）"), bg="#2a2412", fg=GOLD,
+                           font=F["small"], anchor="w", justify="left")
+    confirm_lbl.pack(fill="x", padx=6, pady=(3, 1))
+    wraps.append(confirm_lbl)
+    confirm_btns = []
+    for _ in range(3):
+        b = tk.Label(confirm_box, text="", bg="#3a3220", fg=FG, font=F["small"], padx=6, pady=2, cursor="hand2", anchor="w")
+        confirm_btns.append(b)
+    confirm_skip = tk.Label(confirm_box, text=tr("都没选 / 不记"), bg="#2a2412", fg=SUB, font=F["small"], cursor="hand2",
+                            anchor="e")
+    confirm_skip.bind("<Button-1>", lambda e: (engine.confirm_pick(None), confirm_box.pack_forget()))
     aug_head = tk.Label(pages["augs"], text="", bg=BG, fg=SUB, font=F["small"], anchor="w")
     aug_head.pack(fill="x", pady=(0, 2))
     aug_rows = make_rows(pages["augs"], 4)
@@ -8875,7 +8912,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             return
         rec = current["rec"]
         # 屏幕上正在三选一 / 阵亡买装备中 / 刚手动刷新：都不自动收起（3.0.7：以前你移到游戏去选卡、买装备，浮窗就缩成一行）
-        busy = bool(rec and (rec.get("auto_cand") or rec.get("cand_mode") or rec.get("shop"))) or \
+        busy = bool(rec and (rec.get("auto_cand") or rec.get("cand_mode") or rec.get("shop") or rec.get("confirm"))) or \
             now < st.get("keep_open_until", 0)
         if inside or busy:
             return
@@ -9385,6 +9422,27 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 lb.config(text="▸" + normal[i][1], fg=normal[i][3] if len(normal[i]) > 3 else FG)
                 lb.pack(fill="x", pady=(0, 1))
         fill_rows(item_rows, rec.get("items", [])[:4])
+        # 补点：刚才选了哪张
+        cf = rec.get("confirm") or []
+        if cf:
+            for b, n in zip(confirm_btns, cf + [None] * 3):
+                b.pack_forget()
+                if n:
+                    b.config(text="▸ " + n)
+                    b.unbind("<Button-1>")
+                    b.bind("<Button-1>", lambda e, n=n: (engine.confirm_pick(n), confirm_box.pack_forget()))
+                    b.pack(fill="x", padx=6, pady=1)
+            confirm_skip.pack_forget()
+            confirm_skip.pack(fill="x", padx=6, pady=(0, 3))
+            confirm_box.pack(fill="x", pady=(0, 3), before=aug_head)
+            if st.get("confirm_key") != tuple(cf):
+                st["confirm_key"] = tuple(cf)
+                if st["tab"] != "augs":
+                    select_tab("augs")
+                st["hold_until"] = max(st["hold_until"], time.time() + 20)
+                set_expanded(True)
+        else:
+            confirm_box.pack_forget()
         # 增幅页
         cand = rec.get("cand_mode")
         aug_head.config(text=(tr("识别到三选一 · ★ 推荐 · 点卡片记为已选") if rec.get("auto_cand") else
@@ -9438,8 +9496,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         else:
             footer.config(text=tr('游戏 {0}').format(gv))
         # 自动选分页：出现新的三选一（或重骰）时切到增幅一次；你自己切走就不再拉回来
-        cand_key = tuple(a["name"] for a in rec.get("augs", [])[:3]) if cand else None
-        if cand:
+        cand_key = tuple(a["name"] for a in rec.get("augs", [])[:3]) if cand else \
+            (("confirm",) + tuple(rec["confirm"]) if rec.get("confirm") else None)
+        if cand_key:
             if cand_key != st.get("cand_jumped"):
                 st["cand_jumped"] = cand_key
                 if st["tab"] != "augs":
