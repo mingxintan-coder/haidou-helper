@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.1.1"
+APP_VERSION = "3.1.2"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -1730,6 +1730,7 @@ class Advisor:
         """网上数据：这个增幅在这个英雄第几次选时比平均高 / 低多少；和你已选增幅的组合另外比一次"""
         aid = a.get("id")
         ests = []
+        best = None
         if cs and aid:
             tbl = cs["aug_stages"].get(stage) or {}
             e = self._eb_est(cs, ("stage", stage), tbl, aid, 300)
@@ -1740,20 +1741,27 @@ class Advisor:
                 if e:
                     ests.append((e, tr("拿它")))
             eb = self._eb(cs, "augs", cs["augs"])
-            for m in my_aug_ids:
+            best = None
+            for m in my_aug_ids:              # 3.1.2：看所有已选增幅（以前只看第一个对上的），门槛 500 → 200 局
                 combo = cs.get("combos", {}).get(frozenset((m, aid)))
                 m_base = (cs["augs"].get(m) or {}).get("wr")
-                if combo and m_base and combo[1] >= 500 and eb:
+                if combo and m_base and combo[1] >= 200 and eb:
                     v = m_base * (1 - m_base) / combo[1]
                     k = eb[1] / (eb[1] + v)
-                    ests.append(({"d": (combo[0] - m_base) * k, "var": eb[1] * v / (eb[1] + v), "raw": combo[0] - m_base,
-                                  "n": combo[1], "wr": combo[0]},
-                                 tr("和「{0}」一起").format(self.aug_name_by_id(m))))
-                    break
-        return self._combine(ests, 0.0, tr("没有这个英雄的数据") if cs else tr("网上数据还没载入"))
+                    e = ({"d": (combo[0] - m_base) * k, "var": eb[1] * v / (eb[1] + v), "raw": combo[0] - m_base,
+                          "n": combo[1], "wr": combo[0]}, tr("和「{0}」一起").format(self.aug_name_by_id(m)))
+                    if best is None or abs(e[0]["d"]) > abs(best[0]["d"]):
+                        best = e
+            if best:
+                # 你已经有那张时，「一起拿」的数据比单张的更贴切 → 份量加倍（误差方差减半）
+                best[0]["var"] /= 2
+                ests.append(best)
+        out = self._combine(ests, 0.0, tr("没有这个英雄的数据") if cs else tr("网上数据还没载入"))
+        out["combo_online"] = best is not None
+        return out
 
     @staticmethod
-    def situ_pct(factors, fit, gate_fit=True, fit_w=2.0, fit_mid=0.6, cap=2.0):
+    def situ_pct(factors, fit, gate_fit=True, fit_w=2.0, fit_mid=0.6, cap=1.5):
         """本局调整（单位：胜率百分点，跟数据分开）：
              = 6 × Σ 本局因素（正面因素按契合度打折）+ fit_w × (契合度 − fit_mid)，限制在 ±cap
            （和数据同一个量级：常见装备之间真正的差距大约 ±2%）"""
@@ -1761,6 +1769,7 @@ class Advisor:
         v = 6 * sum(f * (g if f > 0 else 1) for f, _ in factors) + fit_w * (fit - fit_mid)
         # 软上限（2.13）：以前是硬切在 ±cap，好几件同时顶到 +3 就排不出先后，推荐会在不同路线之间乱跳
         # 2.15 回测：装备的本局调整预测不了输赢（z≈−0.9），上限从 ±3 降到 ±2，让网上的大样本数据占主导
+        # 3.1.2：上限 ±2 → ±1.5，网上数据份量再加大
         return cap * math.tanh(v / cap)
 
     def bal(self, cid, key):
@@ -3007,6 +3016,8 @@ class Advisor:
         gate = 0.6 if not bv else min(1.0, max(0.2, (fit - 0.2) / 0.4))
         situ = sum(v * (gate if v > 0 else 1) for v, _ in factors)
         de = self.data_effect_aug(a, cs, stage, [m["id"] for m in my_augs if m.get("id")])
+        if set_f and de.get("combo_online"):     # 网上已经有「和已选那张一起」的实际胜率 → 编辑推荐的整套加分减半，免得重复算
+            tag_pct -= set_f[0] / 2
         # 国服整体选取率（arammayhem.com）：大家常拿的增幅小幅加分，冷门的小幅扣分；
         # 编辑整理的「这个英雄 + 这个增幅」强力 / 陷阱组合不受契合度打折（是针对这个英雄的）
         am_pick = a.get("am_pick")
@@ -3033,19 +3044,23 @@ class Advisor:
             factors.insert(0, (0.1 if lift > 0 else -0.1, txt))
             if lift > 0:
                 combo_hint = txt
-        adj = max(-4.0, min(4.0, adj + tag_pct))
+        if de["has"]:                    # 3.1.2：有网上数据时本局调整打八折、上限 ±3（网上数据占主导）
+            adj = max(-3.0, min(3.0, 0.8 * adj + tag_pct))
+        else:
+            adj = max(-4.0, min(4.0, adj + tag_pct))
         own_pct = 0.0
         if own:
             lift, n = own
             if de["has"]:
                 # 2.17：网上和自建库按「各自有多准」加权平均（样本多、误差小的那边份量大），取代固定各一半
                 var_on = (de["ci"] / 1.96) ** 2 if de.get("ci") else 0.25 / max(1.0, de.get("n") or 1.0)
-                var_own = 0.25 / (n + AUG_K)
+                # 3.1.2：自建库是「所有英雄一起」的增幅效果、样本也小，比网上「这个英雄」的数据间接 → 误差方差 ×2
+                var_own = 2 * 0.25 / (n + AUG_K)
                 w_own = var_on / (var_on + var_own)
                 own_pct = 100 * w_own * (lift - de["d"])          # 加权平均 − 网上数据本身 = 自建库带来的修正
             else:
                 own_pct = 100 * lift
-            own_pct = max(-3.0, min(3.0, own_pct))
+            own_pct = max(-2.0, min(2.0, own_pct))
             if abs(own_pct) >= 0.3:
                 factors.insert(0, (0.1 if lift > 0 else -0.1,
                                    tr("自建库：拿这张的玩家比同英雄平均 {0:+.1f}%（{1} 次）").format(lift * 100, int(round(n)))))

@@ -1,14 +1,15 @@
 {
- "version": "3.1.1",
+ "version": "3.1.2",
  "date": "2026-10-16",
  "notes": [
-  "凑整套推荐组合：所有英雄共 323 套（例：人马 幻影武器＋秘术之拳＋终极觉醒），已有一张时同一套的其他张 +1.5%；自建库里凑到 2 张的玩家多赢 4.5%",
-  "（3.1.0）英雄×增幅标签按回测加减分、三选一要不要刷新、赛后自动改正增幅"
+  "加大网上数据的份量：网上「已选那张 + 这张」的组合胜率门槛降低、看所有已选增幅、份量加倍",
+  "自建库修正、增幅和装备的本局调整都调小，网上大样本数据占主导",
+  "（3.1.1）凑 arammayhem 推荐的整套组合：已有一张时同一套其他张 +1.5%"
  ],
  "files": {
-  "haidou_helper.py": "d1cb7ecd9ac15743143c7dd935e8dbc677cc66aad02015488a35372c973cc015",
+  "haidou_helper.py": "f42d0267b42e6ae38f9f2e4aaf2f707e0cfb583a02f100743d352ec27d8193f6",
   "lang_en.py": "79607a3b48c6c24b3c7b610543ce2520997d3107518e22f7357d93bbfb6f0433",
-  "README.md": "3548d7a83f67093c5f5ad228ba0defc668d5e816a3f5a95755e203e613b3729f",
+  "README.md": "4c03cb3eb8460db63ab470ed5528dff29ccc7ed863bd1396707d7ed18f238ea9",
   "seed_db.json.gz": "ffb9458061fcaaa4eaa82425fac6e38deb741855b6dbbe2c3e60aa9480827252",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
