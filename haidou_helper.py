@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.1.0"
+APP_VERSION = "3.1.1"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -822,10 +822,15 @@ class GameData:
                 a["am_pick"] = r["pickRate"] / 100.0
             slug_to_id[r.get("augmentId")] = a
         combos = {}
+        sets = {}                               # 3.1.1：多张一套的推荐组合 {英雄: [(这套的增幅名, 标签)]}
         for c in am.get("combos", []):
             types = {str(x).lower() for x in c.get("types", [])}
             # 3.1：保留标签种类（神 / 强 / 黑科技 / 陷阱 / 娱乐），各自的胜率差别很大（见 AM_TAG_PCT）
             kind = max((t for t in types if t in AM_TAG_PCT), key=lambda t: abs(AM_TAG_PCT[t]), default=None)
+            members = [slug_to_id.get(sid) for sid in c.get("augmentIds", [])]
+            members = [m["name"] for m in members if m is not None]
+            if len(set(members)) >= 2:
+                sets.setdefault(str(c.get("championId", "")).lower(), []).append((tuple(dict.fromkeys(members)), kind))
             if not kind:
                 continue
             for sid in c.get("augmentIds", []):
@@ -835,6 +840,7 @@ class GameData:
                     if k2 not in combos or abs(AM_TAG_PCT[kind]) > abs(AM_TAG_PCT[combos[k2]]):
                         combos[k2] = kind
         self.am_combos = combos
+        self.am_sets = sets
         self.am_matched = matched
         return matched
 
@@ -2994,7 +3000,10 @@ class Advisor:
         champ = (self.gd.champ(me.cid) or {}).get("id", me.cid)
         combo = getattr(self.gd, "am_combos", {}).get((str(champ).lower(), a["name"]))
         tag_pct = AM_TAG_PCT.get(combo, 0.0)
-        combo_f = ((0.15 if tag_pct > 0 else -0.2), tr(AM_TAG_TEXT[combo])) if combo in AM_TAG_TEXT else None
+        set_f = self.combo_set(champ, a, my_augs)          # 3.1.1：凑 arammayhem 推荐的整套组合
+        if set_f:
+            tag_pct += set_f[0]
+        combo_f = ((0.15 if AM_TAG_PCT.get(combo, 0) > 0 else -0.2), tr(AM_TAG_TEXT[combo])) if combo in AM_TAG_TEXT else None
         gate = 0.6 if not bv else min(1.0, max(0.2, (fit - 0.2) / 0.4))
         situ = sum(v * (gate if v > 0 else 1) for v, _ in factors)
         de = self.data_effect_aug(a, cs, stage, [m["id"] for m in my_augs if m.get("id")])
@@ -3004,6 +3013,8 @@ class Advisor:
         pop = 0.12 * (math.sqrt(min(am_pick, 0.6) / 0.6) - 0.4) if am_pick is not None else 0.0
         if combo_f:                      # 3.1：直接按回测的胜率差加减（不再经过本局因素换算）
             factors.insert(0, combo_f)
+        if set_f:                        # （只放进理由，分数已经加在 tag_pct）
+            factors.insert(0, (0.12 if set_f[0] > 0 else (0.05 if set_f[0] == 0 else -0.12), set_f[1]))
         own = self.db_aug(a, me, len(my_augs))   # 自建数据库：这张增幅的胜率提升（my_augs＝已选的 → 这是第几次选）
         hab = self.habit_aug(me, a)
         if hab:                          # 你的习惯：+最多 0.15
@@ -3070,6 +3081,36 @@ class Advisor:
         res.sort(key=lambda x: -x["raw"])
         self._aug_snap = {x["name"]: x["total"] for x in res}     # 赛后「你选的 vs 推荐的」用
         return res[:k]
+
+    # 3.1.1 自建库检查（扣掉英雄和每张增幅自己的胜率后）：同一套有 2 张的 +4.5%（1078 次，z≈3），
+    # 1 张 +0.9%、3 张 +3.5%（73 次，太少）→ 凑第二张的边际约 +3.6%，取一半；第三张不再多加
+    SET_PCT = 1.5
+
+    def combo_set(self, champ, a, my_augs):
+        """arammayhem 推荐的整套组合（例：人马 幻影武器＋秘术之拳＋终极觉醒）：
+           候选这张在这个英雄的某一套里、你已经有同一套的其他张 → 加分；一张都还没有 → 只在理由里提一下（不加分）。
+           标成陷阱 / 娱乐的整套 → 反过来扣分。回传 (百分点, 说明) 或 None"""
+        sets = getattr(self.gd, "am_sets", {}).get(str(champ).lower()) or []
+        if not sets:
+            return None
+        mine = {m["name"] for m in my_augs}
+        best = None
+        for members, kind in sets:
+            if a["name"] not in members:
+                continue
+            have = [m for m in members if m in mine]
+            rest = [m for m in members if m != a["name"] and m not in mine]
+            sign = -1.0 if AM_TAG_PCT.get(kind, 0) < 0 else 1.0
+            v = sign * self.SET_PCT if have else 0.0
+            if have:
+                txt = (tr("凑 arammayhem 推荐组合（已有 {0}{1}）") if sign > 0 else
+                       tr("arammayhem 标为不好的组合（已有 {0}{1}）")).format(
+                    tr("、").join(have), tr("，还差 {0}").format(tr("、").join(rest)) if rest else tr("，这张凑齐"))
+            else:
+                txt = tr("arammayhem 推荐组合的一张（之后可凑 {0}）").format(tr("、").join(rest))
+            if best is None or abs(v) > abs(best[0]) or (v == best[0] and len(have) > best[2]):
+                best = (v, txt, len(have))
+        return best[:2] if best else None
 
     REROLL_MIN = 0.8                # 刷新一张平均能多赚这么多（胜率百分点）才建议刷
 

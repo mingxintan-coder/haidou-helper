@@ -1005,3 +1005,7 @@ EN.update({'↻ 建议刷新「{0}」：刷出比 ★ 更好的机会 {1:.0f}%�
            '不用刷新：★「{0}」已经比 {1:.0f}% 的同级增幅好': 'No need to reroll: ★ "{0}" already beats {1:.0f}% of same-tier augments'})
 EN.update({'补上 {0}': 'added {0}', '去掉记错的 {0}': 'removed wrongly recorded {0}',
            '增幅已按结算数据改正：': 'Augments corrected from end-of-game data: '})
+EN.update({'凑 arammayhem 推荐组合（已有 {0}{1}）': 'Completes an arammayhem combo (you have {0}{1})',
+           'arammayhem 标为不好的组合（已有 {0}{1}）': 'arammayhem marks this combo as bad (you have {0}{1})',
+           '，还差 {0}': ', still need {0}', '，这张凑齐': ', this completes it',
+           'arammayhem 推荐组合的一张（之后可凑 {0}）': 'Part of an arammayhem combo (can later add {0})'})
