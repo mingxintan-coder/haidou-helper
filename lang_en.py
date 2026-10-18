@@ -1009,3 +1009,12 @@ EN.update({'凑 arammayhem 推荐组合（已有 {0}{1}）': 'Completes an aramm
            'arammayhem 标为不好的组合（已有 {0}{1}）': 'arammayhem marks this combo as bad (you have {0}{1})',
            '，还差 {0}': ', still need {0}', '，这张凑齐': ', this completes it',
            'arammayhem 推荐组合的一张（之后可凑 {0}）': 'Part of an arammayhem combo (can later add {0})'})
+EN.update({'不是海斗助手的分享包': 'Not a Mayhem Helper share pack',
+           '和朋友共享资料：导出分享包发给作者，下个版本会并进附带资料，大家一起变准；也可以直接导入朋友的分享包。分享包只有对局编号和每局的英雄 / 装备 / 增幅 / 输赢 / 时间线，不含玩家名字和编号。':
+               'Share data with friends: export a share pack and send it to the author — it gets merged into the bundled data in the next version so everyone gets more accurate. You can also import a friend’s pack directly. A pack only contains match IDs and each game’s champions / items / augments / result / timeline — no player names or IDs.',
+           '已导出 {0} 局（时间线 {1} 局）到：{2}': 'Exported {0} games ({1} timelines) to: {2}',
+           '导出失败：{0}': 'Export failed: {0}', '正在导出…': 'Exporting…', '选择分享包': 'Choose a share pack',
+           '海斗分享包': 'Mayhem share pack', '所有文件': 'All files',
+           '已导入：新增 {0} 局（重复的不会再加）': 'Imported: {0} new games (duplicates skipped)',
+           '导入失败：{0}': 'Import failed: {0}', '正在导入…': 'Importing…',
+           '导出分享包': 'Export share pack', '导入分享包…': 'Import share pack…'})

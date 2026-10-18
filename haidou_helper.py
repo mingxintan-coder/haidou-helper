@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.1.2"
+APP_VERSION = "3.2.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -7840,6 +7840,80 @@ class RiotCollector:
         except Exception as e:  # noqa
             self.dlog("seed unreadable: {0!r}".format(e))
             return 0
+        games_added = self._merge_pack(seed, "seed")
+        st = read_json(self.state_path) or {}
+        st["seed"] = sig
+        write_json(self.state_path, st)
+        return games_added
+
+    PACK_EXT = ".hdpack"
+
+    def export_pack(self, path):
+        """3.2：导出分享包（gzip JSON，格式同 seed_db）：每局 10 人的英雄 / 装备 / 增幅 / 输赢 + 时间线。
+           去掉玩家编号（puuid）；对局编号本来就公开。回传 (局数, 时间线局数)"""
+        import gzip
+        rows, seen = [], set()
+        mp = os.path.join(self.dir, "matches.jsonl")
+        if os.path.exists(mp):
+            with self.io, open(mp, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not r.get("m") or not r.get("c"):
+                        continue
+                    k = (r["m"], r["c"])
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    r.pop("u", None)
+                    rows.append(r)
+        tls = []
+        tp = os.path.join(self.dir, "timelines.jsonl")
+        if os.path.exists(tp):
+            with self.io, open(tp, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        t = json.loads(line)
+                    except ValueError:
+                        continue
+                    if t.get("id"):
+                        tls.append(t)
+        data = {"version": 1, "kind": "share", "app": APP_VERSION, "made": time.strftime("%Y-%m-%d"),
+                "matches": rows, "timelines": tls}
+        raw = gzip.compress(json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8"), 9)
+        with open(path + ".tmp", "wb") as f:
+            f.write(raw)
+        os.replace(path + ".tmp", path)
+        return len({r["m"] for r in rows}), len({t["id"] for t in tls})
+
+    def import_pack(self, path):
+        """3.2：并入别人导出的分享包（没有的局才加）。回传新增几局；格式不对丢 ValueError"""
+        import gzip
+        with open(path, "rb") as f:
+            raw = f.read()
+        try:
+            data = json.loads(gzip.decompress(raw).decode("utf-8"))
+        except Exception:  # noqa
+            raise ValueError(tr("不是海斗助手的分享包"))
+        if not isinstance(data, dict) or not isinstance(data.get("matches"), list):
+            raise ValueError(tr("不是海斗助手的分享包"))
+        ok = [r for r in data["matches"] if isinstance(r, dict) and isinstance(r.get("m"), str)
+              and isinstance(r.get("c"), str) and isinstance(r.get("i", []), list) and isinstance(r.get("a", []), list)
+              and "w" in r]
+        data["matches"] = [{k: r[k] for k in ("m", "v", "c", "i", "a", "w", "t") if k in r} for r in ok]
+        num = (int, float)
+        ints = lambda xs: isinstance(xs, list) and all(isinstance(x, int) and not isinstance(x, bool) for x in xs)  # noqa
+        data["matches"] = [r for r in data["matches"] if ints(r.get("i", [])) and ints(r.get("a", []))
+                           and isinstance(r.get("w"), (bool, int))]
+        data["timelines"] = [{k: t[k] for k in ("id", "m", "gd", "kd", "ld", "td", "w")}
+                             for t in data.get("timelines", []) if isinstance(t, dict) and isinstance(t.get("id"), str)
+                             and all(isinstance(t.get(k), num) and not isinstance(t.get(k), bool) and abs(t[k]) < 1e4
+                                     for k in ("m", "gd", "kd", "ld", "td", "w"))]
+        return self._merge_pack(data, os.path.basename(path))
+
+    def _merge_pack(self, seed, label):
         have = set(self.games())
         tl_have = set()
         tl_path = os.path.join(self.dir, "timelines.jsonl")
@@ -7865,10 +7939,7 @@ class RiotCollector:
         games_added = len({r["m"] for r in new_rows})
         self.tl_new += len({r["id"] for r in new_tl})
         self.save_state()
-        st = read_json(self.state_path) or {}
-        st["seed"] = sig
-        write_json(self.state_path, st)
-        self.dlog("seed: +{0} games, +{1} timelines".format(games_added, len({r['id'] for r in new_tl})))
+        self.dlog("{0}: +{1} games, +{2} timelines".format(label, games_added, len({r['id'] for r in new_tl})))
         return games_added
 
     def _seed_write(self, new_rows, new_tl, tl_path):
@@ -9356,6 +9427,49 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             db.save_cfg(key=key.get().strip(), platform=plat.get(), riot_id=rid.get().strip(),
                         enabled=bool(en.get()), ranks=bool(rk.get()), source=src.get())
             db.status = tr("已保存，会在不打游戏时开始收集")
+        # 3.2：和朋友共享资料（导出分享包发给作者 / 朋友；导入别人的）
+        lab(tr("和朋友共享资料：导出分享包发给作者，下个版本会并进附带资料，大家一起变准；也可以直接导入朋友的分享包。"
+               "分享包只有对局编号和每局的英雄 / 装备 / 增幅 / 输赢 / 时间线，不含玩家名字和编号。"), fg=SUB)
+        share_row = tk.Frame(w, bg=BG)
+        share_row.pack(fill="x", pady=(4, 0))
+
+        def do_export():
+            base = os.path.join(os.path.expanduser("~"), "Desktop")
+            if not os.path.isdir(base):
+                base = APP_DIR
+            path = os.path.join(base, "haidou_share_" + time.strftime("%Y%m%d") + db.PACK_EXT)
+
+            def run():
+                try:
+                    g, t = db.export_pack(path)
+                    db.status = tr("已导出 {0} 局（时间线 {1} 局）到：{2}").format(g, t, path)
+                except Exception as e:  # noqa
+                    db.status = tr("导出失败：{0}").format(e)
+            db.status = tr("正在导出…")
+            threading.Thread(target=run, daemon=True).start()
+
+        def do_import():
+            from tkinter import filedialog
+            path = filedialog.askopenfilename(parent=w, title=tr("选择分享包"),
+                                              filetypes=[(tr("海斗分享包"), "*" + db.PACK_EXT), (tr("所有文件"), "*.*")])
+            if not path:
+                return
+
+            def run():
+                try:
+                    n = db.import_pack(path)
+                    db.status = tr("已导入：新增 {0} 局（重复的不会再加）").format(n)
+                    m = db.maybe_refit()
+                    if m:
+                        engine.winmodel = m
+                except Exception as e:  # noqa
+                    db.status = tr("导入失败：{0}").format(e)
+            db.status = tr("正在导入…")
+            threading.Thread(target=run, daemon=True).start()
+        for text, fn in ((tr("导出分享包"), do_export), (tr("导入分享包…"), do_import)):
+            b = tk.Label(share_row, text=text, bg=CARD, fg=FG, font=F["small"], padx=10, pady=3, cursor="hand2")
+            b.pack(side="left", padx=(0, 6))
+            b.bind("<Button-1>", lambda e, fn=fn: fn())
         tk.Label(w, text=tr("保存"), bg="#2b3a57", fg=FG, font=F["small"], padx=12, pady=4, cursor="hand2").pack(
             anchor="e", pady=(8, 0))
         w.winfo_children()[-1].bind("<Button-1>", lambda e: save())
