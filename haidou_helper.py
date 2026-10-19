@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.2.0"
+APP_VERSION = "3.3.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -9645,6 +9645,31 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         for w in (r["fr"], r["nm"], r["sc"], r["rs"], r["meta"]):
             w.bind("<Button-1>", lambda e, i=i: choose(i))
 
+    # 3.3：点推荐的装备 → 复制装备名；进游戏商店直接 Ctrl+V 贴到搜索框（不用自己打字，也不会叫出中文输入法）
+    def copy_item(name):
+        name = re.sub(r"^\W+\s*", "", name or "").strip()
+        if not name:
+            return
+        try:
+            root.clipboard_clear()
+            root.clipboard_append(name)
+            root.update()                       # Windows：要处理一次事件，剪贴板才会留住
+        except tk.TclError:
+            return
+        engine.q.put(("data", tr("已复制「{0}」：打开商店按 Ctrl+V 贴到搜索框（没有光标就先点一下搜索框）").format(name)))
+
+    def mini_click(e=None):
+        names = st.get("mini_names") or []
+        if names:
+            i = st.get("mini_i", 0) % len(names)
+            copy_item(names[i])
+            st["mini_i"] = i + 1
+    mini.bind("<Button-1>", mini_click)
+    for i, r in enumerate(item_rows):
+        for w in (r["fr"], r["nm"], r["sc"], r["rs"], r["meta"]):
+            w.config(cursor="hand2")
+            w.bind("<Button-1>", lambda e, r=r: copy_item(r["nm"].cget("text")))
+
     def draw_curve(curve, moments):
         """赛后复盘：整局的实时胜率曲线（中间虚线＝50%；红点＝掉最多的那段，绿点＝涨最多的那段）"""
         curve_cv.delete("all")
@@ -9707,8 +9732,16 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         shop_text = shop_line(shop)
         rv = st.get("review")
         if shop_text:
-            shop_lbl.config(text=shop_text, cursor="")
+            shop_lbl.config(text=shop_text, cursor="hand2")
             shop_lbl.unbind("<Button-1>")
+            names = list(shop.get("names") or [])
+            if names:                              # 3.3：点一下复制下一件要买的（再点换下一件）
+                st["shop_i"] = st.get("shop_i", 0) % len(names)
+
+                def copy_next(e=None, names=names):
+                    copy_item(names[st["shop_i"] % len(names)])
+                    st["shop_i"] = st["shop_i"] + 1
+                shop_lbl.bind("<Button-1>", copy_next)
             shop_lbl.pack(fill="x", pady=(0, 3), before=tips_box)
         elif rv and time.time() < rv[1]:
             pass                                   # 赛后复盘还在显示
@@ -9835,6 +9868,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         # 单行模式
         its = [x for x in rec.get("items", []) if not x.get("boots")]
         boots = next((x for x in rec.get("items", []) if x.get("boots")), None)
+        # 3.3：点单行也能复制：阵亡时＝下一件要买的部件，平时＝推荐的第一件
+        st["mini_names"] = (list(shop.get("names") or []) if shop_text and not cand else
+                            [its[0]["name"]] if its and not cand and not urgent else [])
         if shop_text and not cand:
             mini.config(text=shop_text, fg=GOLD)
         elif urgent:

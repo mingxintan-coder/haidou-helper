@@ -1,15 +1,14 @@
 {
- "version": "3.2.0",
- "date": "2026-10-17",
+ "version": "3.3.0",
+ "date": "2026-10-19",
  "notes": [
-  "和朋友共享对局资料：⋯ → 自建数据库… 可以导出 / 导入分享包（不含玩家名字和编号）；发给作者会并进下个版本的附带资料",
-  "附带资料从 1213 局更新为 4197 局，装好就有更多数据",
-  "（3.1.2）加大网上数据的份量"
+  "点推荐的装备（出装页、复活前买、缩起来的单行）就复制装备名，商店里 Ctrl+V 直接贴到搜索框，不用打字、不会叫出中文输入法",
+  "（3.2.0）和朋友共享对局资料；附带资料更新为 4197 局"
  ],
  "files": {
-  "haidou_helper.py": "263409c2c9c338815909673bb00d62978c43fa72cdb289d3dfb9a1fa9cbd33cf",
-  "lang_en.py": "0f774dd66d7e55230c56128fe01484aabb7a0dac150411762c0288aa1dd2c539",
-  "README.md": "2766269ea864eaa440f04007b697cb8fdff34d6815ae9e716d8c7d9163291397",
+  "haidou_helper.py": "a561d632f8fcd1ef50478988b78d82cf177ab363c9e0e2f658d5fddfb0db0909",
+  "lang_en.py": "0506cb2377cf8efe6fa087197766751d5e11c59fd91717dcc648352617701a7a",
+  "README.md": "4c373e17bb381fa7d205470ffe4c082a302040a5b044b79f021dc6dab7f4ed25",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"

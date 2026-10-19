@@ -1018,3 +1018,4 @@ EN.update({'不是海斗助手的分享包': 'Not a Mayhem Helper share pack',
            '已导入：新增 {0} 局（重复的不会再加）': 'Imported: {0} new games (duplicates skipped)',
            '导入失败：{0}': 'Import failed: {0}', '正在导入…': 'Importing…',
            '导出分享包': 'Export share pack', '导入分享包…': 'Import share pack…'})
+EN.update({'已复制「{0}」：打开商店按 Ctrl+V 贴到搜索框（没有光标就先点一下搜索框）': 'Copied "{0}": open the shop and press Ctrl+V in the search box (click the box first if it has no cursor)'})
