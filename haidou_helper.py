@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.3.0"
+APP_VERSION = "3.3.1"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -2068,6 +2068,8 @@ class Advisor:
             f.append((0.05, tr("队伍缺魔法伤害，你的魔攻很关键")))
         return f
 
+    EHP_K = 14.0
+
     def ehp_factor(self, iid, me, t, prof, role):
         """依你目前的实际物理/魔法防御与生命，计算这件装对敌方伤害组成的有效生命增幅"""
         s = me.stats or {}
@@ -2088,6 +2090,12 @@ class Advisor:
         if t["power_diff"] < -1500:
             need *= 1.25
         val = min(0.4, gain * 0.95 * need)
+        # 3.3.1：网上数据是「各种对面阵容平均」下这件装的胜率，已经含了它平均的防御价值；
+        # 这里只加「这局对面的伤害组成」和平均（物理 / 魔法各半）的差别，单独换算成胜率百分点（不进本局调整的上限）。
+        # 自建库 4197 局检查：魔抗装的胜率提升随对面魔法伤害占比明显上升（每 +10% 魔法占比约 +1.7%，z≈2.7）；
+        # 校准成「魔法占比 0.35 → 0.65 时魔抗装差约 3%」，取一半
+        g_avg = 0.5 * ((1 + dh / hp) * (1 + da / (100 + armor)) - 1) + 0.5 * ((1 + dh / hp) * (1 + dm / (100 + mr)) - 1)
+        self._ehp_pct = max(-2.5, min(2.5, self.EHP_K * (gain - g_avg) * need))
         kind = tr("物理") if ad >= 0.55 else tr("魔法") if ad <= 0.45 else tr("混合")
         who = tr('{0}等').format(t['carry_name']) if t.get("carry_name") else tr("敌方")
         return (val, tr('对{0}{1}伤害有效生命 +{2}%').format(who, kind, round(gain * 100)))
@@ -2167,7 +2175,9 @@ class Advisor:
             quest = quest_need.get(base_id)
             if fit < (0.25 if loose else 0.35) and not quest:
                 continue
+            self._ehp_pct = 0.0
             ehp = self.ehp_factor(iid, me, t, prof, role)
+            ehp_pct = self._ehp_pct if ehp else 0.0
             factors = self.counter_factors(vec, special, t, prof, ehp_done=ehp is not None, phase=phase)
             if ehp and ehp[0] > 0.04:
                 factors.append(ehp)
@@ -2220,7 +2230,8 @@ class Advisor:
                 factors = factors + [hab]
             if extra[1]:
                 factors.append((extra[2], extra[1] if not lead or extra[1] == lead else extra[1].replace("；" + lead, "")))
-            out.append(self.pack_item(iid, de, factors, fit, self.top_dims(prof, nv), extra=extra[0], lead=lead))
+            out.append(self.pack_item(iid, de, factors, fit, self.top_dims(prof, nv), extra=extra[0], lead=lead,
+                                      ehp=(ehp, ehp_pct) if ehp else None))
         aug_key = tuple(sorted(str(x.get("id") or x.get("name")) for x in my_augs))
         if getattr(self, "_ema_augs", None) != aug_key:     # 3.0.8：刚选了增幅（任务 / 升级…）→ 不沿用旧排序，马上改推
             self._ema_augs = aug_key
@@ -2398,9 +2409,14 @@ class Advisor:
             tr("偏离预定路线（{0}）").format(lab)
         return -2.5 * w, why, -0.3
 
-    def pack_item(self, iid, de, factors, fit, dims, boots=False, extra=0.0, lead=""):
-        """一件装的推荐：总分 = 网上数据 Δ* + 本局调整（都是胜率百分点）+ 路线调整"""
-        adj = self.situ_pct(factors, fit)
+    def pack_item(self, iid, de, factors, fit, dims, boots=False, extra=0.0, lead="", ehp=None):
+        """一件装的推荐：总分 = 网上数据 Δ* + 本局调整（都是胜率百分点）+ 路线调整
+           3.3.1：防御装对敌方伤害组成的有效生命单独加（0～+2%），不和其他本局因素挤在同一个上限里 ——
+           以前好几件坦装一起顶到上限，对魔法伤害 +47% 和 +12% 的看起来一样，网上数据就决定了一切（例：全魔法阵容推物防装）"""
+        if ehp:
+            adj = self.situ_pct([f for f in factors if f is not ehp[0]], fit) + ehp[1]
+        else:
+            adj = self.situ_pct(factors, fit)
         total = de["d"] * 100 + adj + extra
         fit_text = tr('契合你的{0}路线').format('/'.join(dims)) if dims else ""
         rf = [f for f in factors if f[0] > 0 or f[0] <= -0.05]
