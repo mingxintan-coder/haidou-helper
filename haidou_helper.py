@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.3.1"
+APP_VERSION = "3.3.2"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5663,6 +5663,39 @@ class Engine:
             self.manual_dirty = "picked:" + name
         self.wake.set()
 
+    IME_START = 45        # 开局前 45 秒在泉水买装：不动输入法
+    IME_RESPAWN = 8       # 复活后 8 秒还在泉水，可能在买：不动
+    IME_BACKOFF = 30      # 刚切回英文，你又马上切成中文（多半在聊天打字）：30 秒内不再动
+
+    def ime_guard(self):
+        """3.3.2：游戏中输入法只在「买装备」时可以是中文：阵亡（在泉水买）、开局 45 秒、复活后 8 秒不动；
+           其他时间每 2 秒检查一次，是中文就切回英文（不换键盘、不动别的程式，只关掉游戏视窗输入法的中文状态）。
+           切了以后你又马上切回中文 → 当成你要打字聊天，30 秒内不再动。买装备建议用「点推荐装备复制 → Ctrl+V」，不必打中文"""
+        alive_since, flips, backoff = None, [], 0.0
+        while True:
+            time.sleep(2)
+            try:
+                if not getattr(self, "ime_fix", True) or not self.connected:
+                    alive_since = None
+                    continue
+                dead, gt, seen = getattr(self, "_ime_me", (True, 0, 0))
+                now = time.time()
+                if now - seen > 10:                 # 读不到游戏（读档、结算）
+                    continue
+                if dead:
+                    alive_since = None
+                    continue
+                if alive_since is None:
+                    alive_since = now
+                if gt < self.IME_START or now - alive_since < self.IME_RESPAWN or now < backoff:
+                    continue
+                if game_ime_to_english():
+                    flips = [x for x in flips if now - x < 20] + [now]
+                    if len(flips) >= 2:             # 20 秒内被你切回中文又被我们切掉：你在打字，先别管
+                        backoff, flips = now + self.IME_BACKOFF, []
+            except Exception:  # noqa
+                pass
+
     def ask_pick(self, names):
         """三选一关了、但没抓到你点哪张：浮窗显示这几张让你补点（45 秒内）"""
         with self.lock:
@@ -5733,7 +5766,6 @@ class Engine:
             return sel or ("status", tr("等待对局…"))
         self.fails = 0
         if not self.connected or self.last_state is None:
-            self._ime_start = False
             self.advisor._ema_cid = None                # 新的一局：平滑从头开始
             self.advisor._eaug_seen = {}
             self._dumped = False
@@ -5744,12 +5776,11 @@ class Engine:
         self.check_game_end(raw)
         me0 = state[2]
         if getattr(self, "ime_fix", True):
-            # 3.0.7：复活（离开商店时间）、开局 75 秒后，游戏的中文输入法自动切回英文，免得技能键被输入法吃掉
-            was = getattr(self, "_ime_dead", None)
-            if (was and not me0.is_dead) or (me0.game_time > 75 and not getattr(self, "_ime_start", False)):
-                self._ime_start = me0.game_time > 75
-                threading.Thread(target=game_ime_to_english, daemon=True).start()
-            self._ime_dead = me0.is_dead
+            # 3.3.2：改成背景每 2 秒看一次（ime_guard）：活着、不在买装备时，输入法一直保持英文
+            self._ime_me = (me0.is_dead, me0.game_time, time.time())
+            if getattr(self, "_ime_thread", None) is None:
+                self._ime_thread = threading.Thread(target=self.ime_guard, daemon=True, name="ime")
+                self._ime_thread.start()
         try:
             self._wp_now = self.wp_sample(raw, state)
         except Exception:  # noqa
@@ -6569,7 +6600,23 @@ def game_ime_to_english():
             return False
         user32.SendMessageW(ime, WM_IME_CONTROL, IMC_SETCONVERSIONMODE, mode & ~0x0001)   # 中文 → 英文（微软拼音等）
         user32.SendMessageW(ime, WM_IME_CONTROL, IMC_SETOPENSTATUS, 0)                    # 其他输入法：关掉
-        return True
+        is_open2 = user32.SendMessageW(ime, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0)
+        mode2 = user32.SendMessageW(ime, WM_IME_CONTROL, IMC_GETCONVERSIONMODE, 0)
+        how = "ime"
+        if is_open2 and (mode2 & 0x0001):
+            # 3.3.2：有的输入法不理上面的讯息 → 有装英文键盘的话，直接把游戏视窗切到英文键盘
+            n = user32.GetKeyboardLayoutList(0, None)
+            arr = (ctypes.c_void_p * max(1, n))()
+            n = user32.GetKeyboardLayoutList(n, arr)
+            en = next((h for h in arr[:n] if h and (int(h) & 0x3FF) == 0x09), None)    # 主语言＝英文
+            if en:
+                user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+                user32.PostMessageW(hwnd, 0x0050, 0, int(en))     # WM_INPUTLANGCHANGEREQUEST
+                how = "layout"
+            else:
+                how = "failed"
+        _perf_write(time.strftime("%H:%M:%S ") + "IME -> English ({0})".format(how))
+        return how != "failed"
     except Exception:  # noqa
         return False
 
@@ -9290,7 +9337,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         apply_auto()
     for k, label in (("accept", tr("自动接受对局")), ("spells", tr("自动换成推荐的召唤师技能")),
                      ("itemset", tr("自动放推荐装备页到游戏商店")),
-                     ("ime", tr("复活后把游戏的中文输入法切回英文"))):
+                     ("ime", tr("游戏中输入法保持英文（阵亡买装时除外）"))):
         auto_vars[k] = tk.BooleanVar(value=auto_cfg[k])
         am.add_checkbutton(label=label, variable=auto_vars[k], command=lambda k=k: toggle_auto_opt(k))
     menu.add_cascade(label=tr("自动操作"), menu=am)
