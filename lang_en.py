@@ -1020,3 +1020,7 @@ EN.update({'不是海斗助手的分享包': 'Not a Mayhem Helper share pack',
            '导出分享包': 'Export share pack', '导入分享包…': 'Import share pack…'})
 EN.update({'已复制「{0}」：打开商店按 Ctrl+V 贴到搜索框（没有光标就先点一下搜索框）': 'Copied "{0}": open the shop and press Ctrl+V in the search box (click the box first if it has no cursor)'})
 EN.update({'游戏中输入法保持英文（阵亡买装时除外）': 'Keep the in-game IME in English (except while dead / shopping)'})
+EN.update({'经济落后 {0:.1f}k {1:+.0f}%': 'gold behind {0:.1f}k {1:+.0f}%', '人头少 {0} {1:+.0f}%': '{0} fewer kills {1:+.0f}%',
+           '等级合计少 {0} {1:+.0f}%': 'team levels -{0} {1:+.0f}%', '塔少 {0} 座 {1:+.0f}%': '{0} fewer towers {1:+.0f}%',
+           '增幅偏弱 {0:+.0f}%': 'weaker augments {0:+.0f}%', '红方 {0:+.0f}%': 'red side {0:+.0f}%', '阵容吃亏 {0:+.0f}%': 'weaker comp {0:+.0f}%'})
+EN.update({'（{0}）': ' ({0})'})

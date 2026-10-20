@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.3.2"
+APP_VERSION = "3.4.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5114,6 +5114,10 @@ class Engine:
         p = wp_predict(model, *f, comp=comp, aug=aug, side=side)
         if p is None:
             return None
+        try:                                    # 3.4：胜率低于 45% 时记下拖累最多的几项（便宜：十几次乘法）
+            self._wp_why = wp_why_text(wp_explain(model, *f, comp=comp, aug=aug, side=side)) if p < 0.45 else ""
+        except Exception:  # noqa
+            self._wp_why = ""
         g = self.cur_game
         t = int(state[2].game_time)
         if g is not None and not self._ended:
@@ -5821,7 +5825,10 @@ class Engine:
             p, dp = wp
             rec["wp"] = p
             arrow = "" if abs(dp) < 0.03 else (" ↑" if dp > 0 else " ↓") + str(int(round(abs(dp) * 100)))
-            rec["brief"].insert(0, (tr("胜率"), "{0}%{1}".format(int(round(p * 100)), arrow), p < 0.35))
+            why = getattr(self, "_wp_why", "") if p < 0.45 else ""
+            rec["wp_why"] = why
+            rec["brief"].insert(0, (tr("胜率"), "{0}%{1}".format(int(round(p * 100)), arrow) + ("  ← " + why if why else ""),
+                                    p < 0.35))
         try:
             pr = self.push_row(state)
             if pr and isinstance(rec.get("brief"), list):
@@ -6592,16 +6599,28 @@ def game_ime_to_english():
             return False
         WM_IME_CONTROL, IMC_GETOPENSTATUS, IMC_SETOPENSTATUS = 0x0283, 0x0005, 0x0006
         IMC_GETCONVERSIONMODE, IMC_SETCONVERSIONMODE = 0x0001, 0x0002
-        user32.SendMessageW.restype = ctypes.c_ssize_t
-        user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-        is_open = user32.SendMessageW(ime, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0)
-        mode = user32.SendMessageW(ime, WM_IME_CONTROL, IMC_GETCONVERSIONMODE, 0)
+        # 3.4：用有逾时的 SendMessageTimeout（游戏忙的时候最多等 0.2 秒就放弃，不会卡住游戏或助手）
+        user32.SendMessageTimeoutW.restype = ctypes.c_ssize_t
+        user32.SendMessageTimeoutW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+                                               wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t)]
+
+        class _U:
+            @staticmethod
+            def SendMessageW(h, msg, wp, lp):
+                res = ctypes.c_size_t(0)
+                ok = user32.SendMessageTimeoutW(h, msg, wp, lp, 0x0002, 200, ctypes.byref(res))   # SMTO_ABORTIFHUNG
+                if not ok:
+                    raise TimeoutError("IME window busy")
+                return res.value
+        user32_s = _U
+        is_open = user32_s.SendMessageW(ime, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0)
+        mode = user32_s.SendMessageW(ime, WM_IME_CONTROL, IMC_GETCONVERSIONMODE, 0)
         if not is_open and not (mode & 0x0001):      # 已经是英文（IME_CMODE_NATIVE 没开）
             return False
-        user32.SendMessageW(ime, WM_IME_CONTROL, IMC_SETCONVERSIONMODE, mode & ~0x0001)   # 中文 → 英文（微软拼音等）
-        user32.SendMessageW(ime, WM_IME_CONTROL, IMC_SETOPENSTATUS, 0)                    # 其他输入法：关掉
-        is_open2 = user32.SendMessageW(ime, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0)
-        mode2 = user32.SendMessageW(ime, WM_IME_CONTROL, IMC_GETCONVERSIONMODE, 0)
+        user32_s.SendMessageW(ime, WM_IME_CONTROL, IMC_SETCONVERSIONMODE, mode & ~0x0001)   # 中文 → 英文（微软拼音等）
+        user32_s.SendMessageW(ime, WM_IME_CONTROL, IMC_SETOPENSTATUS, 0)                    # 其他输入法：关掉
+        is_open2 = user32_s.SendMessageW(ime, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0)
+        mode2 = user32_s.SendMessageW(ime, WM_IME_CONTROL, IMC_GETCONVERSIONMODE, 0)
         how = "ime"
         if is_open2 and (mode2 & 0x0001):
             # 3.3.2：有的输入法不理上面的讯息 → 有装英文键盘的话，直接把游戏视窗切到英文键盘
@@ -7088,6 +7107,59 @@ def wp_predict(model, m, gd, kd, ld, td, comp=0.0, aug=0.0, side=0.0):
         vec = wp_vector(m, gd, kd, ld, td, comp) if model.get("v") == 2 else wp_vector(m, gd, kd, ld, td)
     z = model.get("scale", 1.0) * sum(b * v for b, v in zip(model["beta"], vec))
     return 1 / (1 + math.exp(-max(-30, min(30, z))))
+
+
+def wp_explain(model, m, gd, kd, ld, td, comp=0.0, aug=0.0, side=0.0):
+    """3.4：胜率为什么低 —— 把模型的胜算拆成各项（经济 / 人头 / 等级 / 塔 / 增幅 / 蓝红方），
+       每项回传「如果这项打平，胜率会差多少」（百分点，负的＝这项在拖累你）。回传 [(键, 输入值, 百分点)]，拖累最大的在前"""
+    if not model or not model.get("beta"):
+        return []
+    beta, sc = model["beta"], model.get("scale", 1.0)
+    u = min(max(m, 0), 30) / 10
+    feats = [("gd", gd), ("kd", kd), ("ld", ld), ("td", td)]
+    if model.get("v") == 3 and model.get("nb") == 4:
+        nb, extra_i, side_i = 4, 8, 9 if len(beta) > 9 else None
+        contrib = {k: sc * (beta[i] + beta[nb + i] * u) * x for i, (k, x) in enumerate(feats)}
+        contrib["aug"] = sc * beta[extra_i] * aug if len(beta) > extra_i else 0.0
+    elif model.get("v") == 3:
+        f5 = feats + [("aug", aug)]
+        side_i = 10 if len(beta) == 11 else None
+        contrib = {k: sc * (beta[i] + beta[5 + i] * u) * x for i, (k, x) in enumerate(f5)}
+    else:
+        nb = 5 if model.get("v") == 2 else 4
+        f5 = feats + ([("comp", comp)] if nb == 5 else [])
+        side_i = None
+        contrib = {k: sc * (beta[i] + beta[nb + i] * u) * x for i, (k, x) in enumerate(f5)}
+    if side_i is not None and side_i < len(beta):
+        contrib["side"] = sc * beta[side_i] * side
+    z = sum(contrib.values())
+    sig = lambda v: 1 / (1 + math.exp(-max(-30, min(30, v))))  # noqa
+    vals = dict(feats + [("aug", aug), ("comp", comp), ("side", side)])
+    out = [(k, vals.get(k, 0.0), 100 * (sig(z) - sig(z - c))) for k, c in contrib.items()]
+    return sorted(out, key=lambda x: x[2])
+
+
+def wp_why_text(parts, k=2, min_pp=2.0):
+    """拖累胜率最多的几项 → 一行字（例：经济落后 3.2k −9% · 塔少 1 座 −6%）"""
+    words = []
+    for key, x, pp in parts:
+        if pp > -min_pp or len(words) >= k:
+            continue
+        if key == "gd":
+            words.append(tr("经济落后 {0:.1f}k {1:+.0f}%").format(-x, pp))
+        elif key == "kd":
+            words.append(tr("人头少 {0} {1:+.0f}%").format(int(round(-x)), pp))
+        elif key == "ld":
+            words.append(tr("等级合计少 {0} {1:+.0f}%").format(int(round(-x)), pp))
+        elif key == "td":
+            words.append(tr("塔少 {0} 座 {1:+.0f}%").format(int(round(-x)), pp))
+        elif key == "aug":
+            words.append(tr("增幅偏弱 {0:+.0f}%").format(pp))
+        elif key == "side":
+            words.append(tr("红方 {0:+.0f}%").format(pp))
+        elif key == "comp":
+            words.append(tr("阵容吃亏 {0:+.0f}%").format(pp))
+    return " · ".join(words)
 
 
 # 2.15 回测：自建库每个英雄只有一两百局，英雄胜率往 50% 只收缩 40 局时，拿来预测新版本的对局比瞎猜还差；
@@ -9949,7 +10021,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 parts.append(boots["name"])
             line = "   ".join(parts) or tr("等待推荐…")
             if rec.get("wp") is not None:
-                line = tr("胜率 {0}%").format(int(round(rec["wp"] * 100))) + "   " + line
+                why1 = re.sub(r"\s*[+\-−]\d+%$", "", (rec.get("wp_why") or "").split(" · ")[0])   # 3.4：胜率低时带上最主要的原因
+                line = tr("胜率 {0}%").format(int(round(rec["wp"] * 100))) + (tr("（{0}）").format(why1) if why1 else "") + \
+                    "   " + line
             bf = dict((x[0], x[1]) for x in rec.get("brief") or [])
             thr = bf.get(tr("威胁"), "").split(" · ")[0]
             hot_aug = next((x[1] for x in rec.get("brief") or [] if x[0] == tr("敌增幅") and x[2]), None)

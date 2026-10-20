@@ -1,14 +1,15 @@
 {
- "version": "3.3.2",
+ "version": "3.4.0",
  "date": "2026-10-19",
  "notes": [
-  "游戏中输入法一直保持英文：活着时每 2 秒检查，是中文就切回英文；阵亡买装、开局 45 秒、复活后 8 秒不动；你自己切回中文聊天时 30 秒内不打扰",
-  "（3.3.1）防御装改看对面伤害组成：对面全魔法时物防装扣分、魔抗装加分"
+  "胜率低于 45% 时显示原因：例「胜率 30% ← 塔少 1 座 −10% · 等级合计少 3 −6%」（如果这项打平，胜率会多多少）",
+  "检查过效能：一次分析约 15 毫秒；输入法检查改成有逾时，游戏忙时不会被卡住",
+  "（3.3.2）游戏中输入法一直保持英文（阵亡买装时除外）"
  ],
  "files": {
-  "haidou_helper.py": "c96d048d45cb5e263b4bdd261df05ffda4e1e8fcafc05b493db0e11d7bcfd5df",
-  "lang_en.py": "8e2eea647e012a74d45dac70576f9c797d100302e75f6e176d25c90fa165fde6",
-  "README.md": "98b18a0c7025c257c8627030a1bf357bb885f538eeb5ff51b2470430b6ff5a6e",
+  "haidou_helper.py": "79261ab17d5bd720b58f0d169f5e7d2e52e558e082cac3f54e4c7eb2598bd47d",
+  "lang_en.py": "fc90443c48bb6b173ee1a62e60bef81ed0888381da42c8da788c2ce877fe5b06",
+  "README.md": "70525fc2ca3bd9dfdf8e00c8c8bc3be69a8bd1c046398099ed83b031a9f17fe9",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
