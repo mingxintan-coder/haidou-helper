@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.4.0"
+APP_VERSION = "3.4.1"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5076,6 +5076,69 @@ class Engine:
                 sum(p.deaths for p in enemies) - sum(p.deaths for p in mine),
                 sum(p.level for p in mine) - sum(p.level for p in enemies), their_lost - my_lost)
 
+    def player_impacts(self, model, f, state, raw, comp, aug, side, p):
+        """3.4.1：每个人对「我方胜率」的影响：把他换成这局的平均玩家（平均经济 / 击杀 / 阵亡 / 等级），胜率会变多少。
+           回传 [(英雄名, 是你, 我方, 'K/D/A', 百分点)]；正的＝帮我方（我方打得好 / 对面打得差），负的＝拖累我方。
+           模型里中后期「经济」那项的系数会变成负的（和等级 / 人头高度相关），这时只看人头和等级，免得多赚钱反而算扣分"""
+        m, gd, kd, ld, td = f
+        me, allies, enemies = state[2], state[3], state[4]
+        mine = [me] + allies
+        everyone = mine + enemies
+        if len(everyone) < 6:
+            return []
+        mp = str(state[1] or 12)
+
+        def spent(q):
+            return sum(self.gd.item_price(i) for i in q.items if i and (i < 100000 or str(i).startswith(mp))) / 1000
+        n = len(everyone)
+        # 击杀功劳：自己的击杀 + 一半助攻，再按队伍缩放回「这队的总击杀」（辅助助攻多也算功劳，团队总和不变）
+        credit = {}
+        for team in (mine, enemies):
+            raw_c = {id(q): q.kills + 0.5 * q.assists for q in team}
+            tot_r, tot_k = sum(raw_c.values()), sum(q.kills for q in team)
+            for q in team:
+                credit[id(q)] = raw_c[id(q)] * tot_k / tot_r if tot_r else 0.0
+        ag = sum(spent(q) for q in everyone) / n
+        ak = sum(credit.values()) / n
+        ad = sum(q.deaths for q in everyone) / n
+        al = sum(q.level for q in everyone) / n
+        pr = lambda g_, k_, l_: wp_predict(model, m, g_, k_, l_, td, comp=comp, aug=aug, side=side)  # noqa
+        use_gold = (pr(gd + 1, kd, ld) or 0) > (pr(gd, kd, ld) or 0)
+        out = []
+        for q in everyone:
+            sgn = 1.0 if q in mine else -1.0
+            dg = sgn * (ag - spent(q)) if use_gold else 0.0
+            dk = sgn * ((ak - credit[id(q)]) - (ad - q.deaths))
+            dl = sgn * (al - q.level)
+            p2 = pr(gd + dg, kd + dk, ld + dl)
+            if p2 is None:
+                continue
+            out.append((self.gd.champ_name(q.cid), q is me, q in mine, "{0}/{1}/{2}".format(q.kills, q.deaths, q.assists),
+                        100 * (p - p2)))
+        return out
+
+    def players_row(self):
+        """战况条「表现」：我方带飞 / 我方拖累 / 对面最肥（影响 3% 以上才列）"""
+        ps = getattr(self, "_wp_players", None) or []
+        if not ps:
+            return None
+        bits = []
+        ally = [x for x in ps if x[2]]
+        foe = [x for x in ps if not x[2]]
+        best = max(ally, key=lambda x: x[4], default=None)
+        worst = min(ally, key=lambda x: x[4], default=None)
+        fed = min(foe, key=lambda x: x[4], default=None)
+        nm = lambda x: tr("你") if x[1] else x[0]  # noqa
+        if best and best[4] >= 3:
+            bits.append(tr("带飞 {0} {1} {2:+.0f}%").format(nm(best), best[3], best[4]))
+        if worst and worst[4] <= -3 and worst is not best:
+            bits.append(tr("拖累 {0} {1} {2:+.0f}%").format(nm(worst), worst[3], worst[4]))
+        if fed and fed[4] <= -3:
+            bits.append(tr("对面最肥 {0} {1} {2:+.0f}%").format(fed[0], fed[3], fed[4]))
+        if not bits:
+            return None
+        return (tr("表现"), " · ".join(bits), bool(worst and worst[1] and worst[4] <= -5))
+
     def wp_sample(self, raw, state):
         """算现在的胜率；每 10 秒在这局的记录里存一笔（赛后找关键时刻用）。回传 (胜率, 比约 1 分钟前多少)"""
         model = getattr(self, "winmodel", None)
@@ -5114,6 +5177,10 @@ class Engine:
         p = wp_predict(model, *f, comp=comp, aug=aug, side=side)
         if p is None:
             return None
+        try:                                    # 3.4.1：谁打得好 / 不好（每个人「换成平均水准的玩家」胜率会差多少）
+            self._wp_players = self.player_impacts(model, f, state, raw, comp, aug, side, p)
+        except Exception:  # noqa
+            self._wp_players = []
         try:                                    # 3.4：胜率低于 45% 时记下拖累最多的几项（便宜：十几次乘法）
             self._wp_why = wp_why_text(wp_explain(model, *f, comp=comp, aug=aug, side=side)) if p < 0.45 else ""
         except Exception:  # noqa
@@ -5829,6 +5896,12 @@ class Engine:
             rec["wp_why"] = why
             rec["brief"].insert(0, (tr("胜率"), "{0}%{1}".format(int(round(p * 100)), arrow) + ("  ← " + why if why else ""),
                                     p < 0.35))
+            try:
+                prow = self.players_row()
+                if prow:
+                    rec["brief"].insert(1, prow)
+            except Exception:  # noqa
+                pass
         try:
             pr = self.push_row(state)
             if pr and isinstance(rec.get("brief"), list):
