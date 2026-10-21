@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.4.1"
+APP_VERSION = "3.4.2"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5093,14 +5093,27 @@ class Engine:
         n = len(everyone)
         # 击杀功劳：自己的击杀 + 一半助攻，再按队伍缩放回「这队的总击杀」（辅助助攻多也算功劳，团队总和不变）
         credit = {}
+        role = {}
+        for q in everyone:
+            try:
+                role[id(q)] = self.advisor.role_of(q)
+            except Exception:  # noqa
+                role[id(q)] = "fighter"
+        # 3.4.2：按定位看 —— 坦克 / 辅助的工作是吃伤害、开团、保人：助攻算更多功劳，在前排阵亡扣得少一些
+        AW = {"support": 0.9, "tank": 0.75}
+        DW = {"tank": 0.6, "support": 0.8, "fighter": 0.9}
         for team in (mine, enemies):
-            raw_c = {id(q): q.kills + 0.5 * q.assists for q in team}
+            raw_c = {id(q): q.kills + AW.get(role[id(q)], 0.5) * q.assists for q in team}
             tot_r, tot_k = sum(raw_c.values()), sum(q.kills for q in team)
             for q in team:
                 credit[id(q)] = raw_c[id(q)] * tot_k / tot_r if tot_r else 0.0
         ag = sum(spent(q) for q in everyone) / n
         ak = sum(credit.values()) / n
         ad = sum(q.deaths for q in everyone) / n
+        # 每个定位「正常会死几次」：坦克本来就站前面，比平均多死一点不算打得差
+        ad_r = {}
+        for q in everyone:
+            ad_r[id(q)] = ad * (1 + (1 - DW.get(role[id(q)], 1.0)))
         al = sum(q.level for q in everyone) / n
         pr = lambda g_, k_, l_: wp_predict(model, m, g_, k_, l_, td, comp=comp, aug=aug, side=side)  # noqa
         use_gold = (pr(gd + 1, kd, ld) or 0) > (pr(gd, kd, ld) or 0)
@@ -5108,13 +5121,13 @@ class Engine:
         for q in everyone:
             sgn = 1.0 if q in mine else -1.0
             dg = sgn * (ag - spent(q)) if use_gold else 0.0
-            dk = sgn * ((ak - credit[id(q)]) - (ad - q.deaths))
+            dk = sgn * ((ak - credit[id(q)]) - DW.get(role[id(q)], 1.0) * (ad_r[id(q)] - q.deaths))
             dl = sgn * (al - q.level)
             p2 = pr(gd + dg, kd + dk, ld + dl)
             if p2 is None:
                 continue
             out.append((self.gd.champ_name(q.cid), q is me, q in mine, "{0}/{1}/{2}".format(q.kills, q.deaths, q.assists),
-                        100 * (p - p2)))
+                        100 * (p - p2), role[id(q)]))
         return out
 
     def players_row(self):
@@ -5128,13 +5141,14 @@ class Engine:
         best = max(ally, key=lambda x: x[4], default=None)
         worst = min(ally, key=lambda x: x[4], default=None)
         fed = min(foe, key=lambda x: x[4], default=None)
-        nm = lambda x: tr("你") if x[1] else x[0]  # noqa
+        RL = {"tank": tr("坦"), "support": tr("辅")}
+        nm = lambda x: (tr("你") if x[1] else x[0]) + (tr("（{0}）").format(RL[x[5]]) if len(x) > 5 and x[5] in RL else "")  # noqa
         if best and best[4] >= 3:
             bits.append(tr("带飞 {0} {1} {2:+.0f}%").format(nm(best), best[3], best[4]))
         if worst and worst[4] <= -3 and worst is not best:
             bits.append(tr("拖累 {0} {1} {2:+.0f}%").format(nm(worst), worst[3], worst[4]))
         if fed and fed[4] <= -3:
-            bits.append(tr("对面最肥 {0} {1} {2:+.0f}%").format(fed[0], fed[3], fed[4]))
+            bits.append(tr("对面最肥 {0} {1} {2:+.0f}%").format(nm(fed) if not fed[1] else fed[0], fed[3], fed[4]))
         if not bits:
             return None
         return (tr("表现"), " · ".join(bits), bool(worst and worst[1] and worst[4] <= -5))
@@ -5669,12 +5683,45 @@ class Engine:
             else:
                 line = tr("最好的一波：") + km["facts"] + tr("。") + km["lesson"]
             detail = (detail + "\n" if detail else "") + line
+        pl = self.post_players_line(g)
+        if pl:
+            detail = (detail + "\n" if detail else "") + pl
         for mv in g.get("mvp") or []:
             detail = (detail + "\n" if detail else "") + tr("值得学：") + mv["lines"][0]
         return {"text": head + (" · " + " · ".join(parts) if parts else ""), "detail": detail,
                 "curve": g.get("curve") or [], "moments": [{k: m.get(k) for k in ("kind", "t", "from", "to")}
                                                            for m in g.get("moments") or []],
                 "items": [gd.item_name(i) for i in g.get("items", [])], "augs": g.get("augs", [])}
+
+    def post_players_line(self, g):
+        """3.4.2：赛后「本局表现」——有结算数据时，连输出 / 承伤 / 给队友的治疗护盾 / 控制一起算（坦克和辅助的功劳看得到）：
+           我方最好、我方最差、对面最强。用的是「向高手学」同一套表现分（每 10 分钟净贡献 + 团队贡献加分）"""
+        ros = g.get("roster") or {}
+        post = g.get("post")
+        if len(ros) < 6 or not post:
+            return ""
+        sc = self.net_scores(ros, g.get("kills") or [], g.get("len", 0) / 60, post)
+        lab = {"dmg": tr("输出"), "tank": tr("承伤"), "support": tr("治疗护盾"), "cc": tr("控制")}
+
+        def desc(n):
+            r, x = ros[n], sc[n]
+            who = tr("你") if r.get("me") else self.gd.champ_name(r.get("champ"))
+            top = sorted(((v, k) for k, v in (x.get("shares") or {}).items()), reverse=True)[:2]
+            sh = tr("、").join(tr("{0} {1:.0f}%").format(lab[k], v * 100) for v, k in top if v >= 0.25)
+            return tr("{0} {1}/{2}/{3}").format(who, r.get("k", 0), r.get("d", 0), r.get("a", 0)) + \
+                (tr("（{0}）").format(sh) if sh else "")
+        ally = [n for n in ros if ros[n].get("ally") and n in sc]
+        foe = [n for n in ros if not ros[n].get("ally") and n in sc]
+        if not ally or not foe:
+            return ""
+        best = max(ally, key=lambda n: sc[n]["score"])
+        worst = min(ally, key=lambda n: sc[n]["score"])
+        star = max(foe, key=lambda n: sc[n]["score"])
+        bits = [tr("我方最好 {0}").format(desc(best))]
+        if worst != best:
+            bits.append(tr("我方最差 {0}").format(desc(worst)))
+        bits.append(tr("对面最强 {0}").format(desc(star)))
+        return tr("本局表现（含输出 / 承伤 / 治疗 / 控制）：") + " · ".join(bits)
 
     def import_history_async(self, delay=0, manual=False):
         """背景从游戏客户端读取你的历史对局（只读）"""
@@ -6793,6 +6840,21 @@ POST_KEYS = {"dmg": ["totaldamagedealttochampions"], "taken": ["totaldamagetaken
              "shield": ["totaldamageshieldedonteammates"], "cc": ["timeccingothers"]}
 
 
+def player_stat_vec(st):
+    """3.4.2：每个玩家这局的表现（存进自建库，之后用来校准「坦克 / 辅助的功劳」）：
+       [击杀, 阵亡, 助攻, 对英雄输出(千), 承伤+减免(千), 给队友治疗+护盾(千), 控制秒数]"""
+    f = {re.sub(r"[^a-z]", "", str(k).lower()): v for k, v in (st or {}).items() if isinstance(v, (int, float))}
+
+    def g(*keys):
+        return next((float(f[k]) for k in keys if k in f), 0.0)
+    return [int(g("kills", "championskilled")), int(g("deaths", "numdeaths")), int(g("assists")),
+            round(g("totaldamagedealttochampions") / 1000, 1),
+            round((g("totaldamagetaken") + g("damageselfmitigated", "totaldamageselfmitigated")) / 1000, 1),
+            round(((g("totalhealsonteammates", "totalhealonteammates") if ("totalhealsonteammates" in f or
+                    "totalhealonteammates" in f) else 0.5 * g("totalheal")) + g("totaldamageshieldedonteammates")) / 1000, 1),
+            int(g("timeccingothers"))]
+
+
 def parse_postgame(data):
     """结算数据 → {名字: {dmg 输出, tank 承伤+减免, support 给队友的治疗+护盾, cc 控制秒数}}
        支持结算画面（/lol-end-of-game/v1/eog-stats-block）和对局详情（/lol-match-history/v1/games/编号）两种格式"""
@@ -7358,7 +7420,7 @@ class RiotCollector:
             augs = [int(p.get(f"playerAugment{i}") or 0) for i in range(1, 7)]
             rows.append({"m": m.get("metadata", {}).get("matchId"), "v": patch, "c": p.get("championName"),
                          "i": [x for x in items if x], "a": [x for x in augs if x], "w": bool(p.get("win")),
-                         "u": p.get("puuid")})
+                         "u": p.get("puuid"), "s": player_stat_vec(p), "len": int(info.get("gameDuration") or 0)})
             if p.get("puuid"):
                 puuids.append(p["puuid"])
         return rows, puuids
@@ -7585,7 +7647,8 @@ class RiotCollector:
             items = [int(st.get(f"item{i}") or 0) for i in range(7)]
             augs = [int(st.get(f"playerAugment{i}") or 0) for i in range(1, 7)]
             rows.append({"m": mid, "v": patch, "c": by_key.get(str(p.get("championId")), str(p.get("championId"))),
-                         "i": [x for x in items if x], "a": [x for x in augs if x], "w": bool(st.get("win"))})
+                         "i": [x for x in items if x], "a": [x for x in augs if x], "w": bool(st.get("win")),
+                         "s": player_stat_vec(st), "len": int(full.get("gameDuration") or 0)})
             pu = ident.get(pid, {}).get("puuid")
             if pu:
                 puuids.append(pu)
@@ -8110,7 +8173,14 @@ class RiotCollector:
         ok = [r for r in data["matches"] if isinstance(r, dict) and isinstance(r.get("m"), str)
               and isinstance(r.get("c"), str) and isinstance(r.get("i", []), list) and isinstance(r.get("a", []), list)
               and "w" in r]
-        data["matches"] = [{k: r[k] for k in ("m", "v", "c", "i", "a", "w", "t") if k in r} for r in ok]
+        data["matches"] = [{k: r[k] for k in ("m", "v", "c", "i", "a", "w", "t", "s", "len") if k in r} for r in ok]
+        for r in data["matches"]:                      # 每人表现（3.4.2）：格式不对就丢掉这一栏
+            sv = r.get("s")
+            if sv is not None and not (isinstance(sv, list) and len(sv) == 7 and
+                                       all(isinstance(x, (int, float)) and not isinstance(x, bool) and 0 <= x < 1e5 for x in sv)):
+                r.pop("s", None)
+            if not isinstance(r.get("len", 0), int):
+                r.pop("len", None)
         num = (int, float)
         ints = lambda xs: isinstance(xs, list) and all(isinstance(x, int) and not isinstance(x, bool) for x in xs)  # noqa
         data["matches"] = [r for r in data["matches"] if ints(r.get("i", [])) and ints(r.get("a", []))

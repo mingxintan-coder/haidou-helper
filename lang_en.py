@@ -1026,3 +1026,7 @@ EN.update({'经济落后 {0:.1f}k {1:+.0f}%': 'gold behind {0:.1f}k {1:+.0f}%', 
 EN.update({'（{0}）': ' ({0})'})
 EN.update({'表现': 'Players', '你': 'You', '带飞 {0} {1} {2:+.0f}%': 'carrying: {0} {1} {2:+.0f}%',
            '拖累 {0} {1} {2:+.0f}%': 'struggling: {0} {1} {2:+.0f}%', '对面最肥 {0} {1} {2:+.0f}%': 'fed enemy: {0} {1} {2:+.0f}%'})
+EN.update({'坦': 'tank', '辅': 'support', '输出': 'damage', '承伤': 'tanked', '治疗护盾': 'heal/shield', '控制': 'CC',
+           '{0} {1:.0f}%': '{0} {1:.0f}%', '{0} {1}/{2}/{3}': '{0} {1}/{2}/{3}', '我方最好 {0}': 'our best {0}',
+           '我方最差 {0}': 'our weakest {0}', '对面最强 {0}': 'their best {0}',
+           '本局表现（含输出 / 承伤 / 治疗 / 控制）：': 'This game (damage / tanking / healing / CC included): '})

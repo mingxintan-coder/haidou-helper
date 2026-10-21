@@ -24,7 +24,7 @@ def main():
             if not k[0] or k in seen:
                 continue
             seen.add(k)
-            r = {x: r[x] for x in ("m", "v", "c", "i", "a", "w", "t") if x in r}
+            r = {x: r[x] for x in ("m", "v", "c", "i", "a", "w", "t", "s", "len") if x in r}
             rows.append(r)
         for t in src.get("timelines", []):
             if t.get("id") and t["id"] not in tl_ids:

@@ -1,14 +1,15 @@
 {
- "version": "3.4.1",
- "date": "2026-10-19",
+ "version": "3.4.2",
+ "date": "2026-10-20",
  "notes": [
-  "新增「表现」：谁在带飞、谁在拖累、对面谁最肥（把他换成平均玩家，我方胜率会变多少）",
-  "（3.4.0）胜率低于 45% 时显示原因"
+  "「表现」按定位看：坦克 / 辅助的助攻算更多功劳、在前排多死一点不算打得差",
+  "赛后复盘多一行「本局表现」：读到结算数据后，连输出、承伤、治疗护盾、控制一起算",
+  "自建库开始记每个玩家的表现数据，之后用来校准"
  ],
  "files": {
-  "haidou_helper.py": "057790f24721f814bf4479d63a999a5293394f04a6a346016d791fe3f2b9d294",
-  "lang_en.py": "b52996922c95b72b1604b19cb2c2b63401e3c25fca038ee74086f21d578c873c",
-  "README.md": "a5fb268677552697f1fc466b5c5d093bb96f87301586cf20205487f725be88a4",
+  "haidou_helper.py": "e69de059751b94494fd75485c31da0beb2200ad016b958ff3b49854754d0abbd",
+  "lang_en.py": "bb5c472a0bb8682cb92a77c4252768f0196ba78d2788aebedf9f6d4affe92115",
+  "README.md": "9c653084b23eb9185fea58c9c0a0b0cc49a3fb0979ac16ea90abd181015ca6ae",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
