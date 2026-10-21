@@ -1,15 +1,15 @@
 {
- "version": "3.4.2",
+ "version": "3.5.0",
  "date": "2026-10-20",
  "notes": [
-  "「表现」按定位看：坦克 / 辅助的助攻算更多功劳、在前排多死一点不算打得差",
-  "赛后复盘多一行「本局表现」：读到结算数据后，连输出、承伤、治疗护盾、控制一起算",
-  "自建库开始记每个玩家的表现数据，之后用来校准"
+  "胜率模型 v4：经济 / 人头按每 10 分钟算，准确率不变，但「胜率低的原因」不会再出现经济项方向反的问题（启动时自动重新训练）",
+  "回测增幅 × 对面阵容：没有稳定的关系，取消「对面前排厚 → 百分比 / 真实伤害增幅加分」（数据显示反而略差）",
+  "（3.4.2）「表现」按定位看；赛后复盘多一行本局表现"
  ],
  "files": {
-  "haidou_helper.py": "e69de059751b94494fd75485c31da0beb2200ad016b958ff3b49854754d0abbd",
+  "haidou_helper.py": "7e96e1197855afaf0ad877727a71d67a8d62eedba281450af4f7ad765d5a5ee8",
   "lang_en.py": "bb5c472a0bb8682cb92a77c4252768f0196ba78d2788aebedf9f6d4affe92115",
-  "README.md": "9c653084b23eb9185fea58c9c0a0b0cc49a3fb0979ac16ea90abd181015ca6ae",
+  "README.md": "1aaecc2f0f72450ab13a51aef7d1aace47ad3527c10d7b5bcf4b76923dc1e4aa",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"

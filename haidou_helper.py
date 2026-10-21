@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.4.2"
+APP_VERSION = "3.5.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -2041,7 +2041,9 @@ class Advisor:
             f.append((min(0.3, arm_avg / 400) * phase, tr('敌方人均已堆{0}物理防御，穿甲收益高').format(round(arm_avg))))
         if vec.get("MPEN") and mr_avg > 35 and prof.get("AP", 0) > 0.3:
             f.append((min(0.3, mr_avg / 350) * phase, tr('敌方人均已堆{0}魔法防御，魔穿收益高').format(round(mr_avg))))
-        if ("MAXHP_DMG" in special or vec.get("MAXHP_DMG") or vec.get("TRUE")) and \
+        # 3.5 回测（自建库 4197 局，按时间切分）：百分比 / 真实伤害「增幅」遇到对面前排多并没有更赢（甚至略差，z≈−2.4），
+        # 所以增幅不再因「对面前排厚」加分；装备这项也没测出效果（z≈0.5），份量小，先保留
+        if kind != "aug" and ("MAXHP_DMG" in special or vec.get("MAXHP_DMG") or vec.get("TRUE")) and \
                 (len(t["tanks"]) >= 2 or t["hp"] / n > 700):
             f.append(((0.12 + 0.06 * len(t["tanks"])) * phase,
                       tr('敌方前排厚（{0}）').format(tr('、').join(t['tanks'][:3]) or tr('生命装多'))))
@@ -5174,7 +5176,7 @@ class Engine:
                 self._comp_cache = cache = (key, cz)
             comp = cache[1]
         aug = 0.0
-        if model.get("v") == 3:              # 你已选增幅的胜率提升总和（自建库，不分英雄）
+        if model.get("v") in (3, 4):         # 你已选增幅的胜率提升总和（自建库，不分英雄）
             names = tuple(self.history[-1].get("my_augs") or []) if getattr(self, "history", None) else ()
             cache = getattr(self, "_aug_wp_cache", None)
             if not cache or cache[0] != names:
@@ -7135,9 +7137,18 @@ def aug_frac(m):
     return min(1.0, (1 + m / 5) / 4)
 
 
+def wp_rel(m, gd, kd):
+    """3.5（v4 模型）：经济差、人头差换成「每 10 分钟」—— 3 分钟领先 2k 和 20 分钟领先 2k 意义完全不同。
+       自建库 4183 局留出检验：对数损失 0.5938（旧版 0.5941），而且经济那一项在整局都是正的
+       （旧版到后期变负：海斗只能在泉水买装，赢的一方活着、钱留在身上，「已花的钱」反而少，模型只好用负系数补）"""
+    mm = max(1.0, m)
+    return gd / mm * 10, kd / mm * 10
+
+
 def _row_x(r, comp_of=None, aug_of=None):
-    if aug_of is not None:                  # v3：增幅强度（只有你自己的增幅看得到，所以每局只用一个玩家的）+ 蓝红方
-        return wp_vector(r["m"], r["gd"], r["kd"], r["ld"], r["td"], None, 1.0, aug_of.get(r["id"], 0.0) * aug_frac(r["m"]))
+    if aug_of is not None:                  # v3/v4：增幅强度（只有你自己的增幅看得到，所以每局只用一个玩家的）+ 蓝红方
+        g_, k_ = wp_rel(r["m"], r["gd"], r["kd"])
+        return wp_vector(r["m"], g_, k_, r["ld"], r["td"], None, 1.0, aug_of.get(r["id"], 0.0) * aug_frac(r["m"]))
     comp = comp_of.get(r["id"], 0.0) if comp_of is not None else None
     return wp_vector(r["m"], r["gd"], r["kd"], r["ld"], r["td"], comp)
 
@@ -7200,7 +7211,7 @@ def fit_winmodel(rows, comp_fn=None, aug_fn=None):
         beta_all = _fit_logit(*_sym(rows, None, aug_all))
         return {"beta": beta_all, "games": len(games), "rows": len(rows), "test_games": len(test_ids),
                 "acc8": acc8, "acc_early": acc_e, "logloss": ll, "logloss_raw": base_ll, "scale": scale,
-                "date": time.strftime("%Y-%m-%d %H:%M"), "v": 3, "side": 1, "nb": 4}
+                "date": time.strftime("%Y-%m-%d %H:%M"), "v": 4, "side": 1, "nb": 4}
     comp_tr = comp_fn(sorted(set(games) - test_ids), held=test_ids) if comp_fn else None
     beta = _fit_logit(*_sym(train, comp_tr))
     acc8, acc_e, ll = _wp_eval(beta, test, comp_tr)
@@ -7234,7 +7245,9 @@ def wp_predict(model, m, gd, kd, ld, td, comp=0.0, aug=0.0, side=0.0):
     """我方胜率（输入都是 我方 − 敌方；aug＝你已选增幅的胜率提升总和，v3 模型才用；side＝我方是蓝方 +1 / 红方 −1）"""
     if not model or not model.get("beta"):
         return None
-    if model.get("v") == 3 and model.get("nb") == 4:     # 3.0.3：增幅那一项不随时间放大（以前会在后期变成负的）
+    if model.get("v") == 4:
+        gd, kd = wp_rel(m, gd, kd)
+    if model.get("v") in (3, 4) and model.get("nb") == 4:     # 3.0.3：增幅那一项不随时间放大（以前会在后期变成负的）
         vec = wp_vector(m, gd, kd, ld, td, None, side, aug)
     elif model.get("v") == 3:
         vec = wp_vector(m, gd, kd, ld, td, aug, side if len(model["beta"]) == 11 else None)
@@ -7251,8 +7264,11 @@ def wp_explain(model, m, gd, kd, ld, td, comp=0.0, aug=0.0, side=0.0):
         return []
     beta, sc = model["beta"], model.get("scale", 1.0)
     u = min(max(m, 0), 30) / 10
+    raw_in = {"gd": gd, "kd": kd}
+    if model.get("v") == 4:
+        gd, kd = wp_rel(m, gd, kd)
     feats = [("gd", gd), ("kd", kd), ("ld", ld), ("td", td)]
-    if model.get("v") == 3 and model.get("nb") == 4:
+    if model.get("v") in (3, 4) and model.get("nb") == 4:
         nb, extra_i, side_i = 4, 8, 9 if len(beta) > 9 else None
         contrib = {k: sc * (beta[i] + beta[nb + i] * u) * x for i, (k, x) in enumerate(feats)}
         contrib["aug"] = sc * beta[extra_i] * aug if len(beta) > extra_i else 0.0
@@ -7270,6 +7286,7 @@ def wp_explain(model, m, gd, kd, ld, td, comp=0.0, aug=0.0, side=0.0):
     z = sum(contrib.values())
     sig = lambda v: 1 / (1 + math.exp(-max(-30, min(30, v))))  # noqa
     vals = dict(feats + [("aug", aug), ("comp", comp), ("side", side)])
+    vals.update(raw_in)                     # 文字显示用原始值（经济差几千、人头差几个），不是每 10 分钟的
     out = [(k, vals.get(k, 0.0), 100 * (sig(z) - sig(z - c))) for k, c in contrib.items()]
     return sorted(out, key=lambda x: x[2])
 
@@ -8056,7 +8073,7 @@ class RiotCollector:
         adv = getattr(self, "advisor", None)
         if have and have.get("comp") and getattr(self, "comp_model", None) is None:
             self.comp_model = have["comp"]
-        old_kind = have and adv is not None and (have.get("v") != 3 or have.get("nb") != 4)   # 旧版模型：重练成新版（v3＝含你的增幅强度、校准、蓝红方）
+        old_kind = have and adv is not None and (have.get("v") != 4 or have.get("nb") != 4)   # 3.5：v4＝经济 / 人头按分钟算   # 旧版模型：重练成新版（v3＝含你的增幅强度、校准、蓝红方）
         if not force and have and not old_kind and self.tl_new < max(30, 0.25 * (have.get("games") or 0)):
             return have                             # 多了 25%（至少 30 局）才重新训练
         path = os.path.join(self.dir, "timelines.jsonl")
