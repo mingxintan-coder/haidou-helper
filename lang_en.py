@@ -1031,3 +1031,6 @@ EN.update({'坦': 'tank', '辅': 'support', '输出': 'damage', '承伤': 'tanke
            '我方最差 {0}': 'our weakest {0}', '对面最强 {0}': 'their best {0}',
            '本局表现（含输出 / 承伤 / 治疗 / 控制）：': 'This game (damage / tanking / healing / CC included): '})
 EN.update({'新增幅，网上还没有数据（按属性和本局估算）': 'New augment, no online data yet (estimated from its stats and this game)'})
+EN.update({'打开时自动更新到最新版（不在对局中才更新、自动重开）': 'Auto-update to the latest version on start (only outside games; restarts itself)',
+           '已更新 ✓ 马上自动重开': 'Updated ✓ restarting…', '自动更新到 v{0}…': 'Auto-updating to v{0}…',
+           '自动重开失败，请自己重新打开': 'Auto-restart failed, please reopen the helper'})

@@ -1,15 +1,14 @@
 {
- "version": "3.5.1",
+ "version": "3.6.0",
  "date": "2026-10-21",
  "notes": [
-  "26.21 改版：新版本头 3 天每 3 小时更新增幅资料，新增幅更快认得",
-  "新增幅还没有网上数据时，理由会写明「按属性和本局估算」",
-  "（3.5.0）胜率模型 v4；增幅不再因「对面前排厚」加分"
+  "打开时自动更新到最新版：自动下载、校验、换上、重新打开（不在对局 / 选英雄时才做）；⋯ → 自动操作 可关",
+  "（3.5.1）26.21 改版：新增幅资料更快更新"
  ],
  "files": {
-  "haidou_helper.py": "7782442f41358dfc1ecc0abb5da5124df8646e007e03036f13527fef01e809f0",
-  "lang_en.py": "7aa95a0dd8cc9f02b2a9715a3cc122224146ebe142fb929bc8d0d58d9de88569",
-  "README.md": "0b4ee8da28830924e449c73982954ed95738f3464a895a2e59e09c6348fe9e1b",
+  "haidou_helper.py": "43bb8acf1fb04bf35d05a38d1df3d83710491ddb0d7a1d9a04bcf6285cfa87d4",
+  "lang_en.py": "f554b81a39b176fd51296b81922cc5d98cf4a677d25e4e27221eccfaae6b3b35",
+  "README.md": "3c4539115b54202eafd7451c35426203f1011d266a0759e879175ce1e186845f",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"

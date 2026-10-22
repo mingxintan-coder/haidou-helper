@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.5.1"
+APP_VERSION = "3.6.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -8728,7 +8728,7 @@ class DataUpdater:
         self.busy = False
         self.last_result = ""
         self.app_new = None
-        self.last_app_check = time.time() - 6 * 3600 + 15    # 启动 15 秒后查一次程序新版本
+        self.last_app_check = time.time() - 6 * 3600 + 3     # 3.6：启动 3 秒后就查程序新版本（自动更新）
 
     def check_app(self, manual=False):
         self.last_app_check = time.time()
@@ -8751,6 +8751,7 @@ class DataUpdater:
         try:
             q.put(("data", tr("更新中…")))
             changed = install_update(m, log=lambda x: q.put(("data", x)))
+            self.upgrade_changed = bool(changed)
             q.put(("upgraded", tr("已更新到 v{0}，重新打开海斗助手生效").format(m.get("version")) if changed
                    else tr("已是最新文件，重新打开即可")))
         except Exception as e:  # noqa
@@ -9559,7 +9560,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         sm.add_checkbutton(label=label, variable=snd_vars[kind], command=lambda k=kind: toggle_sound(k))
     menu.add_cascade(label=tr("声音提示"), menu=sm)
     am = tk.Menu(menu, tearoff=0, bg=CARD, fg=FG, activebackground="#2b3a57", activeforeground=FG)
-    auto_cfg = dict({"accept": True, "spells": True, "itemset": True, "ime": True}, **(load_ui_cfg().get("auto") or {}))
+    auto_cfg = dict({"accept": True, "spells": True, "itemset": True, "ime": True, "update": True},
+                    **(load_ui_cfg().get("auto") or {}))
     auto_vars = {}
 
     def apply_auto():
@@ -9576,7 +9578,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         apply_auto()
     for k, label in (("accept", tr("自动接受对局")), ("spells", tr("自动换成推荐的召唤师技能")),
                      ("itemset", tr("自动放推荐装备页到游戏商店")),
-                     ("ime", tr("游戏中输入法保持英文（阵亡买装时除外）"))):
+                     ("ime", tr("游戏中输入法保持英文（阵亡买装时除外）")),
+                     ("update", tr("打开时自动更新到最新版（不在对局中才更新、自动重开）"))):
         auto_vars[k] = tk.BooleanVar(value=auto_cfg[k])
         am.add_checkbutton(label=label, variable=auto_vars[k], command=lambda k=k: toggle_auto_opt(k))
     menu.add_cascade(label=tr("自动操作"), menu=am)
@@ -10239,7 +10242,61 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         st["poll_t"] = time.perf_counter()
         root.after(60 if engine.scanning else 300, poll)     # 识别中刷新快一点
 
+    def idle_for_update():
+        """不在对局中、不在选英雄：才能自动更新 / 重开（不打断正在打的一局）"""
+        return not getattr(engine, "connected", False) and not getattr(engine, "_cs_last", None)
+
+    def auto_update_tick():
+        now = time.time()
+        if st.get("auto_upd") and not st.get("upgrading") and st.get("app_new") and idle_for_update():
+            last = load_ui_cfg().get("auto_upd_try") or {}
+            ver = st["app_new"].get("version")
+            if last.get("v") == ver and now - last.get("t", 0) < 600:   # 10 分钟内刚试过同一版：别一直重试 / 重开
+                st["auto_upd"] = False
+                return
+            c = load_ui_cfg()
+            c["auto_upd_try"] = {"v": ver, "t": now}
+            save_ui_cfg(c)
+            st["auto_upd"], st["auto_upd_running"] = False, True
+            set_status(tr("自动更新到 v{0}…").format(ver))
+            open_download()
+        if st.get("restart_at") and now >= st["restart_at"]:
+            if not idle_for_update():
+                st["restart_at"] = now + 30        # 刚好进了对局 / 选英雄：打完再重开
+                return
+            st["restart_at"] = None
+            restart_app()
+
+    def restart_app():
+        """用同样的方式（同一个 Python、同样的参数）重新打开助手，然后关掉自己"""
+        import subprocess
+        try:
+            script = os.path.abspath(sys.argv[0])
+            kw = {"cwd": os.path.dirname(script)}
+            if sys.platform.startswith("win"):
+                kw["creationflags"] = 0x00000008 | 0x00000200      # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+            else:
+                kw["start_new_session"] = True
+            exe = sys.executable
+            if sys.platform.startswith("win") and exe.lower().endswith("python.exe"):
+                alt = exe[:-10] + "pythonw.exe"                     # 用 pythonw 开，不会多一个黑色视窗
+                exe = alt if os.path.exists(alt) else exe
+            subprocess.Popen([exe, script] + sys.argv[1:], **kw)
+        except Exception as e:  # noqa
+            set_status(tr("自动重开失败，请自己重新打开"))
+            st["status_hold"] = time.time() + 10 ** 9
+            log_crash("restart failed: {0!r}".format(e), sys.exc_info())
+            return
+        try:
+            root.destroy()
+        finally:
+            os._exit(0)
+
     def poll_once():
+        try:
+            auto_update_tick()
+        except Exception:  # noqa
+            log_crash("auto update tick failed", sys.exc_info())
         # 3.0.7：不是你按「—」最小化的，却被缩到工作列 / 藏起来（点游戏、游戏抢前景时 Windows 会这样做）：马上还原并回到最上层
         try:
             now = time.time()
@@ -10307,6 +10364,13 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 st["status_hold"] = time.time() + (15 if payload == tr("识别中…") else 4)
             elif kind == "upgraded":       # 一键更新完成
                 st["app_new"], st["upgrading"] = None, False
+                up = getattr(engine, "updater", None)
+                if st.pop("auto_upd_running", False) and getattr(up, "upgrade_changed", False):
+                    st["restart_at"] = time.time() + 3            # 3.6：自动更新完 → 3 秒后自动重开（对局中就等打完）
+                    set_status(tr("已更新 ✓ 马上自动重开"))
+                    st["status_hold"] = time.time() + 30
+                    st["data_msg"] = payload
+                    continue
                 set_status(tr("已更新 ✓ 请重新打开"))
                 st["status_hold"] = time.time() + 10 ** 9
                 st["data_msg"] = payload
@@ -10315,6 +10379,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 set_status("")
                 if time.time() - st.pop("auto_upgrade", 0) < 120:     # 是刚按「更新」查到的：直接更新
                     open_download()
+                elif auto_cfg.get("update", True) and payload.get("files"):
+                    st["auto_upd"] = True       # 3.6：自动更新 —— 不在对局 / 选英雄时就开始（见 poll_once）
                 st["status_hold"] = time.time() + 30
                 st["data_msg"] = tr("发现新版 v{0}：点标题栏的「⇪ 新版」或 ⋯ → 更新到新版").format(payload.get("version", ""))
             elif kind == "data":           # 数据版本检查 / 更新
