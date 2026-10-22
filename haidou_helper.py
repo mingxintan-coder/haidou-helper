@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.6.0"
+APP_VERSION = "3.6.1"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -611,6 +611,23 @@ def http_json(url, timeout=10, local=False):
 # --------------------------------------------------------------------------------------
 # 静态数据
 # --------------------------------------------------------------------------------------
+def aug_file_stale(ap, version, lang):
+    """增幅资料该不该重新下载：没有 / 空的马上下载；平时每天一次；新版本头 3 天每 3 小时（3.5.1）"""
+    vf = os.path.join(APP_DIR, f"ver_{version}_{lang}") if version else ""
+    new_patch = bool(vf) and os.path.exists(vf) and time.time() - os.path.getmtime(vf) < 3 * 24 * 3600
+    return not os.path.exists(ap) or os.path.getsize(ap) <= 2 or \
+        time.time() - os.path.getmtime(ap) > (3 if new_patch else 24) * 3600
+
+
+def aug_cache_stale(lang, version):
+    """3.6.1：背景数据检查用 —— 版本号没变时，增幅资料（或 arammayhem）也可能该更新了（改版当天社群资料还没收录新增幅）"""
+    ap = os.path.join(APP_DIR, f"aug_1_{lang.lower()}.json")
+    if aug_file_stale(ap, version, lang):
+        return True
+    am = os.path.join(APP_DIR, "arammayhem", "augments.json")
+    return not os.path.exists(am) or time.time() - os.path.getmtime(am) > 24 * 3600
+
+
 class GameData:
     lang = "zh_TW"
 
@@ -678,10 +695,7 @@ class GameData:
             ap = os.path.join(APP_DIR, f"aug_{i}_{aug_lang}.json")
             # 每天最多重新读一次；空的（以前地址错）马上重读。
             # 3.5.1：新版本头 3 天每 3 小时就重读 —— 改版当天社群资料常常还没收录新增幅（例：26.21 的 5 张新增幅）
-            vf = os.path.join(APP_DIR, f"ver_{version}_{lang}") if version else ""
-            new_patch = bool(vf) and os.path.exists(vf) and time.time() - os.path.getmtime(vf) < 3 * 24 * 3600
-            stale = not os.path.exists(ap) or os.path.getsize(ap) <= 2 or \
-                time.time() - os.path.getmtime(ap) > (3 if new_patch else 24) * 3600
+            stale = aug_file_stale(ap, version, lang)
             data = cached(f"aug_{i}_{aug_lang}.json", url if version and (need_dl or stale) else None, optional=True)
             for a in cls._parse_augments(data):
                 if a.get("current") and a.get("id"):
@@ -8780,12 +8794,15 @@ class DataUpdater:
                     eng.q.put(("data", self.last_result))
                 return
             changed = [n for n, a, b in zip((tr("游戏数据"), tr("海斗胜率"), tr("海斗资料")), cur, remote) if b and a != b]
-            if not changed:
+            # 3.6.1：启动时为了开得快只读缓存，以前只有「版本号变了」才会重新下载，所以改版后新增幅一直认不得
+            aug_refresh = not changed and aug_cache_stale(self.lang, remote[0])
+            if not changed and not aug_refresh:
                 self.last_result = tr("已是最新 ") + ".".join(cur[0].split(".")[:2])
                 if manual:
                     eng.q.put(("data", self.last_result))
                 return
-            eng.q.put(("data", tr("发现新版本，背景下载中…")))
+            if changed:
+                eng.q.put(("data", tr("发现新版本，背景下载中…")))
             bracket = eng.advisor.stats.dataset if eng.advisor.stats else "all"
             gd, stats = load_all(self.lang, bracket, self.use_stats, log=lambda m: None, force=True)
             if self.use_stats and (stats is None or not stats.version):
@@ -8793,6 +8810,15 @@ class DataUpdater:
                 eng.q.put(("data", self.last_result))
                 return
             new = data_versions(gd, stats)
+            if new == cur and aug_refresh:
+                n_old = len({a.get("id") for a in eng.gd.augments if a.get("id")})
+                n_new = len({a.get("id") for a in gd.augments if a.get("id")})
+                self.last_result = tr("增幅资料已更新（{0} → {1} 个）").format(n_old, n_new)
+                eng.pending_data = (gd, stats, self.last_result)
+                eng.wake.set()
+                if manual or n_new != n_old:
+                    eng.q.put(("data", self.last_result))
+                return
             if new == cur:
                 self.last_result = tr("已是最新 ") + ".".join(cur[0].split(".")[:2])
                 eng.q.put(("data", self.last_result))

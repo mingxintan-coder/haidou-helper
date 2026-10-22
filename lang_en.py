@@ -1034,3 +1034,4 @@ EN.update({'新增幅，网上还没有数据（按属性和本局估算）': 'N
 EN.update({'打开时自动更新到最新版（不在对局中才更新、自动重开）': 'Auto-update to the latest version on start (only outside games; restarts itself)',
            '已更新 ✓ 马上自动重开': 'Updated ✓ restarting…', '自动更新到 v{0}…': 'Auto-updating to v{0}…',
            '自动重开失败，请自己重新打开': 'Auto-restart failed, please reopen the helper'})
+EN.update({'增幅资料已更新（{0} → {1} 个）': 'Augment data updated ({0} → {1})'})
