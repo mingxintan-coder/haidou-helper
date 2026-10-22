@@ -1,14 +1,15 @@
 {
- "version": "3.6.1",
+ "version": "3.7.0",
  "date": "2026-10-22",
  "notes": [
-  "修正：改版后新增幅一直认不得 —— 背景数据检查现在也会定时重新下载增幅资料（新版本头 3 天每 3 小时）",
-  "（3.6.0）打开时自动更新到最新版"
+  "加入国服数据（AramHex，CC BY-NC 4.0）：16.21 首日约 109 万局的英雄 × 海克斯胜率，和 ARAMKit 一起评分；ARAMKit 还是旧版本时以国服为主",
+  "26.21 新增幅：游戏资料没收录的也认得、能评分；移除的增幅不再推荐",
+  "（3.6.1）背景定时更新增幅资料"
  ],
  "files": {
-  "haidou_helper.py": "37bdc2e629dc81c0599f26af71044babfef94542106bef51550f3ec8edf087a3",
-  "lang_en.py": "6471e683a5eead780f66eb84439831a14f999efdbb0eea3532fd53d47175ae06",
-  "README.md": "8365e62b7e815e617b8bc114311fe5e150525e69804e6f29c31fe9f4b45f1d28",
+  "haidou_helper.py": "9a7c7e0688dc03e1ed7d62a12fe07edc581571336d31604822cc1c0522e73b5e",
+  "lang_en.py": "87e9e21be41d46b4f93759a4b364d05b88a5d1693e6650bb9c9116575f5c3df5",
+  "README.md": "cfa3d46ffe3112ffb7ee1d29427d148499aeab8891ab2de7c9221f189988fcd1",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"

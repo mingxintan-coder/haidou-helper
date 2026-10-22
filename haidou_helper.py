@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.6.1"
+APP_VERSION = "3.7.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -625,7 +625,10 @@ def aug_cache_stale(lang, version):
     if aug_file_stale(ap, version, lang):
         return True
     am = os.path.join(APP_DIR, "arammayhem", "augments.json")
-    return not os.path.exists(am) or time.time() - os.path.getmtime(am) > 24 * 3600
+    if not os.path.exists(am) or time.time() - os.path.getmtime(am) > 24 * 3600:
+        return True
+    ah = os.path.join(APP_DIR, "aramhex", "latest.json")       # 3.7：国服数据 3 小时看一次
+    return not os.path.exists(ah) or time.time() - os.path.getmtime(ah) > AH_REFRESH
 
 
 class GameData:
@@ -812,6 +815,27 @@ class GameData:
             if en and en != a["name"] and en not in a.get("aliases", []):
                 a.setdefault("aliases", []).append(en)
                 n += 1
+        return n
+
+    def add_aramhex(self, ah):
+        """国服数据里有、游戏资料还没收录的增幅（改版当天常见）：先用国服的名字和稀有度建一个，至少认得、能评分"""
+        have = {a.get("id") for a in self.augments if a.get("id")}
+        rmap = {"silver": 0, "gold": 1, "prismatic": 2}
+        n = 0
+        for k, v in (ah.get("augs") or {}).items():
+            try:
+                aid = int(k)
+            except ValueError:
+                continue
+            if aid in have or not isinstance(v, dict) or not v.get("name") or k in ah.get("excluded", ()):
+                continue
+            a = make_aug(simp(v["name"]), "", rmap.get(v.get("rarity"), 1))
+            a.update({"id": aid, "aram": True, "current": True, "from_aramhex": True})
+            self.augments.append(a)
+            n += 1
+        if n:
+            self.current_aug_ids = set(getattr(self, "current_aug_ids", set()) or set()) | \
+                {a["id"] for a in self.augments if a.get("from_aramhex")}
         return n
 
     def add_arammayhem(self, am):
@@ -1606,6 +1630,13 @@ class Advisor:
             return
         self.pool_mode = mode
         seen = self.stats.aug_seen if (self.stats and self.stats.aug_seen and mode == "aram") else None
+        ah = getattr(self.gd, "aramhex", None)
+        if mode == "aram" and ah and ah.get("patch") == ".".join(str(self.gd.version).split(".")[:2]):
+            # 3.7：国服已经是当前版本 → 以国服实际出现的增幅为准（新增幅进来、移除的出去）
+            ah_ids = {int(k) for h in ah["ha"].values() for k in h if str(k).isdigit()} | \
+                {int(k) for k in (ah.get("prov") or {}) if str(k).isdigit()}
+            if len(ah_ids) >= 50:
+                seen = ah_ids
         if seen:  # 以实际海斗对局里出现过的增幅为准（停用的不推荐，但屏幕识别仍能认出）
             cur = getattr(self.gd, "current_aug_ids", None) or seen   # 当前版本仍存在的
             pool = {n: a for n, a in self.all_index.items()
@@ -1744,7 +1775,31 @@ class Advisor:
         return self._combine(ests, self.NO_DATA_ITEM if cs else 0.0,
                              tr("这个英雄几乎没人出（没数据）") if cs else tr("网上数据还没载入"))
 
-    def data_effect_aug(self, a, cs, stage, my_aug_ids):
+    AH_K = 300            # 国服数据往英雄平均收缩的局数（数据作者建议 300 左右）
+
+    def aramhex_est(self, aid, champ_key):
+        """国服 AramHex：这个英雄拿这张的胜率 − 这个英雄的平均胜率（往 0 收缩 AH_K 局）；
+           只有测试服过渡数据的新增幅：用不分英雄的胜率 − 50%，误差 × 4。回传 (估计, 标签) 或 None"""
+        ah = getattr(self.gd, "aramhex", None)
+        if not ah or not aid:
+            return None
+        row = (ah["ha"].get(str(champ_key)) or {}).get(str(aid)) if champ_key else None
+        if row and row.get("games"):
+            hero = ah["heroes"].get(str(champ_key)) or {}
+            base = hero.get("win_rate") or 0.5
+            n, w = row["games"], row.get("wins", row.get("win_rate", 0) * row["games"])
+            p = (w + base * self.AH_K) / (n + self.AH_K)
+            return ({"d": p - base, "var": base * (1 - base) / (n + self.AH_K), "raw": w / n - base, "n": n,
+                     "wr": w / n}, tr("国服 {0}").format(ah["patch"]))
+        pv = (ah.get("prov") or {}).get(str(aid))
+        if pv and pv.get("games"):
+            n, w = pv["games"], pv.get("wins", pv.get("win_rate", 0.5) * pv["games"])
+            p = (w + 0.5 * self.AH_K) / (n + self.AH_K)
+            return ({"d": p - 0.5, "var": 4 * 0.25 / (n + self.AH_K), "raw": w / n - 0.5, "n": n, "wr": w / n},
+                    tr("测试服"))
+        return None
+
+    def data_effect_aug(self, a, cs, stage, my_aug_ids, champ_key=None):
         """网上数据：这个增幅在这个英雄第几次选时比平均高 / 低多少；和你已选增幅的组合另外比一次"""
         aid = a.get("id")
         ests = []
@@ -1774,8 +1829,18 @@ class Advisor:
                 # 你已经有那张时，「一起拿」的数据比单张的更贴切 → 份量加倍（误差方差减半）
                 best[0]["var"] /= 2
                 ests.append(best)
+        ah_e = self.aramhex_est(aid, champ_key)
+        if ah_e:
+            # 3.7：ARAMKit 还是旧版本、国服已经是当前版本 → ARAMKit 的误差 × 4（旧版本数据份量降低）
+            ah_patch = getattr(self.gd, "aramhex", {}).get("patch", "")
+            ak_patch = ((self.stats.version or {}).get("version", "") if self.stats else "")
+            game_patch = ".".join(str(self.gd.version).split(".")[:2])
+            if ah_patch == game_patch and ak_patch and ak_patch != game_patch:
+                for e, _ in ests:
+                    e["var"] *= 4
+            ests.append(ah_e)
         seen = getattr(self.stats, "aug_seen", None) if self.stats else None
-        is_new = bool(seen) and aid and aid not in seen          # 3.5.1：改版新加的增幅，网上资料还没有
+        is_new = bool(seen) and aid and aid not in seen and not ah_e   # 3.5.1：改版新加的增幅，网上资料还没有
         out = self._combine(ests, 0.0, tr("新增幅，网上还没有数据（按属性和本局估算）") if is_new else
                             tr("没有这个英雄的数据") if cs else tr("网上数据还没载入"))
         out["combo_online"] = best is not None
@@ -3054,7 +3119,8 @@ class Advisor:
         combo_f = ((0.15 if AM_TAG_PCT.get(combo, 0) > 0 else -0.2), tr(AM_TAG_TEXT[combo])) if combo in AM_TAG_TEXT else None
         gate = 0.6 if not bv else min(1.0, max(0.2, (fit - 0.2) / 0.4))
         situ = sum(v * (gate if v > 0 else 1) for v, _ in factors)
-        de = self.data_effect_aug(a, cs, stage, [m["id"] for m in my_augs if m.get("id")])
+        de = self.data_effect_aug(a, cs, stage, [m["id"] for m in my_augs if m.get("id")],
+                                  (self.gd.champ(me.cid) or {}).get("key"))
         if set_f and de.get("combo_online"):     # 网上已经有「和已选那张一起」的实际胜率 → 编辑推荐的整套加分减半，免得重复算
             tag_pct -= set_f[0] / 2
         # 国服整体选取率（arammayhem.com）：大家常拿的增幅小幅加分，冷门的小幅扣分；
@@ -6268,6 +6334,72 @@ def load_arammayhem(log=print):
     return out
 
 
+AH_BASE = "https://raw.githubusercontent.com/czgreat/aramhex-data/main/"
+AH_ATTRIBUTION = "国服数据：github.com/czgreat/aramhex-data（CC BY-NC 4.0）"
+AH_REFRESH = 3 * 3600        # 国服数据改版初期一天更新好几次
+
+
+def load_aramhex(log=print):
+    """3.7：AramHex 国服海克斯大乱斗统计（英雄 × 海克斯胜率，几十万～几千万局，改版当天就有新版本数据）。
+       先读 latest.json（数据目录 + 每个文件的 SHA-256），文件变了才下载，核对校验码。
+       回传 {"patch", "matches", "snapshot", "heroes", "ha", "augs", "prov"}；没有就回传 None"""
+    d = os.path.join(APP_DIR, "aramhex")
+    os.makedirs(d, exist_ok=True)
+    lp = os.path.join(d, "latest.json")
+    latest = read_json(lp) if os.path.exists(lp) else None
+    if not latest or time.time() - os.path.getmtime(lp) > AH_REFRESH:
+        try:
+            got = http_json(AH_BASE + "latest.json", timeout=15)
+            if isinstance(got, dict) and got.get("path"):
+                latest = got
+                write_json(lp, latest)
+        except Exception as e:  # noqa
+            log(tr('[数据] 下载失败 {0}: {1}').format(AH_BASE + "latest.json", e))
+    if not isinstance(latest, dict) or not latest.get("path"):
+        return None
+    files = latest.get("files") or {}
+    out = {}
+    for name in ("heroes.json", "hero_augments.json", "augments.json", "meta.json"):
+        path = os.path.join(d, name)
+        sha = (files.get(name) or {}).get("sha256") if isinstance(files.get(name), dict) else files.get(name)
+        have = None
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                raw = f.read()
+            if not sha or hashlib.sha256(raw).hexdigest() == sha:
+                have = raw
+        if have is None and not STARTUP_OFFLINE["on"]:
+            try:
+                url = AH_BASE + latest["path"].strip("/") + "/" + name
+                req = urllib.request.Request(url, headers={"User-Agent": f"haidou-helper/{APP_VERSION}"})
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    raw = r.read()
+                if sha and hashlib.sha256(raw).hexdigest() != sha:
+                    raise ValueError(tr("{0} 校验不符").format(name))
+                with open(path + ".new", "wb") as f:
+                    f.write(raw)
+                os.replace(path + ".new", path)
+                have = raw
+            except Exception as e:  # noqa
+                log(tr('[数据] 下载失败 {0}: {1}').format(name, e))
+        if have is None and os.path.exists(path):        # 新的没下载到：先用旧的
+            with open(path, "rb") as f:
+                have = f.read()
+        try:
+            out[name] = json.loads(have.decode("utf-8")) if have else {}
+        except ValueError:
+            out[name] = {}
+    meta = out.get("meta.json") or {}
+    ha = out.get("hero_augments.json") or {}
+    if not ha:
+        return None
+    return {"patch": str(meta.get("patch") or latest.get("patch") or ""),
+            "matches": ((meta.get("matches") or {}).get("valid") or latest.get("matches") or 0),
+            "snapshot": meta.get("snapshot_at", ""), "heroes": out.get("heroes.json") or {}, "ha": ha,
+            "augs": out.get("augments.json") or {}, "prov": meta.get("provisional_augments") or {},
+            "excluded": set((meta.get("excluded_augments") or {}).keys())}
+
+
 # --------------------------------------------------------------------------------------
 # 你的习惯（只存在本机 %USERPROFILE%\.lol_haidou_helper\habits.json，不上传）
 # 每局海斗结束时记下：英雄、出了哪些成品装备、拿了哪些增幅、三选一里出现过哪些增幅、输赢。
@@ -8691,6 +8823,14 @@ def load_all(lang, bracket="all", use_stats=True, log=print, force=False):
             stats.load_balance()
             stats.game_version = ".".join(str(gd.version).split(".")[:2])
             log(tr('[胜率] {0}：海斗增幅 {1} 个，商店成品装备 {2} 件').format(stats.label(), len(extra), len(allow)))
+    try:                                # 3.7：国服 AramHex 数据（英雄 × 海克斯；也补上新增幅的名字）
+        ah = load_aramhex(log=log)
+        if ah:
+            gd.aramhex = ah
+            n_new = gd.add_aramhex(ah)
+            log(tr('[国服] {0} 版本 {1} 局，补上 {2} 个新增幅名').format(ah["patch"], ah["matches"], n_new))
+    except Exception as e:  # noqa
+        log(tr('[国服] 读取失败：{0}').format(e))
     gd.add_english_names(log=log)      # 英文客户端的卡名也认得（按编号对应）
     try:
         n = gd.add_arammayhem(load_arammayhem(log=log))
@@ -10172,6 +10312,11 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             footer.config(text=tr('游戏 {0} · ARAMKit {1} · {2} ⇄').format(gv, ver, tier) if ver else tr('游戏 {0} · {1} ⇄').format(gv, tier))
         else:
             footer.config(text=tr('游戏 {0}').format(gv))
+        ahd = getattr(engine.gd, "aramhex", None)
+        if ahd:                                   # 3.7：国服数据版本（CC BY-NC，注明来源）
+            footer.config(text=footer.cget("text").replace(" ⇄", "") +
+                          tr(" · 国服 {0}（{1:.0f}万局）").format(ahd["patch"], (ahd["matches"] or 0) / 1e4) +
+                          (" ⇄" if so is not None else ""))
         # 自动选分页：出现新的三选一（或重骰）时切到增幅一次；你自己切走就不再拉回来
         cand_key = tuple(a["name"] for a in rec.get("augs", [])[:3]) if cand else \
             (("confirm",) + tuple(rec["confirm"]) if rec.get("confirm") else None)
