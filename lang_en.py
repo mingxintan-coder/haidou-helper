@@ -1030,3 +1030,4 @@ EN.update({'坦': 'tank', '辅': 'support', '输出': 'damage', '承伤': 'tanke
            '{0} {1:.0f}%': '{0} {1:.0f}%', '{0} {1}/{2}/{3}': '{0} {1}/{2}/{3}', '我方最好 {0}': 'our best {0}',
            '我方最差 {0}': 'our weakest {0}', '对面最强 {0}': 'their best {0}',
            '本局表现（含输出 / 承伤 / 治疗 / 控制）：': 'This game (damage / tanking / healing / CC included): '})
+EN.update({'新增幅，网上还没有数据（按属性和本局估算）': 'New augment, no online data yet (estimated from its stats and this game)'})

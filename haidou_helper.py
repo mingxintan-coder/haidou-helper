@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.5.0"
+APP_VERSION = "3.5.1"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -676,8 +676,12 @@ class GameData:
         for i, tmpl in enumerate(AUGMENT_URLS):
             url = tmpl.format(lang=aug_lang, plang=cdragon_lang(lang))
             ap = os.path.join(APP_DIR, f"aug_{i}_{aug_lang}.json")
+            # 每天最多重新读一次；空的（以前地址错）马上重读。
+            # 3.5.1：新版本头 3 天每 3 小时就重读 —— 改版当天社群资料常常还没收录新增幅（例：26.21 的 5 张新增幅）
+            vf = os.path.join(APP_DIR, f"ver_{version}_{lang}") if version else ""
+            new_patch = bool(vf) and os.path.exists(vf) and time.time() - os.path.getmtime(vf) < 3 * 24 * 3600
             stale = not os.path.exists(ap) or os.path.getsize(ap) <= 2 or \
-                time.time() - os.path.getmtime(ap) > 24 * 3600      # 每天最多重新读一次；空的（以前地址错）马上重读
+                time.time() - os.path.getmtime(ap) > (3 if new_patch else 24) * 3600
             data = cached(f"aug_{i}_{aug_lang}.json", url if version and (need_dl or stale) else None, optional=True)
             for a in cls._parse_augments(data):
                 if a.get("current") and a.get("id"):
@@ -1756,7 +1760,10 @@ class Advisor:
                 # 你已经有那张时，「一起拿」的数据比单张的更贴切 → 份量加倍（误差方差减半）
                 best[0]["var"] /= 2
                 ests.append(best)
-        out = self._combine(ests, 0.0, tr("没有这个英雄的数据") if cs else tr("网上数据还没载入"))
+        seen = getattr(self.stats, "aug_seen", None) if self.stats else None
+        is_new = bool(seen) and aid and aid not in seen          # 3.5.1：改版新加的增幅，网上资料还没有
+        out = self._combine(ests, 0.0, tr("新增幅，网上还没有数据（按属性和本局估算）") if is_new else
+                            tr("没有这个英雄的数据") if cs else tr("网上数据还没载入"))
         out["combo_online"] = best is not None
         return out
 
