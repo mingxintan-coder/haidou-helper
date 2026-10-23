@@ -1038,3 +1038,4 @@ EN.update({'增幅资料已更新（{0} → {1} 个）': 'Augment data updated (
 EN.update({'国服 {0}': 'CN {0}', '测试服': 'PBE', ' · 国服 {0}（{1:.0f}万局）': ' · CN {0} ({1:.0f}0k games)',
            '[国服] {0} 版本 {1} 局，补上 {2} 个新增幅名': '[CN data] patch {0}, {1} games, {2} new augment names added',
            '[国服] 读取失败：{0}': '[CN data] load failed: {0}', '{0} 校验不符': '{0} checksum mismatch'})
+EN.update({'（相似英雄推算 {0:+.1f}%）': ' (similar champions: {0:+.1f}%)', '国服相似英雄推算': 'CN data, inferred from similar champions'})

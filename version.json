@@ -1,15 +1,15 @@
 {
- "version": "3.7.0",
+ "version": "3.8.0",
  "date": "2026-10-22",
  "notes": [
-  "加入国服数据（AramHex，CC BY-NC 4.0）：16.21 首日约 109 万局的英雄 × 海克斯胜率，和 ARAMKit 一起评分；ARAMKit 还是旧版本时以国服为主",
-  "26.21 新增幅：游戏资料没收录的也认得、能评分；移除的增幅不再推荐",
-  "（3.6.1）背景定时更新增幅资料"
+  "新因子「相似英雄推算」：新增幅 / 冷门组合样本少时，用和你最像的 15 个英雄的数据推算这张适不适合你（回测误差小 17%～40%）",
+  "国服有分段数据时，高分段用「高分」段",
+  "（3.7.0）加入国服 AramHex 数据"
  ],
  "files": {
-  "haidou_helper.py": "9a7c7e0688dc03e1ed7d62a12fe07edc581571336d31604822cc1c0522e73b5e",
-  "lang_en.py": "87e9e21be41d46b4f93759a4b364d05b88a5d1693e6650bb9c9116575f5c3df5",
-  "README.md": "cfa3d46ffe3112ffb7ee1d29427d148499aeab8891ab2de7c9221f189988fcd1",
+  "haidou_helper.py": "b569e66e6118bd93b268653c22d8a47b2de4701a455878762bc82550f0f1a267",
+  "lang_en.py": "2cf9ebd3cfdc6e3b42a36050c307bc485b15ecae4b71b91ec23ea25e9cd4b56c",
+  "README.md": "35b40b671e8ee62aaffe499a867de872d77b97eb68440b706a088e42ed44de92",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"

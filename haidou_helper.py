@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 
-APP_VERSION = "3.7.0"
+APP_VERSION = "3.8.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -1775,29 +1775,124 @@ class Advisor:
         return self._combine(ests, self.NO_DATA_ITEM if cs else 0.0,
                              tr("这个英雄几乎没人出（没数据）") if cs else tr("网上数据还没载入"))
 
-    AH_K = 300            # 国服数据往英雄平均收缩的局数（数据作者建议 300 左右）
+    AH_K = 1000           # 3.8：往「相似英雄的效果」收缩的局数（回测：比往 0 收缩 300 局误差小 17%～33%）
+    AH_SIM_N = 3000       # 算英雄相似度时只用样本 ≥ 这么多局的格子
+    AH_NB = 15            # 取最像的 15 个英雄
+    AH_PRIOR_SD = 0.017   # 只有相似英雄推算（这个英雄完全没数据）时的误差（回测 RMSE 1.7%）
+
+    def _ah_vec(self, key):
+        """这个英雄在国服数据里每张增幅的效果 {增幅: (胜率 − 英雄平均, 局数)}（缓存）"""
+        ah = getattr(self.gd, "aramhex", None)
+        cache = self.__dict__.setdefault("_ah_vec_cache", {})
+        if cache.get("_src") is not ah:
+            cache.clear()
+            cache["_src"] = ah
+        if key not in cache:
+            row = (ah["ha"].get(str(key)) or {}) if ah else {}
+            base = ((ah["heroes"].get(str(key)) or {}).get("win_rate") or 0.5) if ah else 0.5
+            cache[key] = {a: (v["wins"] / v["games"] - base, v["games"]) for a, v in row.items()
+                          if v.get("games") and "wins" in v}
+        return cache[key]
+
+    def ah_neighbors(self, key):
+        """3.8 相似英雄：用每张增幅在两个英雄身上的效果（样本够的格子）算余弦相似度，取最像的 AH_NB 个。
+           数据说了算，不靠定位标签（回测：按定位分组几乎没用，按效果相似才有用）"""
+        ah = getattr(self.gd, "aramhex", None)
+        cache = self.__dict__.setdefault("_ah_nb_cache", {})
+        if cache.get("_src") is not ah:
+            cache.clear()
+            cache["_src"] = ah
+        if not ah or key in cache:
+            return cache.get(key, [])
+        me = {a: e for a, (e, n) in self._ah_vec(key).items() if n >= self.AH_SIM_N}
+        nm = math.sqrt(sum(e * e for e in me.values())) or 1e-9
+        sims = []
+        for other in ah["ha"]:
+            if other == str(key):
+                continue
+            ov = self._ah_vec(other)
+            dot = sum(e * ov[a][0] for a, e in me.items() if a in ov and ov[a][1] >= self.AH_SIM_N)
+            no = math.sqrt(sum(e * e for e, n in ov.values() if n >= self.AH_SIM_N)) or 1e-9
+            sims.append((dot / (nm * no), other))
+        sims.sort(reverse=True)
+        cache[key] = [(s_, o) for s_, o in sims[:self.AH_NB] if s_ > 0]
+        return cache[key]
+
+    def ah_prior(self, aid, key):
+        """相似英雄拿这张的效果（按相似度 × 样本加权）；相似英雄都没数据就用全体英雄的平均。回传 (效果, 依据局数, 例子)"""
+        ah = getattr(self.gd, "aramhex", None)
+        if not ah:
+            return None
+        a = str(aid)
+        tot = wsum = n_used = 0.0
+        names = []
+        for s_, other in self.ah_neighbors(key):
+            v = self._ah_vec(other).get(a)
+            if v and v[1] >= 500:
+                w = s_ * min(v[1], 20000)
+                tot += w * v[0]
+                wsum += w
+                n_used += v[1]
+                if len(names) < 3:
+                    names.append(other)
+        if wsum <= 0:
+            for other in ah["ha"]:
+                v = self._ah_vec(other).get(a)
+                if v and v[1] >= 500 and other != str(key):
+                    tot += v[1] * v[0]
+                    wsum += v[1]
+                    n_used += v[1]
+        if wsum <= 0:
+            return None
+        return tot / wsum, n_used, names
 
     def aramhex_est(self, aid, champ_key):
-        """国服 AramHex：这个英雄拿这张的胜率 − 这个英雄的平均胜率（往 0 收缩 AH_K 局）；
-           只有测试服过渡数据的新增幅：用不分英雄的胜率 − 50%，误差 × 4。回传 (估计, 标签) 或 None"""
+        """国服 AramHex：这个英雄拿这张的效果。
+           3.8：往「相似英雄拿这张的效果」收缩（AH_K 局），而不是往 0 —— 新增幅、冷门组合样本少时，用相似英雄推算这张适不适合你；
+           这个英雄完全没数据时只用相似英雄的推算（误差 AH_PRIOR_SD）。只有测试服数据的新增幅：不分英雄、误差 × 4。
+           回传 (估计, 标签) 或 None"""
         ah = getattr(self.gd, "aramhex", None)
         if not ah or not aid:
             return None
         row = (ah["ha"].get(str(champ_key)) or {}).get(str(aid)) if champ_key else None
+        pr = self.ah_prior(aid, champ_key) if champ_key else None
+        m = pr[0] if pr else 0.0
+        hero = ah["heroes"].get(str(champ_key)) or {} if champ_key else {}
+        base = hero.get("win_rate") or 0.5
+        lab = tr("国服 {0}").format(ah["patch"])
         if row and row.get("games"):
-            hero = ah["heroes"].get(str(champ_key)) or {}
-            base = hero.get("win_rate") or 0.5
             n, w = row["games"], row.get("wins", row.get("win_rate", 0) * row["games"])
-            p = (w + base * self.AH_K) / (n + self.AH_K)
-            return ({"d": p - base, "var": base * (1 - base) / (n + self.AH_K), "raw": w / n - base, "n": n,
-                     "wr": w / n}, tr("国服 {0}").format(ah["patch"]))
+            raw = w / n - base
+            d = (raw * n + m * self.AH_K) / (n + self.AH_K)
+            if pr and n < 2000:
+                lab += tr("（相似英雄推算 {0:+.1f}%）").format(m * 100)
+            return ({"d": d, "var": base * (1 - base) / (n + self.AH_K), "raw": raw, "n": n, "wr": w / n}, lab)
+        if pr:
+            return ({"d": m, "var": self.AH_PRIOR_SD ** 2, "raw": m, "n": 0, "wr": None},
+                    tr("国服相似英雄推算"))
         pv = (ah.get("prov") or {}).get(str(aid))
         if pv and pv.get("games"):
             n, w = pv["games"], pv.get("wins", pv.get("win_rate", 0.5) * pv["games"])
-            p = (w + 0.5 * self.AH_K) / (n + self.AH_K)
-            return ({"d": p - 0.5, "var": 4 * 0.25 / (n + self.AH_K), "raw": w / n - 0.5, "n": n, "wr": w / n},
+            p = (w + 0.5 * 300) / (n + 300)
+            return ({"d": p - 0.5, "var": 4 * 0.25 / (n + 300), "raw": w / n - 0.5, "n": n, "wr": w / n},
                     tr("测试服"))
         return None
+
+    def ah_best_champs(self, aid, k=5):
+        """这张增幅最适合哪些英雄（国服数据 + 相似英雄推算后的效果），给报表 / 说明用；
+           只列这个英雄自己有 ≥500 局、或至少有相似英雄的数据可推算的"""
+        ah = getattr(self.gd, "aramhex", None)
+        out = []
+        for key in (ah["ha"] if ah else {}):
+            e = self.aramhex_est(aid, key)
+            if not e:
+                continue
+            n = e[0].get("n", 0)
+            pr = self.ah_prior(aid, key)
+            if n >= 500 or (pr and pr[2]):
+                out.append((e[0]["d"], key, n))
+        out.sort(reverse=True)
+        return out[:k]
 
     def data_effect_aug(self, a, cs, stage, my_aug_ids, champ_key=None):
         """网上数据：这个增幅在这个英雄第几次选时比平均高 / 低多少；和你已选增幅的组合另外比一次"""
@@ -6339,7 +6434,7 @@ AH_ATTRIBUTION = "国服数据：github.com/czgreat/aramhex-data（CC BY-NC 4.0�
 AH_REFRESH = 3 * 3600        # 国服数据改版初期一天更新好几次
 
 
-def load_aramhex(log=print):
+def load_aramhex(log=print, bracket="all"):
     """3.7：AramHex 国服海克斯大乱斗统计（英雄 × 海克斯胜率，几十万～几千万局，改版当天就有新版本数据）。
        先读 latest.json（数据目录 + 每个文件的 SHA-256），文件变了才下载，核对校验码。
        回传 {"patch", "matches", "snapshot", "heroes", "ha", "augs", "prov"}；没有就回传 None"""
@@ -6391,11 +6486,35 @@ def load_aramhex(log=print):
             out[name] = {}
     meta = out.get("meta.json") or {}
     ha = out.get("hero_augments.json") or {}
+    heroes = out.get("heroes.json") or {}
+    band = ""
+    if bracket == "high" and latest.get("bands"):
+        # 3.8：你选高分段、国服也有分段数据时，用「高分」段（样本至少 20 万局才用）
+        try:
+            bd = {}
+            for name in ("heroes.json", "hero_augments.json"):
+                path = os.path.join(d, "high_" + name)
+                if not STARTUP_OFFLINE["on"] and (not os.path.exists(path) or
+                                                   time.time() - os.path.getmtime(path) > AH_REFRESH):
+                    url = AH_BASE + latest["path"].strip("/") + "/bands/high/" + name
+                    req = urllib.request.Request(url, headers={"User-Agent": f"haidou-helper/{APP_VERSION}"})
+                    with urllib.request.urlopen(req, timeout=60) as r:
+                        raw = r.read()
+                    json.loads(raw.decode("utf-8"))
+                    with open(path + ".new", "wb") as f:
+                        f.write(raw)
+                    os.replace(path + ".new", path)
+                bd[name] = read_json(path) if os.path.exists(path) else {}
+            n_high = sum((v or {}).get("games", 0) for v in (bd.get("heroes.json") or {}).values()) / 10
+            if bd.get("hero_augments.json") and n_high >= 200000:
+                ha, heroes, band = bd["hero_augments.json"], bd["heroes.json"], "high"
+        except Exception as e:  # noqa
+            log(tr('[数据] 下载失败 {0}: {1}').format("bands/high", e))
     if not ha:
         return None
     return {"patch": str(meta.get("patch") or latest.get("patch") or ""),
             "matches": ((meta.get("matches") or {}).get("valid") or latest.get("matches") or 0),
-            "snapshot": meta.get("snapshot_at", ""), "heroes": out.get("heroes.json") or {}, "ha": ha,
+            "snapshot": meta.get("snapshot_at", ""), "heroes": heroes, "ha": ha, "band": band,
             "augs": out.get("augments.json") or {}, "prov": meta.get("provisional_augments") or {},
             "excluded": set((meta.get("excluded_augments") or {}).keys())}
 
@@ -8824,7 +8943,7 @@ def load_all(lang, bracket="all", use_stats=True, log=print, force=False):
             stats.game_version = ".".join(str(gd.version).split(".")[:2])
             log(tr('[胜率] {0}：海斗增幅 {1} 个，商店成品装备 {2} 件').format(stats.label(), len(extra), len(allow)))
     try:                                # 3.7：国服 AramHex 数据（英雄 × 海克斯；也补上新增幅的名字）
-        ah = load_aramhex(log=log)
+        ah = load_aramhex(log=log, bracket=bracket)
         if ah:
             gd.aramhex = ah
             n_new = gd.add_aramhex(ah)
