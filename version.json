@@ -1,15 +1,15 @@
 {
- "version": "3.9.0",
+ "version": "3.9.1",
  "date": "2026-10-22",
  "notes": [
+  "加点提示更显眼：顶部金色大横幅「⬆ 升 Q」，新技能点会闪；单行模式也提示；可选提示音",
   "新因子「专家评分」：每张增幅 / 每件装备的强度和「适不适合你」，没有数据时当先验，有数据时只加小增量（份量由国服 5000 万局校准）",
-  "（3.8.0）相似英雄推算",
-  "（3.7.0）加入国服 AramHex 数据"
+  "（3.8.0）相似英雄推算"
  ],
  "files": {
-  "haidou_helper.py": "a1c81e7418021f0062ce956abc5f542c5abe44ad984f2b122fd74fceeeb6776a",
-  "lang_en.py": "096a48e2cf0a4241b4ca5de8bcbe072e9f0e789655c0e6800b2cda002ec4338b",
-  "README.md": "50d7a1af5c23b9f454b627133351fd778bbb90fd76b3d4662d5758a842524d7a",
+  "haidou_helper.py": "e0c1dafccf92cee760015c8f46682a611b22ce4bae5880d7f09d9e480bf2cbc3",
+  "lang_en.py": "5cb4a65649bf6001fd5f0c0af6cb5a5145eb06d8d25b89c09a051ad7d163c192",
+  "README.md": "7e1cc1766cd193b6f7bc768f6bc8dd84eed1056e41806b4c7c5777ca01dbf707",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"

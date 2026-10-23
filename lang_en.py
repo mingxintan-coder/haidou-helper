@@ -1043,3 +1043,5 @@ EN.update({'强': 'strong', '偏强': 'above average', '普通': 'average', '偏
            '很适合你': 'a great fit for you', '适合你': 'fits you', '不太适合你': 'not a good fit for you',
            '专家评分：{0}': 'Expert rating: {0}', '专家评分 {0:+.1f}%': 'Expert rating {0:+.1f}%',
            '；专家评分 {0:+.1f}%': '; expert rating {0:+.1f}%'})
+EN.update({'⬆ 升 {0}': '⬆ Level {0}', '⬆升{0}': '⬆{0}', '「{0}」': '"{0}"', '主 {0}': 'max {0}',
+           '有技能点可以升': 'Skill point available'})

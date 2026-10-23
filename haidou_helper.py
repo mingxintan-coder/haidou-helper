@@ -35,7 +35,7 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "3.9.0"
+APP_VERSION = "3.9.1"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5105,6 +5105,7 @@ class Engine:
         if not k:
             return None
         name = (ab.get(k) or {}).get("displayName") or ""
+        self._skill_up = {"key": k, "name": name, "order": list(order), "lv": me.level}
         return (tr("加点"), tr("升 {0}{1}（主 {2}）").format(k, ("「" + name + "」") if name else "", " > ".join(order)), False)
 
     def intel_row(self):
@@ -6241,6 +6242,7 @@ class Engine:
                 rec["brief"].insert((1 if wp else 0), row)
             rec["plan"] = (self.cur_game or {}).get("plan")
             sk = self.skill_row(raw, state)
+            rec["skill_up"] = getattr(self, "_skill_up", None) if sk else None    # 3.9.1：挂件顶部大横幅
             if sk and isinstance(rec.get("brief"), list):
                 rec["brief"].insert((1 if wp else 0), sk)
             ir = self.intel_row()
@@ -9678,6 +9680,43 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     wraps.append(summary)
     alert = tk.Label(body, text="", bg="#3a2412", fg=ORANGE, font=F["tip"], anchor="w", justify="left", padx=8, pady=3)
     wraps.append(alert)
+    # 3.9.1：有技能点没点 → 顶部大横幅「⬆ 升 Q」（以前只是战况条里的一小行）
+    F["skill"] = tkfont.Font(family=FAMILY, size=13, weight="bold")
+    skill_box = tk.Frame(body, bg="#4a3a12", padx=8, pady=4)
+    skill_key = tk.Label(skill_box, text="", bg="#4a3a12", fg="#ffd76a", font=F["skill"], anchor="w")
+    skill_key.pack(side="left")
+    skill_txt = tk.Label(skill_box, text="", bg="#4a3a12", fg=FG, font=F["tip"], anchor="w", justify="left")
+    skill_txt.pack(side="left", padx=(10, 0))
+    wraps.append(skill_txt)
+    st["skill_blink"] = 0
+
+    def blink_skill():
+        n = st["skill_blink"]
+        if n <= 0 or not skill_box.winfo_ismapped():
+            for w in (skill_box, skill_key, skill_txt):
+                w.config(bg="#4a3a12")
+            return
+        col = "#7a5a10" if n % 2 else "#4a3a12"
+        for w in (skill_box, skill_key, skill_txt):
+            w.config(bg=col)
+        st["skill_blink"] = n - 1
+        root.after(350, blink_skill)
+
+    def show_skill(su, has_brief):
+        if not su:
+            skill_box.pack_forget()
+            st["skill_shown"] = None
+            return
+        skill_key.config(text=tr("⬆ 升 {0}").format(su["key"]))
+        skill_txt.config(text=(tr("「{0}」").format(su["name"]) if su.get("name") else "") +
+                         "   " + tr("主 {0}").format(" > ".join(su.get("order") or [])))
+        skill_box.pack(fill="x", padx=8, pady=(5, 0), before=brief_box if has_brief else tabs_bar)
+        tag = (su["key"], su.get("lv"))
+        if st.get("skill_shown") != tag:          # 新的一个技能点：闪 3 下
+            st["skill_shown"] = tag
+            st["skill_blink"] = 6
+            blink_skill()
+
     # 战况条：连招 / 战局 / 威胁 / 玩法（一直显示、即时更新）
     st["brief"] = load_ui_cfg().get("brief", True)
     brief_box = tk.Frame(body, bg=CARD, padx=8, pady=4)
@@ -9734,7 +9773,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
 
     # 声音提示：该推塔 / 残血按保命键 / 三选一出现 / 敌方拿到克制你的增幅
     SOUNDS = {"push": ((880, 110), (1175, 160)), "lowhp": ((1320, 260),), "offer": ((660, 90), (880, 90)),
-              "eaug": ((440, 220),)}
+              "eaug": ((440, 220),), "skill": ((1046, 70),)}
     snd_cfg = dict({k: True for k in SOUNDS}, **(load_ui_cfg().get("sounds") or {}))
     st["last_ev"] = set()
 
@@ -9761,6 +9800,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         ev = set()
         if rec.get("push"):
             ev.add("push")
+        su = rec.get("skill_up")
+        if su:
+            ev.add(("skill", su["key"], su.get("lv")))
         if rec.get("cand_mode") and rec.get("augs"):
             ev.add("offer")
         for label, text, hot in rec.get("brief") or []:
@@ -9773,6 +9815,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     def ring(rec):
         ev = sound_events(rec)
         for kind in ev - st["last_ev"]:
+            kind = kind[0] if isinstance(kind, tuple) else kind
             if snd_cfg.get(kind, True):
                 play(kind)
         st["last_ev"] = ev
@@ -10044,7 +10087,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         if snd_cfg[kind]:
             play(kind)                                  # 打开时先响一次给你听
     for kind, label in (("push", tr("该推塔")), ("lowhp", tr("残血按保命键")), ("offer", tr("三选一出现")),
-                        ("eaug", tr("敌方拿到克制你的增幅"))):
+                        ("eaug", tr("敌方拿到克制你的增幅")), ("skill", tr("有技能点可以升"))):
         snd_vars[kind] = tk.BooleanVar(value=snd_cfg.get(kind, True))
         sm.add_checkbutton(label=label, variable=snd_vars[kind], command=lambda k=kind: toggle_sound(k))
     menu.add_cascade(label=tr("声音提示"), menu=sm)
@@ -10502,7 +10545,12 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         mine_names = rec.get("my_augs", [])
         manual_vals["mine"] = tr("，").join(mine_names)
         summary.config(text=rec.get("summary", "").replace(tr("｜"), " · ").replace(tr("网上 "), ""))
-        has_brief = show_brief(rec.get("brief"))
+        su = rec.get("skill_up")
+        has_brief = show_brief([x for x in rec.get("brief") or [] if not (su and x[0] == tr("加点"))])
+        try:
+            show_skill(su, has_brief)
+        except Exception:  # noqa
+            pass
         draw_live(rec.get("wp_series") if has_brief else None)
         show_intel(rec.get("intel"))
         try:
@@ -10694,6 +10742,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             extra = "⚠" + hot_aug if hot_aug else \
                 "   ".join(x for x in (bf.get(tr("连招")), "⚠" + thr if thr else "") if x)
             mini.config(text=line + ("\n" + extra if st["brief"] and extra else ""), fg=FG)
+        su = rec.get("skill_up")
+        if su and not cand:                        # 3.9.1：单行模式也在最前面提示加点
+            mini.config(text=tr("⬆升{0}").format(su["key"]) + "  " + mini.cget("text"))
         # 只有和你有关的推荐真的变了才弹开（别人买装备、升级不弹）
         its_key = tuple(x["name"] for x in its[:2])
         key = (its_key, boots["name"] if boots else None, bool(cand),
