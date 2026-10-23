@@ -36,6 +36,7 @@ from collections import Counter
 
 
 APP_VERSION = "4.0.0"
+APP_BUILD = 2026102302         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -1906,6 +1907,140 @@ class Advisor:
         T, req = e
         return T, self.expert_req_score(req, self.champ_facts(cid)), req
 
+    # ---------- 4.0：英雄玩法（从国服数据自己学）：每个英雄吃哪一类增幅 ----------
+    # 增幅按「需要什么特质」分类（AUG_CHEM 的特质 + EXPERT_AUGS 的需求），每个英雄在每一类上的偏好
+    # ＝ 国服里这个英雄拿这类增幅比增幅平均多赢多少（加权、收缩 AFF_LAM）。所以就算一张增幅完全没数据（新增幅），
+    # 也能按「这个英雄吃不吃这一类」推算。国服数据每 3 小时更新，偏好跟着重算。
+    # 回测（国服 16.21，按增幅分两半：一半学、一半考）：英雄 × 增幅的误差 2.16% → 1.98%（手写规则只到 2.15%）；
+    # 已有相似英雄推算时再加 0.28 倍：误差 1.77% → 1.69%
+    AFF_LAM = 3.0
+    AFF_NEW_W = 0.46
+    AFF_PRIOR_W = 0.28
+    EXP_NEW_REQ = 0.078       # 有英雄玩法推算时（这张没数据）：需求吻合、技能特质、招牌组合剩下的份量
+    EXP_NEW_TRAIT = 0.17
+    EXP_NEW_PAIR = 0.03
+    expert_boost = 1.5        # ⋯ →「专家评分份量」：1（数据校准）／ 1.5（加强，预设）／ 2
+
+    REQ_LABEL = {"M": "近战类", "R": "远程类", "D": "位移类", "C": "控制类", "H": "治疗护盾类", "K": "坦克类", "A": "普攻类",
+                 "P": "法术类", "S": "技能急速类", "U": "大绝类", "N": "魔力类", "X": "刺客类", "E": "开团类"}
+
+    def aug_offered(self, aid, cid):
+        """这张增幅会不会出给这个英雄（国服数据里这个英雄有记录、这张却 0 局 → 不会出；全新增幅不算）"""
+        ah = getattr(self.gd, "aramhex", None)
+        key = str((self.gd.champ(cid) or {}).get("key", ""))
+        if not ah or key not in ah["ha"] or not aid:
+            return True
+        if str(aid) in ah["ha"][key]:
+            return True
+        tab = self.aff_tables()
+        return not (tab and aid in tab["am"])     # 别的英雄都有数据、这个英雄 0 局 → 不出给这个英雄
+
+    def aug_family(self, aid):
+        cache = self.__dict__.setdefault("_aug_fam", {})
+        if aid in cache:
+            return cache[aid]
+        v = {}
+        for tok in AUG_CHEM.get(aid, "").split():
+            k, w = tok.rsplit(":", 1)
+            if k[0] in "@!":
+                continue
+            v[k] = v.get(k, 0.0) + float(w)
+        ex = EXPERT_AUGS.get(aid)
+        for ch in (ex[1] if ex else ""):
+            v["R_" + ch.upper()] = v.get("R_" + ch.upper(), 0.0) + (0.7 if ch.isupper() else -0.7)
+        cache[aid] = v
+        return v
+
+    def aff_tables(self):
+        """从国服数据学：增幅平均效果、每个英雄每一类的加权和（缓存到下一次国服数据更新）"""
+        ah = getattr(self.gd, "aramhex", None)
+        cache = getattr(self, "_aff_cache", None)
+        if cache and cache[0] is ah:
+            return cache[1]
+        if not ah:
+            return None
+        cells = {}
+        tot = {}
+        for key, row in ah["ha"].items():
+            base = (ah["heroes"].get(key) or {}).get("win_rate") or 0.5
+            for a, v in row.items():
+                n = v.get("games") or 0
+                if n >= 300 and "wins" in v:
+                    e = v["wins"] / n - base
+                    cells[(key, int(a))] = (e, n)
+                    t = tot.setdefault(int(a), [0.0, 0])
+                    t[0] += e * n
+                    t[1] += n
+        am = {a: x[0] / x[1] for a, x in tot.items() if x[1]}
+        s1, s2 = {}, {}
+        for (key, a), (e, n) in cells.items():
+            w = n / (n + 2000)
+            r = e - am[a]
+            d1, d2 = s1.setdefault(key, {}), s2.setdefault(key, {})
+            for tk, x in self.aug_family(a).items():
+                d1[tk] = d1.get(tk, 0.0) + w * x * r
+                d2[tk] = d2.get(tk, 0.0) + w * x * x
+        tab = {"am": am, "s1": s1, "s2": s2, "cells": cells}
+        self._aff_cache = (ah, tab)
+        return tab
+
+    def aff_pred(self, aid, key):
+        """这个英雄的玩法对这张增幅的推算（胜率，相对这张增幅的平均；不含这一格自己的数据）→ (推算, 最主要的一类) 或 None"""
+        tab = self.aff_tables()
+        if not tab or key is None:
+            return None
+        key = str(key)
+        d1, d2 = tab["s1"].get(key), tab["s2"].get(key)
+        fam = self.aug_family(aid)
+        if not d1 or not fam:
+            return None
+        own = tab["cells"].get((key, aid))
+        if own and aid in tab["am"]:
+            w = own[1] / (own[1] + 2000)
+            r = own[0] - tab["am"][aid]
+        else:
+            w = r = 0.0
+        p, best = 0.0, None
+        for tk, x in fam.items():
+            c = x * (d1.get(tk, 0.0) - w * x * r) / (d2.get(tk, 0.0) - w * x * x + self.AFF_LAM)
+            p += c
+            if best is None or abs(c) > abs(best[0]):
+                best = (c, tk)
+        return p, (best[1] if best else None)
+
+    def aug_style_line(self, cid):
+        """玩法页：这个英雄在国服吃 / 不吃哪几类增幅（从数据学到的偏好，每类增幅大约多赢 / 少赢多少）"""
+        tab = self.aff_tables()
+        key = str((self.gd.champ(cid) or {}).get("key", ""))
+        if not tab or key not in tab["s1"]:
+            return ""
+        d1, d2 = tab["s1"][key], tab["s2"][key]
+        by = {}
+        for k in d1:
+            if d2.get(k, 0) >= 0.5:
+                v = d1[k] / (d2[k] + self.AFF_LAM) * 100
+                lab = self.aff_label(k)
+                if lab not in by or abs(v) > abs(by[lab][0]):
+                    by[lab] = (v, k)
+        aff = list(by.values())
+        pos = [x for x in sorted(aff, reverse=True) if x[0] >= 0.5][:3]
+        neg = [x for x in sorted(aff) if x[0] <= -0.5][:2]
+        if not pos and not neg:
+            return ""
+        txt = tr("增幅偏好（国服数据学到）：")
+        if pos:
+            txt += tr("吃 ") + tr("、").join("{0} {1:+.1f}%".format(self.aff_label(k), v) for v, k in pos)
+        if neg:
+            txt += (tr("；") if pos else "") + tr("不吃 ") + tr("、").join("{0} {1:+.1f}%".format(self.aff_label(k), v) for v, k in neg)
+        return txt
+
+    def aff_label(self, tk):
+        if not tk:
+            return ""
+        if tk.startswith("R_"):
+            return tr(self.REQ_LABEL.get(tk[2:], tk[2:]))
+        return tr(CHEM_LABEL.get(tk, tk))
+
     # ---------- 4.0：化学反应（英雄技能特质 × 增幅、增幅 × 增幅、阵容 × 增幅） ----------
     def chem_traits(self, cid):
         cache = self.__dict__.setdefault("_chem_tr", {})
@@ -2085,6 +2220,13 @@ class Advisor:
         row = (ah["ha"].get(str(champ_key)) or {}).get(str(aid)) if champ_key else None
         pr = self.ah_prior(aid, champ_key) if champ_key else None
         m = pr[0] if pr else 0.0
+        if pr:                                   # 4.0：相似英雄推算 + 这个英雄的玩法（吃不吃这一类增幅）
+            try:
+                af = self.aff_pred(int(aid), champ_key)
+            except Exception:  # noqa
+                af = None
+            if af:
+                m += self.AFF_PRIOR_W * self.expert_boost * af[0]
         hero = ah["heroes"].get(str(champ_key)) or {} if champ_key else {}
         base = hero.get("win_rate") or 0.5
         lab = tr("国服 {0}").format(ah["patch"])
@@ -3448,6 +3590,7 @@ class Advisor:
                 it["raw"] = 0.55 * it["raw"] + 0.45 * prev
             self._ema[it["id"]] = it["raw"]
             it["score"] = self.item_score(it["raw"])
+            it["total"] = it["raw"]          # 4.0 修正：显示的数字和排序用同一个（以前显示未平滑的，第二名可能比第一名大）
         out.sort(key=lambda x: -x["raw"])
         if out and self._top is not None and out[0]["id"] != self._top:
             keep = next((i for i, x in enumerate(out) if x["id"] == self._top), None)
@@ -3470,7 +3613,9 @@ class Advisor:
             vec, special = gd.item_vec(iid)
             nv = norm({d: v for d, v in vec.items() if d in BUILD_DIMS and d != "MS"})
             fit = max(0.5, cosine(prof, self.rule_vec(nv, rules))) if nv else 0.5   # 鞋子人人要买，契合度给个底
+            self._ehp_pct = 0.0
             ehp = self.ehp_factor(iid, me, t, prof, role)
+            ehp_pct = self._ehp_pct if ehp else 0.0
             factors = self.counter_factors(vec, special, t, prof, ehp_done=ehp is not None, phase=1.0)
             if ehp and ehp[0] > 0.03:
                 factors.append(ehp)
@@ -3488,7 +3633,8 @@ class Advisor:
             if neutral and (not de["has"] or de["pick"] < 0.05):
                 de = dict(de, d=0.0, ci=None, has=False, text=tr("已选增幅改变了出装，平时的数据不适用"))
             dims = self.top_dims(prof, norm({d: v for d, v in vec.items() if d in BUILD_DIMS and d != "MS"}))
-            cand = self.pack_item(iid, de, factors, fit, dims, boots=True)
+            # 4.0 修正：鞋子也用「对这局伤害组成」的有效生命项（以前只走本局调整，和大件的算法不一致）
+            cand = self.pack_item(iid, de, factors, fit, dims, boots=True, ehp=(ehp, ehp_pct) if ehp else None)
             if best is None or cand["total"] > best["total"]:
                 best = cand
         return best
@@ -3577,22 +3723,38 @@ class Advisor:
             ch = self.chem_aug(a.get("id"), me.cid, my_augs, (t or {}).get("comp_tok") or set())
         except Exception:  # noqa
             ch = None
+        af = None
+        if not de["has"]:                # 4.0：这张完全没数据 → 按这个英雄在国服的玩法推算
+            try:
+                af = self.aff_pred(a.get("id"), (self.gd.champ(me.cid) or {}).get("key"))
+            except Exception:  # noqa
+                af = None
         if ch:                           # 4.0：化学反应
             if de["has"]:                # 有数据：只加数据库推不出来的部分，按这个英雄的局数缩小
                 k = self.CHEM_DATA_K / (self.CHEM_DATA_K + (de.get("n") or 0))
                 exp_pct += k * (self.CHEM_TRAIT_PCT_DATA * ch["trait"] + self.CHEM_PAIR_PCT_DATA * ch["pair"])
+            elif af:
+                exp_pct += self.EXP_NEW_TRAIT * ch["trait"] + self.EXP_NEW_PAIR * ch["pair"]
             else:
                 exp_pct += self.CHEM_TRAIT_PCT * ch["trait"] + self.CHEM_PAIR_PCT * ch["pair"]
             exp_pct += self.CHEM_AUGPAIR_PCT * ch["augpair"] * (0.5 if de.get("combo_online") else 1.0)
             exp_pct += self.CHEM_COMP_PCT * ch["comp"]
+        aff_txt = None
+        if af:
+            v = self.AFF_NEW_W * af[0] * 100
+            exp_pct += v
+            if abs(v) >= 0.4 and af[1]:
+                aff_txt = (v, (tr("你的英雄在国服吃「{0}」类增幅") if v > 0 else
+                               tr("你的英雄在国服不吃「{0}」类增幅")).format(self.aff_label(af[1])))
         if ex:                           # 3.9：专家评分（强度 + 适不适合这个英雄）
             T, rs, _req = ex
             if de["has"]:                # 有数据：数据已经抓到大部分，只剩一点增量
                 exp_pct += self.EXP_REQ_PCT_DATA * rs
             else:                        # 完全没数据：专家评分就是先验（契合度份量减半，避免重复算）
-                exp_pct += self.EXP_T_PCT * T + self.EXP_REQ_PCT * rs
-            if ch and ch["texts"]:       # 化学反应的说明优先
-                v0, txt = ch["texts"][0]
+                exp_pct += self.EXP_T_PCT * T + (self.EXP_NEW_REQ if af else self.EXP_REQ_PCT) * rs
+            texts = sorted((ch["texts"] if ch else []) + ([aff_txt] if aff_txt else []), key=lambda x: -abs(x[0]))
+            if texts:                    # 化学反应 / 英雄玩法的说明优先
+                v0, txt = texts[0]
                 exp_f = (0.12 if v0 > 0 else -0.12, txt)
             elif T or rs:
                 lv = (tr("强"), tr("偏强"), tr("普通"), tr("偏弱"), tr("弱"))[2 - max(-2, min(2, T))]
@@ -3600,7 +3762,10 @@ class Advisor:
                 # 只放进理由（不进本局因素，免得重复算分）
                 exp_f = (0.1 if exp_pct > 0.2 else (-0.1 if exp_pct < -0.2 else 0.0),
                          tr("专家评分：{0}").format(lv + (tr("，") + fit_w if fit_w else "")))
-        exp_pct = max(-3.0, min(3.0, exp_pct))
+        exp_pct *= self.expert_boost      # 4.0：你选的专家评分份量（预设 1.5 倍）
+        exp_pct = max(-3.0 * self.expert_boost, min(3.0 * self.expert_boost, exp_pct))
+        if exp_f is None and aff_txt:
+            exp_f = (0.12 if aff_txt[0] > 0 else -0.12, aff_txt[1])
         if exp_f is None and ch and ch["texts"]:
             v0, txt = ch["texts"][0]
             exp_f = (0.12 if v0 > 0 else -0.12, txt)
@@ -3683,7 +3848,7 @@ class Advisor:
         self._reroll = None
         mine = {a["name"] for a in my_augs}
         res = [self.score_aug(a, prof, t, my_augs, me, cs, stage) for a in self.aug_index.values()
-               if a["name"] not in mine and a.get("desc")]
+               if a["name"] not in mine and a.get("desc") and self.aug_offered(a.get("id"), me.cid)]
         res.sort(key=lambda x: -x["raw"])
         self._aug_snap = {x["name"]: x["total"] for x in res}     # 赛后「你选的 vs 推荐的」用
         return res[:k]
@@ -3735,7 +3900,8 @@ class Advisor:
         else:
             skip = {a["name"] for a in my_augs} | {a["name"] for a in candidates}
             pool = [a for a in self.aug_index.values()
-                    if a["name"] not in skip and a.get("desc") and a.get("rarity", 0) == rar]
+                    if a["name"] not in skip and a.get("desc") and a.get("rarity", 0) == rar
+                    and self.aug_offered(a.get("id"), me.cid)]     # 4.0 修正：不会出给这个英雄的不算进刷新池
             pool_scores = [self.score_aug(a, prof, t, my_augs, me, cs, stage)["total"] for a in pool]
             self._reroll_cache = (key, time.time(), pool_scores)
         if len(pool_scores) < 8:
@@ -4020,6 +4186,10 @@ class Advisor:
         kit = self.gd.champ_kit(me.cid)
         g = {"combos": [], "style": "", "skills": "", "spells": "", "auto": False,
              "habit": getattr(self, "_habit_line", ""), "mvp": self.mvp_consensus(me)}
+        try:
+            g["aug_style"] = self.aug_style_line(me.cid)
+        except Exception:  # noqa
+            g["aug_style"] = ""
         if me.cid in COMBOS:
             combos, g["style"] = COMBOS[me.cid]
             en = COMBOS_EN.get(me.cid) if LANG == "en" else None
@@ -6632,13 +6802,16 @@ def check_app_version():
     for url in VERSION_URLS:      # 几个来源都问，取版本最新的（raw / jsDelivr 有缓存，刚发布时可能还是旧的）
         try:
             m = http_json(url, timeout=12)
-            if isinstance(m, dict) and (best is None or ver_tuple(m.get("version")) > ver_tuple(best.get("version"))):
+            if isinstance(m, dict) and (best is None or (ver_tuple(m.get("version")), int(m.get("build") or 0)) >
+                                        (ver_tuple(best.get("version")), int(best.get("build") or 0))):
                 best = m
         except Exception as e:  # noqa
             err = str(e)
     if best is None:
         return None, err
-    return (best if ver_tuple(best.get("version")) > ver_tuple(APP_VERSION) else None), ""
+    newer = ver_tuple(best.get("version")) > ver_tuple(APP_VERSION) or \
+        (ver_tuple(best.get("version")) == ver_tuple(APP_VERSION) and int(best.get("build") or 0) > APP_BUILD)
+    return (best if newer else None), ""
 
 
 API_BASE = "https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/"
@@ -10080,7 +10253,7 @@ def format_rec(rec):
     g = rec.get("guide") or {}
     if g.get("combos") or g.get("skills"):
         lines.append(tr("【英雄玩法】"))
-        for x in (g.get("habit"), g.get("mvp"), g.get("balance"), g.get("skills"), g.get("spells")):
+        for x in (g.get("habit"), g.get("mvp"), g.get("balance"), g.get("aug_style"), g.get("skills"), g.get("spells")):
             if x:
                 lines.append(" " + x)
         for c, note in g.get("combos", []):
@@ -10837,6 +11010,23 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         if current.get("rec"):
             show(current["rec"], flash=False)
     menu.add_checkbutton(label=tr("显示战况条（连招 / 战局 / 威胁 / 玩法）"), variable=brief_var, command=toggle_brief)
+    # 4.0：专家评分份量（Claude 的理解 + 从国服数据学的英雄玩法）
+    exp_var = tk.DoubleVar(value=float(load_ui_cfg().get("expert_boost", 1.5)))
+    engine.advisor.expert_boost = exp_var.get()
+
+    def set_expert(k):
+        engine.advisor.expert_boost = k
+        engine.advisor._ema_cid = None
+        c = load_ui_cfg()
+        c["expert_boost"] = k
+        save_ui_cfg(c)
+        with engine.lock:
+            engine.manual_dirty = "route"           # 马上重算推荐
+        engine.wake.set()
+    em = tk.Menu(menu, tearoff=0, bg=CARD, fg=FG, activebackground="#2b3a57", activeforeground=FG)
+    for label, k in ((tr("1 倍（按数据校准，最准）"), 1.0), (tr("1.5 倍（加强，预设）"), 1.5), (tr("2 倍"), 2.0)):
+        em.add_radiobutton(label=label, variable=exp_var, value=k, command=lambda k=k: set_expert(k))
+    menu.add_cascade(label=tr("专家评分份量"), menu=em)
     sm = tk.Menu(menu, tearoff=0, bg=CARD, fg=FG, activebackground="#2b3a57", activeforeground=FG)
     snd_vars = {}
 
@@ -11434,7 +11624,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             lines += [tr("按 {0} {1}：{2}").format(k, n, tip) for k, n, tip in co.get("items", [])]
             lines += [tr("「{0}」：{1}").format(n, tip) for n, tip in co.get("augs", [])]
             lines.append("")
-        lines += [x for x in (g.get("habit"), g.get("mvp"), g.get("balance"), g.get("skills"), g.get("spells")) if x]
+        lines += [x for x in (g.get("habit"), g.get("mvp"), g.get("balance"), g.get("aug_style"), g.get("skills"), g.get("spells")) if x]
         lines += [tr('连招  {0}\n        {1}').format(c, note) for c, note in g.get("combos", [])]
         if g.get("style"):
             lines.append(tr("玩法  ") + g["style"])
@@ -11560,7 +11750,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         now = time.time()
         if st.get("auto_upd") and not st.get("upgrading") and st.get("app_new") and idle_for_update():
             last = load_ui_cfg().get("auto_upd_try") or {}
-            ver = st["app_new"].get("version")
+            ver = "{0}+{1}".format(st["app_new"].get("version"), st["app_new"].get("build") or 0)
             if last.get("v") == ver and now - last.get("t", 0) < 600:   # 10 分钟内刚试过同一版：别一直重试 / 重开
                 st["auto_upd"] = False
                 return

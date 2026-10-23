@@ -2,16 +2,17 @@
  "version": "4.0.0",
  "date": "2026-10-23",
  "notes": [
-  "专家评分 v2：英雄技能 × 增幅、增幅 × 增幅、阵容 × 增幅的化学反应（173 个英雄、232 张增幅），用国服 16.21 的 514 万局校准份量",
-  "（3.10.0）自己选路线 + 每条路线的预估胜率",
-  "（3.9.1）加点提示更显眼"
+  "专家评分 v2：从国服数据学每个英雄吃哪类增幅（新增幅也能推算），加上英雄技能 × 增幅 × 阵容的化学反应；专家份量预设 1.5 倍（⋯ 里可改）",
+  "修正：鞋子的有效生命项、显示分数和排序一致、刷新建议不算不会出的增幅",
+  "（3.10.0）自己选路线 + 每条路线的预估胜率"
  ],
  "files": {
-  "haidou_helper.py": "06d2d1375b60ddcb6d2dad37ef53de4e448a9d134c772b06feff5288bea37e07",
-  "lang_en.py": "2f6336a7b58f606d751b57aaffed815f56b500fb9b3d7ed8319e4ed37d23758e",
-  "README.md": "823551fe1919583ce25f011726d201d04ba67e9e13e677ea023c02bbc79ada9c",
+  "haidou_helper.py": "e39e3d5e0608fd6e7e58fefe192841f0a5b99a77159f6723b906bbb49fa6c865",
+  "lang_en.py": "af44ace62400431dc06a8ed5c9ad5ecf5302bb2af58cbf3249586cc1bdf1080e",
+  "README.md": "37927ee36590b76d2d559bf50774f2b8004d30d7e7d1190150d00bbb41d08771",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
- }
+ },
+ "build": 2026102302
 }
