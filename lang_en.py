@@ -1045,3 +1045,15 @@ EN.update({'强': 'strong', '偏强': 'above average', '普通': 'average', '偏
            '；专家评分 {0:+.1f}%': '; expert rating {0:+.1f}%'})
 EN.update({'⬆ 升 {0}': '⬆ Level {0}', '⬆升{0}': '⬆{0}', '主 {0}': 'max {0}',
            '有技能点可以升': 'Skill point available'})
+EN.update({'物理伤害': 'physical damage', '坦克': 'Tank', '减CD': 'Haste', '自动': 'Auto', '路线': 'Route',
+           '不是你选的路线（{0}）': 'not your chosen route ({0})',
+           '不是你选的路线（{0}），但本局需要：{1}': 'not your chosen route ({0}), but needed this game: {1}',
+           '你选的': 'your choice', '你选的路线（{0}）': 'your chosen route ({0})',
+           '你选的路线：{0} · 推荐按这条走（再点一次或点「自动」取消）':
+               'Your route: {0} · recommendations follow it (click again or "Auto" to cancel)',
+           '再点一次取消，回到自动': 'Click again to cancel and go back to auto',
+           '点一下：之后的出装按这条路线推荐': 'Click: recommend items along this route from now on',
+           '增幅偏向': 'augment lean', '对面 {0} 个法系': '{0} enemy mages', '队友 {0} 个法系': '{0} allied mages',
+           '队友 {0} 个前排': '{0} allied frontliners', '对面堆物防': 'enemies stacking armor', '对面堆魔防': 'enemies stacking MR',
+           '装备 {0:+.1f}%（网上数据 + 对面伤害 / 装备 + 你的增幅）': 'Items {0:+.1f}% (online data + enemy damage / items + your augments)',
+           '阵容 {0:+.1f}%': 'Team comp {0:+.1f}%', '这条路线最好的两件：{0}': 'Best two items on this route: {0}'})

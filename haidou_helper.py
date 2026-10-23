@@ -35,7 +35,7 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "3.9.1"
+APP_VERSION = "3.10.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -476,6 +476,52 @@ def cosine(a, b):
 
 
 KIND_LABEL = {"ap": "法术", "atk": "物理输出", "tank": "坦", "sup": "辅助"}
+# 3.10：可以自己选的路线（按英雄显示能走的那几条）
+ROUTE_ORDER = ("atk", "ap", "tank", "armor", "mr", "haste", "sup")
+ROUTE_LABEL = {"atk": "物理伤害", "ap": "魔法伤害", "tank": "坦克", "armor": "物理防御", "mr": "魔法防御",
+               "haste": "减CD", "sup": "治疗护盾"}
+# 3.10：路线 × 阵容（自建库 4197 局、4 万人次，按最后出装的主路线拟合，只留 |z| ≥ 2 的系数；单位：胜算）
+#   法术路线：队友每多 1 个法系 −0.102（z≈−6，全队魔法伤害太单一）、对面每多 1 个法系 +0.043、队友每多 1 个前排 +0.040、增幅偏法术 +0.084
+#   物理路线：对面法系 +0.046、增幅偏物理 +0.062；坦克路线：对面法系 +0.055、增幅偏坦 +0.105
+ROUTE_TEAM_BETA = {"ap": {"aug": 0.0838, "a_ap": -0.1021, "e_ap": 0.0429, "a_fr": 0.0395},
+                   "atk": {"aug": 0.0620, "e_ap": 0.0457},
+                   "tank": {"aug": 0.1048, "e_ap": 0.0554}}
+
+
+def route_member(nv, kind, sup_ok=True):
+    """一件装（已归一化的属性）算不算这条路线；sup_ok＝英雄会出治疗护盾装（软辅）"""
+    if not nv:
+        return False
+    dmg = sum(nv.get(d, 0) for d in ("AD", "AP", "CRIT", "AS", "LETHAL", "MPEN", "ONHIT"))
+    dfn = nv.get("ARMOR", 0) + nv.get("MR", 0) + nv.get("HP", 0)
+    if kind in ("ap", "atk"):
+        ks = kind_scores(nv)
+        top = max(ks.values())
+        return top > 0 and ks[kind] >= 0.5 * top and ks[kind] >= 0.35
+    if kind == "tank":                       # 坦克：防御属性为主（中娅、斯特拉克这类带一点防御的输出装不算）
+        return dfn >= 0.9 and dfn >= 1.2 * dmg
+    if kind == "armor":
+        return nv.get("ARMOR", 0) >= 0.35 and nv.get("ARMOR", 0) >= nv.get("MR", 0) and dfn >= dmg
+    if kind == "mr":
+        return nv.get("MR", 0) >= 0.35 and nv.get("MR", 0) >= nv.get("ARMOR", 0) and dfn >= dmg
+    if kind == "haste":
+        return nv.get("HASTE", 0) + nv.get("ULT", 0) >= 0.35 and (sup_ok or nv.get("HEALSHIELD", 0) < 0.3)
+    if kind == "sup":
+        return nv.get("HEALSHIELD", 0) >= 0.35
+    return False
+    if kind in ("ap", "atk", "tank"):
+        ks = kind_scores(nv)
+        top = max(ks.values())
+        return top > 0 and ks[kind] >= 0.5 * top and ks[kind] >= 0.35
+    if kind == "armor":
+        return nv.get("ARMOR", 0) >= 0.35 and nv.get("ARMOR", 0) >= nv.get("MR", 0)
+    if kind == "mr":
+        return nv.get("MR", 0) >= 0.35 and nv.get("MR", 0) >= nv.get("ARMOR", 0)
+    if kind == "haste":
+        return nv.get("HASTE", 0) + nv.get("ULT", 0) >= 0.45
+    if kind == "sup":
+        return nv.get("HEALSHIELD", 0) >= 0.35
+    return False
 
 
 def kind_scores(v):
@@ -2458,6 +2504,7 @@ class Advisor:
             # 本局路线（2.14 定路线）：第一件大件定下路线后，同路线加分，换路线明显扣分；
             # 针对对面需要的保命 / 克制装只轻微扣分，并写明「偏离路线但本局需要」
             extra = self.route_factor(route, nv, factors)
+            rf0 = extra[0]                   # 3.10：路线调整（评估各条路线时要拿掉）
             lead = ""
             if base_id in upg and not quest:  # 增幅强化了这件：加分（3.0.8：1.2 → 2.0，选了「升级」增幅就该出那件）
                 extra = (extra[0] + 2.0, (extra[1] + "；" if extra[1] else "") +
@@ -2487,10 +2534,22 @@ class Advisor:
             hab = self.habit_item(me, iid)
             if hab:                         # 你的习惯：+最多 1%
                 factors = factors + [hab]
+            route_f = None
             if extra[1]:
-                factors.append((extra[2], extra[1] if not lead or extra[1] == lead else extra[1].replace("；" + lead, "")))
+                route_f = (extra[2], extra[1] if not lead or extra[1] == lead else extra[1].replace("；" + lead, ""))
+                factors.append(route_f)
             out.append(self.pack_item(iid, de, factors, fit, self.top_dims(prof, nv), extra=extra[0], lead=lead,
                                       ehp=(ehp, ehp_pct) if ehp else None))
+            # 3.10：不含路线的分数（路线调整本身 + 路线理由在本局调整里的份量都拿掉），评估各条路线用
+            f_nr = [f for f in factors if f is not route_f and f is not ehp]
+            adj_nr = self.situ_pct(f_nr, fit) + (ehp_pct if ehp else 0.0)
+            out[-1]["base"] = out[-1]["total"] - rf0 - (out[-1]["adj"] - adj_nr)
+            out[-1]["_nv"] = nv
+        try:
+            self._routes = self.eval_routes(out, me, allies, enemies, my_augs, t, cp, role, route)
+        except Exception:  # noqa
+            log_crash("eval_routes failed", sys.exc_info())
+            self._routes = []
         aug_key = tuple(sorted(str(x.get("id") or x.get("name")) for x in my_augs))
         if getattr(self, "_ema_augs", None) != aug_key:     # 3.0.8：刚选了增幅（任务 / 升级…）→ 不沿用旧排序，马上改推
             self._ema_augs = aug_key
@@ -2566,6 +2625,93 @@ class Advisor:
         s = kind_scores(norm({d: x for d, x in self.gd.item_vec(iid)[0].items() if d in BUILD_DIMS}))
         return max(s, key=s.get) if max(s.values()) > 0 else None
 
+    ROUTE_TEAM_W = 0.7    # 阵容那项的份量：系数显著，但自建库是「最后出装」、样本也不大 → 打七折
+
+    def eval_routes(self, out, me, allies, enemies, my_augs, t, cp, role, route):
+        """3.10：每条能走的路线预估多少胜率（相对现在 ±百分点）：
+             装备 ＝ 这条路线最好的两件（0.6 / 0.4）的分数，不含路线调整 —— 已经包含网上这个英雄的数据、
+                    对面伤害组成（有效生命）、对面装备（堆物防 / 魔防 → 穿透）、重伤、你的增幅（任务 / 升级 / 转换）；
+             阵容 ＝ 队友和对面的法系 / 前排数量（看英雄本身，已经出了第一件大件就看那件），自建库系数 × 0.7；
+             对面防御 ＝ 对面装备 + 增幅堆物防比魔防多 → 物理路线扣、法术路线加（最多 ±0.6）。"""
+        gd = self.gd
+        sup = kind_scores(cp)
+        mx = max(sup.values()) or 1.0
+        rel = {k: v / mx for k, v in sup.items()}
+        melee = ((gd.champ(me.cid) or {}).get("stats") or {}).get("attackrange", 500) <= 350
+
+        def first_kind(p):
+            for i in p.items:
+                k = self.item_kind_id(i)
+                if k:
+                    return k
+            return None
+
+        def side(ps):
+            n_ap = n_front = 0
+            for p in ps:
+                tr_ = self.champ_traits(p.cid)
+                k = first_kind(p)
+                n_ap += 1 if (k == "ap" if k in ("ap", "atk") else tr_["ap"]) else 0
+                n_front += 1 if (k == "tank" or tr_["front"]) else 0
+            return n_ap, n_front
+        mates = [p for p in allies if p.cid != me.cid]
+        a_ap, a_fr = side(mates)
+        e_ap, _e_fr = side(enemies)
+        al = [0.0, 0.0, 0.0]
+        for a in my_augs:
+            v = self.aug_kind_vec(a)
+            if v:
+                al = [x + y for x, y in zip(al, v)]
+        n = max(1, t.get("n", 5))
+        lean = max(-1.0, min(1.0, (t["armor"] - t["mr"]) / n / 60))     # 对面人均物防比魔防多多少
+        res = []
+        for kind in ROUTE_ORDER:
+            if kind in ("ap", "atk") and rel.get(kind, 0) < 0.3:
+                continue
+            if kind == "tank" and rel.get("tank", 0) < 0.3 and role not in ("tank", "fighter"):
+                continue
+            if kind in ("armor", "mr") and not (melee or rel.get("tank", 0) >= 0.3 or role in ("tank", "fighter")):
+                continue
+            if kind == "haste" and cp.get("HASTE", 0) + cp.get("ULT", 0) < 0.3:
+                continue
+            if kind == "sup" and cp.get("HEALSHIELD", 0) < 0.25:
+                continue
+            sup_ok = cp.get("HEALSHIELD", 0) >= 0.25
+            mem = sorted((x for x in out if route_member(x.get("_nv"), kind, sup_ok)), key=lambda x: -x["base"])
+            if len(mem) < 2:
+                continue
+            d_items = 0.6 * mem[0]["base"] + 0.4 * mem[1]["base"]
+            why = []
+            bk = {"ap": "ap", "atk": "atk", "tank": "tank", "armor": "tank", "mr": "tank"}.get(kind)
+            team = 0.0
+            if bk:
+                i = PATH_KINDS.index(bk)
+                bt = ROUTE_TEAM_BETA[bk]
+                m = sum(al) / 3
+                parts = [(bt.get("aug", 0) * (al[i] - m), tr("增幅偏向")),
+                         (bt.get("a_ap", 0) * (a_ap - 1.5), tr("队友 {0} 个法系").format(a_ap)),
+                         (bt.get("e_ap", 0) * (e_ap - 1.5), tr("对面 {0} 个法系").format(e_ap)),
+                         (bt.get("a_fr", 0) * (a_fr - 1.0), tr("队友 {0} 个前排").format(a_fr))]
+                w = 25 * self.ROUTE_TEAM_W * (0.5 if kind in ("armor", "mr") else 1.0)   # 胜算 → 百分点（50% 附近 ×25）
+                parts = [(v * w, txt) for v, txt in parts]
+                team = max(-2.0, min(2.0, sum(v for v, _ in parts)))
+                own = [x for x in parts if x is not parts[2] and abs(x[0]) >= 0.3]   # 对面法系数对每条路线都差不多，最后才提
+                for v, txt in sorted(own, key=lambda x: -abs(x[0]))[:2] or ([parts[2]] if abs(parts[2][0]) >= 0.3 else []):
+                    why.append("{0} {1:+.1f}".format(txt, v))
+            dfn = 0.0
+            if kind in ("atk", "ap") and abs(lean) >= 0.2:
+                dfn = 0.6 * lean * (-1 if kind == "atk" else 1)
+                why.append((tr("对面堆物防") if lean > 0 else tr("对面堆魔防")) + " {0:+.1f}".format(dfn))
+            d = d_items + team + dfn
+            res.append({"kind": kind, "label": tr(ROUTE_LABEL[kind]), "d": d, "items_d": d_items, "team": team + dfn,
+                        "items": [x["name"] for x in mem[:2]], "why": why,
+                        "chosen": bool(route and route.get("user") and route["kind"] == kind),
+                        "current": bool(route and route["kind"] == kind)})
+        if res:
+            best = max(res, key=lambda r: r["d"])
+            best["best"] = True
+        return res
+
     def build_route(self, me, my_augs, rules=None, allies=(), enemies=(), cs=None):
         """本局出装路线（法术 / 物理输出 / 坦 / 辅助）：
              · 还没大件：按英雄本身 + 已选增幅（转换属性的增幅已算进去）估一条「预定路线」，力度减半；
@@ -2576,6 +2722,13 @@ class Advisor:
             rules = self.aug_rules(me, my_augs)
         cp = self.rule_vec(norm({d: v for d, v in self.champ_profile(me.cid).items() if d in BUILD_DIMS}), rules)
         sup = kind_scores(cp)
+        ur = getattr(self, "user_route", None)
+        if ur in ROUTE_LABEL:                      # 3.10：你自己选的路线
+            mx0 = max(sup.values()) or 1.0
+            lab = tr(ROUTE_LABEL[ur])
+            return {"kind": ur, "label": lab, "locked": True, "src": tr("你选的"), "user": True,
+                    "rel": {k: v / mx0 for k, v in sup.items()}, "wr": {}, "by_wr": False,
+                    "text": tr("你选的路线：{0} · 推荐按这条走（再点一次或点「自动」取消）").format(lab)}
         for a in my_augs:
             r = AUG_RULES.get(a.get("id")) or {}
             if r.get("crit_cap"):
@@ -2649,6 +2802,14 @@ class Advisor:
              换伤害路线（坦 → 法术、法术 ↔ 物理…）：−2.5（还没锁定时减半）"""
         if not route or not nv:
             return 0.0, "", 0.0
+        if route.get("user"):                      # 3.10：你选的路线 → 这条路线的装备明显优先
+            lab = route["label"]
+            if route_member(nv, route["kind"]):
+                return 1.5, tr("你选的路线（{0}）").format(lab), 0.08
+            need = [txt for f, txt in factors if f > 0.1]
+            if need:
+                return -0.5, tr("不是你选的路线（{0}），但本局需要：{1}").format(lab, need[0]), -0.05
+            return -1.5, tr("不是你选的路线（{0}）").format(lab), -0.2
         ks = kind_scores(nv)
         top = max(ks.values())
         if top <= 0:
@@ -3246,7 +3407,10 @@ class Advisor:
             ks = kind_scores(bv)
             top = max(ks.values())
             rw = 1.0 if route["locked"] else 0.5
-            if top >= 0.3:
+            if route["kind"] not in ks:            # 3.10：物防 / 魔防 / 减CD / 治疗路线：只加分，不扣分
+                if route_member(bv, route["kind"]):
+                    factors.append((0.06, tr("契合本局路线（{0}）").format(route["label"])))
+            elif top >= 0.3:
                 if ks.get(route["kind"], 0) >= 0.5 * top:
                     factors.append((0.06 * rw, tr("契合本局路线（{0}）").format(route["label"])))
                 elif max(ks, key=ks.get) != "tank":
@@ -3849,7 +4013,9 @@ class Advisor:
                 "my_augs": [a["name"] for a in my_augs],
                 "guide": guide, "game_time": me.game_time,
                 "summary": summary, "gold": gold, "mode": mode,
-                "route": route["text"] if route else "", "route_locked": bool(route and route["locked"])}
+                "route": route["text"] if route else "", "route_locked": bool(route and route["locked"]),
+                "routes": list(getattr(self, "_routes", None) or []),
+                "user_route": getattr(self, "user_route", None)}
 
 
 # --------------------------------------------------------------------------------------
@@ -6111,6 +6277,14 @@ class Engine:
                 self.manual_dirty = "confirm_off"
             self.wake.set()
 
+    def set_route(self, kind):
+        """3.10：你自己选路线（None＝自动）；同一局有效，换英雄 / 新的一局就清掉"""
+        with self.lock:
+            self.user_route = kind if kind in ROUTE_LABEL else None
+            self.manual_dirty = "route"
+        self.advisor._ema_cid = None                    # 换路线：推荐马上重排，不沿用平滑
+        self.wake.set()
+
     def set_auto(self, offers):
         """offers: [(name, desc)]，空列表表示三选一界面消失"""
         vals = [f"{n}|{d}" for n, d in offers]
@@ -6163,6 +6337,7 @@ class Engine:
         self.fails = 0
         if not self.connected or self.last_state is None:
             self.advisor._ema_cid = None                # 新的一局：平滑从头开始
+            self.user_route = None                      # 3.10：上一局自己选的路线不带过来
             self.advisor._eaug_seen = {}
             self._dumped = False
             self._cs_last = self._cs_sig = None         # 选英雄结束了：不再每秒问客户端
@@ -6200,7 +6375,7 @@ class Engine:
         lsig = live_signature(state)
         with self.lock:
             stats_new, self.stats_dirty = self.stats_dirty, False
-        cfd = dirty in ("confirm", "confirm_off")      # 3.0.8：补点提示出现 / 关掉，局势没变也要刷新浮窗
+        cfd = dirty in ("confirm", "confirm_off", "route")      # 3.0.8：补点提示出现 / 关掉，局势没变也要刷新浮窗
         if sig == self.last_sig and lsig == getattr(self, "last_lsig", None) and not stats_new and not cfd:
             return ("status", tr("监控中"))
         quiet = sig == self.last_sig and not stats_new  # 只有阵亡/击杀/血量变化：更新战术，不弹出窗口
@@ -6210,9 +6385,17 @@ class Engine:
             changes = [tr("已载入网上胜率数据")] + [c for c in changes if c != tr("阵容信息变化")]
             self.advisor._ema_cid = None     # 新数据进来：重新排序，不沿用旧的平滑结果
         self.last_sig, self.last_lsig, self.last_state = sig, lsig, state
+        ur = getattr(self, "user_route", None)
+        if ur and getattr(self, "_route_cid", None) not in (None, state[2].cid):
+            ur = self.user_route = None                 # 换英雄了
+        self._route_cid = state[2].cid
+        self.advisor.user_route = ur
         rec = self.advisor.analyze(state, manual)
         self.track_game(raw, state, rec)
         wp = self._wp_now
+        base_p = wp[0] if wp else 0.5
+        for r in rec.get("routes") or []:              # 3.10：每条路线的预估胜率 ＝ 现在的胜率 + 路线的差别
+            r["p"] = max(0.02, min(0.98, base_p + r["d"] / 100))
         if wp and isinstance(rec.get("brief"), list):
             p, dp = wp
             rec["wp"] = p
@@ -9885,6 +10068,57 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     curve_cv = tk.Canvas(pages["items"], bg="#2a2412", highlightthickness=0, height=1)
     tips_box = tk.Frame(pages["items"], bg=BG)
     tips_box.pack(fill="x")
+    # 3.10：选路线（每条路线的预估胜率；点一下就按那条推荐，再点一次取消）
+    route_box = tk.Frame(pages["items"], bg=BG)
+    st["route_key"] = None
+    st["route_chips"] = {}
+
+    def route_tip(r):
+        txt = tr("这条路线最好的两件：{0}").format(tr("、").join(r.get("items") or []))
+        txt += "\n" + tr("装备 {0:+.1f}%（网上数据 + 对面伤害 / 装备 + 你的增幅）").format(r["items_d"])
+        txt += "\n" + tr("阵容 {0:+.1f}%").format(r["team"]) + (tr("（{0}）").format(tr("，").join(r["why"])) if r.get("why") else "")
+        return txt + "\n" + (tr("再点一次取消，回到自动") if r.get("chosen") else tr("点一下：之后的出装按这条路线推荐"))
+
+    def show_routes(rec):
+        rs = rec.get("routes") or []
+        if len(rs) < 2 and not rec.get("user_route"):
+            route_box.pack_forget()
+            return
+        key = tuple(r["kind"] for r in rs) + (bool(rec.get("user_route")),)
+        if st["route_key"] != key:
+            st["route_key"] = key
+            for w in route_box.winfo_children():
+                w.destroy()
+            st["route_chips"] = {}
+            tk.Label(route_box, text=tr("路线"), bg=BG, fg=SUB, font=F["small"]).grid(row=0, column=0, sticky="nw",
+                                                                                     padx=(0, 4), pady=1)
+            cells = [r["kind"] for r in rs] + (["_auto"] if rec.get("user_route") else [])
+            for n, k in enumerate(cells):
+                b = tk.Label(route_box, text="", font=F["small"], padx=5, pady=2, cursor="hand2")
+                b.grid(row=n // 3, column=1 + n % 3, sticky="we", padx=1, pady=1)
+                st["route_chips"][k] = b
+                if k != "_auto":
+                    hover(b, lambda k=k: route_tip(st["route_data"][k]) if k in st.get("route_data", {}) else "")
+            for c in range(1, 4):
+                route_box.grid_columnconfigure(c, weight=1, uniform="route")
+        cur = {r["kind"]: r for r in rs}
+        st["route_data"] = cur
+        for k, b in st["route_chips"].items():
+            b.unbind("<Button-1>")
+            if k == "_auto":
+                b.config(text=tr("自动"), bg=CARD, fg=SUB)
+                b.bind("<Button-1>", lambda e: engine.set_route(None))
+                continue
+            r = cur.get(k)
+            if not r:
+                continue
+            p = r.get("p")
+            b.config(text=r["label"] + ("  {0}%".format(int(round(p * 100))) if p is not None else
+                                        "  {0:+.1f}".format(r["d"])) + (" ★" if r.get("best") else ""),
+                     bg=GOLD if r.get("chosen") else CARD,
+                     fg=BG if r.get("chosen") else (GOLD if r.get("best") or r.get("current") else FG))
+            b.bind("<Button-1>", lambda e, k=k, on=r.get("chosen"): engine.set_route(None if on else k))
+        route_box.pack(fill="x", pady=(2, 3), before=tips_box)
     tip_lbls = []
     for _ in range(2):
         lb = tk.Label(tips_box, text="", bg=BG, fg=FG, font=F["tip"], anchor="w", justify="left")
@@ -10600,6 +10834,10 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             if i < len(normal):
                 lb.config(text="▸" + normal[i][1], fg=normal[i][3] if len(normal[i]) > 3 else FG)
                 lb.pack(fill="x", pady=(0, 1))
+        try:
+            show_routes(rec)
+        except Exception:  # noqa
+            route_box.pack_forget()
         fill_rows(item_rows, rec.get("items", [])[:4])
         # 补点：刚才选了哪张
         cf = rec.get("confirm") or []
