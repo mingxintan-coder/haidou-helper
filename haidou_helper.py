@@ -35,7 +35,7 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "3.10.0"
+APP_VERSION = "4.0.0"
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -1878,10 +1878,23 @@ class Advisor:
     #   增幅强度 T 和全体平均效果的相关 0.25，每级 +0.68%；需求吻合度 → 英雄之间的差别 z≈20，每单位 +0.52%；
     #   但在「相似英雄推算」之后只剩每单位 +0.08%（z≈2.5）—— 数据已经抓到了。所以：
     #   有国服 / 网上数据时只加很小的一项；完全没有数据（新增幅首日、冷门）时，专家评分就是先验
-    EXP_T_PCT = 0.68
-    EXP_REQ_PCT = 0.52
-    EXP_REQ_PCT_DATA = 0.08
+    # 4.0 重新校准（国服 16.21，514 万局，英雄 × 增幅 1.7 万格、每格 ≥1500 局）：
+    #   完全没数据时：强度每级 +0.55%（增幅平均效果，相关 0.23）、需求吻合度每单位 +0.24%（z≈7）、
+    #     技能特质化学反应每单位 +0.24%（z≈7.5）、英雄 × 增幅招牌组合每单位 +0.16%（z≈1.2，弱）
+    #   在「相似英雄推算」之后：需求吻合度 0（z≈−0.6，已经被数据抓到）、技能特质 +0.07%（z≈3.3）、招牌组合 +0.48%（z≈5.4）
+    #   → 招牌组合是数据库（相似英雄）推不出来的；有这个英雄的实际数据时，按局数缩小（2000 / (2000 + 局数)）
+    #   按英雄分两半交叉检验：误差 2.724% → 2.716%（只用强度 + 需求）；整体能解释的差别本来就小（全猜平均 2.742%）
+    EXP_T_PCT = 0.55
+    EXP_REQ_PCT = 0.24
+    EXP_REQ_PCT_DATA = 0.0
     EXP_PRIOR_SD = 0.022
+    CHEM_TRAIT_PCT = 0.24
+    CHEM_PAIR_PCT = 0.16
+    CHEM_TRAIT_PCT_DATA = 0.07
+    CHEM_PAIR_PCT_DATA = 0.48
+    CHEM_DATA_K = 2000
+    CHEM_AUGPAIR_PCT = 0.3     # 增幅 × 增幅（估计值：自建库样本太少测不出，z≈0.5；网上有组合胜率时减半）
+    CHEM_COMP_PCT = 0.25       # 阵容（估计值）
     # 装备：自建库 18.6 万件次测不出「需求吻合度」的效果（相关 0.00）、强度 T 相关 0.08 → 只在没有网上数据时当微小先验
     EXP_ITEM_PCT = 0.25
 
@@ -1892,6 +1905,103 @@ class Advisor:
             return None
         T, req = e
         return T, self.expert_req_score(req, self.champ_facts(cid)), req
+
+    # ---------- 4.0：化学反应（英雄技能特质 × 增幅、增幅 × 增幅、阵容 × 增幅） ----------
+    def chem_traits(self, cid):
+        cache = self.__dict__.setdefault("_chem_tr", {})
+        if cid in cache:
+            return cache[cid]
+        c = self.gd.champ(cid) or {}
+        name = c.get("id", cid)
+        t = set(CHAMP_TRAITS.get(name, "").split())
+        f = self.champ_facts(cid)
+        for code, tok in (("M", "melee"), ("R", "ranged"), ("N", "mana"), ("K", "tank"), ("A", "aa")):
+            if code in f:
+                t.add(tok)
+        t.add("ap" if "P" in f else "ad")
+        if t & {"healA", "shieldA"}:
+            t.add("ench")
+        if t & {"healA", "healS"}:
+            t.add("heal")
+        if "dash2" in t:
+            t.add("dash")
+        if "cc2" in t:
+            t.add("cc")
+        cache[cid] = t
+        return t
+
+    @staticmethod
+    def chem_eval(spec, traits, comp=frozenset()):
+        """(英雄特质分, 阵容分, 最主要的说明)"""
+        s = c = 0.0
+        best = None
+        for tok in (spec or "").split():
+            k, w = tok.rsplit(":", 1)
+            w = float(w)
+            if k.startswith("@"):
+                hit, lab = k[1:] in comp, tr(CHEM_LABEL.get(k[1:], k[1:]))
+                if hit:
+                    c += w
+            elif k.startswith("!"):
+                hit, lab = k[1:] not in traits, tr("没有「{0}」").format(tr(CHEM_LABEL.get(k[1:], k[1:])))
+                if hit:
+                    s += w
+            else:
+                hit, lab = k in traits, tr(CHEM_LABEL.get(k, k))
+                if hit:
+                    s += w
+            if hit and (best is None or abs(w) > abs(best[0])):
+                best = (w, lab)
+        return s, c, best
+
+    def comp_tokens(self, me, allies, enemies):
+        """阵容特征（给增幅的化学反应用）"""
+        mates = [p for p in allies if p.cid != me.cid]
+        at = [self.chem_traits(p.cid) for p in mates]
+        et = [self.chem_traits(p.cid) for p in enemies]
+        out = set()
+        if mates and not any("tank" in x or ("engage" in x and "cc2" in x) for x in at):
+            out.add("no_front")
+        if any("tank" in x for x in at):
+            out.add("ally_front")
+        if any("ench" in x for x in at):
+            out.add("ally_ench")
+        if sum(1 for x in at if "aa" in x) >= 2:
+            out.add("ally_aa")
+        if sum(1 for x in et if x & {"burst", "stealth"}) >= 2:
+            out.add("enemy_burst")
+        if sum(1 for x in et if "cc" in x) >= 3:
+            out.add("enemy_cc")
+        if sum(1 for x in et if "poke" in x) >= 2:
+            out.add("enemy_poke")
+        if sum(1 for x in et if "tank" in x) >= 2:
+            out.add("enemy_tank")
+        return out
+
+    def chem_aug(self, aid, cid, my_augs, comp=frozenset()):
+        """回传 {"trait", "pair", "augpair", "comp", "texts"}：英雄特质分、招牌组合分、和已选增幅的组合分、阵容分（都是强度级）"""
+        tr_ = self.chem_traits(cid)
+        name = (self.gd.champ(cid) or {}).get("id", cid)
+        trait, cmp_, best = self.chem_eval(AUG_CHEM.get(aid, ""), tr_, comp)
+        pair = (CHAMP_AUG_CHEM.get(name) or {}).get(aid, 0.0)
+        texts = []
+        if pair:
+            texts.append((pair, tr("招牌组合：{0} × 这张").format(self.gd.champ_name(cid)) if pair > 0 else
+                          tr("{0} 和这张不搭").format(self.gd.champ_name(cid))))
+        if best and abs(best[0]) >= 1.0:
+            texts.append((best[0], (tr("化学反应：{0}") if best[0] > 0 else tr("不搭：{0}")).format(best[1])))
+        augpair = 0.0
+        for m in my_augs:
+            v = AUG_PAIR_CHEM.get((aid, m.get("id"))) or AUG_PAIR_CHEM.get((m.get("id"), aid)) or 0.0
+            if v:
+                augpair += v
+                texts.append((v, (tr("和已选「{0}」化学反应") if v > 0 else tr("和已选「{0}」互相抵消")).format(m["name"])))
+        if cmp_:
+            lab = [tr(CHEM_LABEL[k[1:]]) for k in (t.rsplit(":", 1)[0] for t in AUG_CHEM.get(aid, "").split())
+                   if k.startswith("@") and k[1:] in comp]
+            texts.append((cmp_, tr("阵容：{0}").format(tr("、").join(lab))))
+        texts.sort(key=lambda x: -abs(x[0]))
+        return {"trait": trait, "pair": pair, "augpair": augpair, "comp": cmp_, "texts": texts}
 
     AH_K = 1000           # 3.8：往「相似英雄的效果」收缩的局数（回测：比往 0 收缩 300 局误差小 17%～33%）
     AH_SIM_N = 3000       # 算英雄相似度时只用样本 ≥ 这么多局的格子
@@ -2312,6 +2422,10 @@ class Advisor:
         t["enemy_poke"] = [gd.champ_name(p.cid) for p in enemies if champ_role(gd, p.cid, "poke")]
         t["enemy_augs"] = enemy_augs
         t["ally_augs"] = ally_augs
+        try:
+            t["comp_tok"] = self.comp_tokens(me, allies, enemies)
+        except Exception:  # noqa
+            t["comp_tok"] = set()
         return t
 
     # ---------- 共用：克制因子 ----------
@@ -3458,18 +3572,38 @@ class Advisor:
                                   (self.gd.champ(me.cid) or {}).get("key"))
         exp_pct, exp_f = 0.0, None
         ex = self.expert_aug(a.get("id"), me.cid)
+        ch = None
+        try:
+            ch = self.chem_aug(a.get("id"), me.cid, my_augs, (t or {}).get("comp_tok") or set())
+        except Exception:  # noqa
+            ch = None
+        if ch:                           # 4.0：化学反应
+            if de["has"]:                # 有数据：只加数据库推不出来的部分，按这个英雄的局数缩小
+                k = self.CHEM_DATA_K / (self.CHEM_DATA_K + (de.get("n") or 0))
+                exp_pct += k * (self.CHEM_TRAIT_PCT_DATA * ch["trait"] + self.CHEM_PAIR_PCT_DATA * ch["pair"])
+            else:
+                exp_pct += self.CHEM_TRAIT_PCT * ch["trait"] + self.CHEM_PAIR_PCT * ch["pair"]
+            exp_pct += self.CHEM_AUGPAIR_PCT * ch["augpair"] * (0.5 if de.get("combo_online") else 1.0)
+            exp_pct += self.CHEM_COMP_PCT * ch["comp"]
         if ex:                           # 3.9：专家评分（强度 + 适不适合这个英雄）
             T, rs, _req = ex
             if de["has"]:                # 有数据：数据已经抓到大部分，只剩一点增量
-                exp_pct = self.EXP_REQ_PCT_DATA * rs
+                exp_pct += self.EXP_REQ_PCT_DATA * rs
             else:                        # 完全没数据：专家评分就是先验（契合度份量减半，避免重复算）
-                exp_pct = self.EXP_T_PCT * T + self.EXP_REQ_PCT * rs
-            if T or rs:
+                exp_pct += self.EXP_T_PCT * T + self.EXP_REQ_PCT * rs
+            if ch and ch["texts"]:       # 化学反应的说明优先
+                v0, txt = ch["texts"][0]
+                exp_f = (0.12 if v0 > 0 else -0.12, txt)
+            elif T or rs:
                 lv = (tr("强"), tr("偏强"), tr("普通"), tr("偏弱"), tr("弱"))[2 - max(-2, min(2, T))]
                 fit_w = tr("很适合你") if rs >= 0.5 else tr("适合你") if rs > 0 else tr("不太适合你") if rs < 0 else ""
                 # 只放进理由（不进本局因素，免得重复算分）
                 exp_f = (0.1 if exp_pct > 0.2 else (-0.1 if exp_pct < -0.2 else 0.0),
                          tr("专家评分：{0}").format(lv + (tr("，") + fit_w if fit_w else "")))
+        exp_pct = max(-3.0, min(3.0, exp_pct))
+        if exp_f is None and ch and ch["texts"]:
+            v0, txt = ch["texts"][0]
+            exp_f = (0.12 if v0 > 0 else -0.12, txt)
         if set_f and de.get("combo_online"):     # 网上已经有「和已选那张一起」的实际胜率 → 编辑推荐的整套加分减半，免得重复算
             tag_pct -= set_f[0] / 2
         # 国服整体选取率（arammayhem.com）：大家常拿的增幅小幅加分，冷门的小幅扣分；
@@ -6761,6 +6895,399 @@ EXPERT_AUGS = {
     3173: (0, ""),             # 厄运
     12317: (1, ""),            # 潘多拉之盒：全部变棱彩
 }
+
+# 4.0：专家评分 v2「化学反应」（Claude 根据对英雄技能 / 增幅机制的理解整理）
+#
+# 英雄技能特质（CHAMP_TRAITS，自动另外补上 melee / ranged / mana / ap / ad / tank / ench）：
+#   dash 有位移   dash2 多段位移 / 可重置位移   cc 硬控   cc2 大量硬控   knock 击飞   kb 击退（撞墙 / 推人）
+#   healA 治疗队友   shieldA 给队友护盾   healS 自我回复   shieldS 自我护盾   stealth 隐形 / 伪装
+#   aa 普攻输出   onhit 技能带命中 / 强化普攻 / 重置普攻   reset 击杀重置   spam 技能多、冷却短   poke 远程消耗
+#   aoe 范围团战伤害   burst 爆发   ult 大绝决定强度   global 全图 / 超远大绝   stack 永久叠层   pet 召唤物
+#   channel 咏唱   dot 持续伤害   maxhp 百分比生命伤害   execute 斩杀   engage 开团   terrain 造地形
+#   transform 变身   revive 无敌 / 不可选取 / 复活   slow 大量缓速   spin 旋转技能
+CHAMP_TRAITS = {
+    "Aatrox": "dash healS aoe cc knock ult transform", "Ahri": "dash2 cc burst healS ult",
+    "Akali": "dash2 stealth burst ult execute", "Akshan": "dash aa onhit stealth",
+    "Alistar": "cc2 knock kb engage healA healS dash", "Ambessa": "dash2 shieldS cc onhit ult",
+    "Amumu": "cc2 engage aoe dash ult dot", "Anivia": "cc terrain aoe channel revive slow",
+    "Annie": "cc burst aoe pet shieldS ult", "Aphelios": "aa poke ult aoe",
+    "Ashe": "aa slow cc global ult", "AurelionSol": "aoe stack channel cc dot",
+    "Aurora": "dash2 cc burst stealth", "Azir": "dash pet terrain kb cc aoe poke spam",
+    "Bard": "cc healA ult poke stack", "Belveth": "aa dash2 onhit stack transform",
+    "Blitzcrank": "cc2 knock engage shieldS", "Brand": "aoe burst dot poke cc spam",
+    "Braum": "cc2 knock shieldA engage", "Briar": "dash healS aa engage cc ult",
+    "Caitlyn": "aa poke cc", "Camille": "dash2 cc onhit shieldS engage ult",
+    "Cassiopeia": "spam dot aoe cc slow", "Chogath": "stack cc knock execute aoe",
+    "Corki": "poke spam dash aoe", "Darius": "healS aoe execute cc spin",
+    "Diana": "dash2 shieldS aoe cc engage burst ult", "DrMundo": "healS poke maxhp",
+    "Draven": "aa kb global spin", "Ekko": "dash2 cc shieldS burst healS ult",
+    "Elise": "transform cc pet burst maxhp", "Evelynn": "stealth burst execute dash cc",
+    "Ezreal": "poke spam dash onhit global", "Fiddlesticks": "cc aoe ult channel healS",
+    "Fiora": "dash onhit maxhp healS aa", "Fizz": "dash2 burst revive cc knock",
+    "Galio": "cc2 knock engage global shieldA aoe ult", "Gangplank": "poke aoe global healS onhit",
+    "Garen": "aoe execute shieldS healS spin", "Gnar": "transform cc knock kb aoe dash2",
+    "Gragas": "dash cc knock kb aoe healS engage", "Graves": "aa dash burst",
+    "Gwen": "dash maxhp healS aoe spin", "Hecarim": "dash engage cc kb aoe spam healS",
+    "Heimerdinger": "pet aoe poke cc spam", "Hwei": "poke aoe cc spam",
+    "Illaoi": "aoe healS pet", "Irelia": "dash2 stack cc onhit aa healS",
+    "Ivern": "shieldA pet cc", "Janna": "shieldA healA cc knock kb slow",
+    "JarvanIV": "dash engage cc knock terrain shieldS aoe", "Jax": "dash onhit aa cc ult",
+    "Jayce": "transform poke burst kb", "Jhin": "aa poke cc ult channel",
+    "Jinx": "aa aoe global", "KSante": "cc2 knock engage dash transform shieldS",
+    "Kaisa": "aa onhit dash shieldS stealth", "Kalista": "aa dash2 execute",
+    "Karma": "shieldA poke cc aoe spam", "Karthus": "aoe dot global spam revive ult",
+    "Kassadin": "dash2 burst aoe stack", "Katarina": "dash2 aoe burst reset channel spin",
+    "Kayle": "aa onhit aoe revive healA", "Kayn": "dash2 transform healS burst",
+    "Kennen": "cc2 aoe engage burst ult", "Khazix": "dash2 stealth burst",
+    "Kindred": "aa dash revive stack", "Kled": "dash engage aa transform",
+    "KogMaw": "aa onhit maxhp poke", "Leblanc": "dash2 burst cc pet",
+    "LeeSin": "dash2 shieldA cc knock kb healS", "Leona": "cc2 engage dash aoe",
+    "Lillia": "aoe spam cc maxhp dot", "Lissandra": "cc2 aoe engage dash revive",
+    "Locke": "aa onhit dash execute burst", "Lucian": "aa dash onhit reset",
+    "Lulu": "shieldA cc knock pet slow", "Lux": "poke cc aoe burst shieldA",
+    "Malphite": "engage cc knock aoe shieldS ult", "Malzahar": "cc dot pet aoe spam channel",
+    "Maokai": "cc2 engage healS aoe", "MasterYi": "aa onhit revive healS reset",
+    "Mel": "poke aoe burst execute", "Milio": "healA shieldA cc knock kb",
+    "MissFortune": "aa aoe channel poke ult", "MonkeyKing": "dash stealth pet cc knock aoe engage spin",
+    "Mordekaiser": "aoe shieldS ult cc", "Morgana": "cc shieldA aoe dot",
+    "Naafiri": "dash2 pet burst", "Nami": "healA cc knock slow",
+    "Nasus": "stack healS onhit", "Nautilus": "cc2 knock engage shieldS",
+    "Neeko": "cc aoe engage burst shieldS", "Nidalee": "transform poke healA dash",
+    "Nilah": "aa dash shieldA aoe cc", "Nocturne": "dash global cc burst",
+    "Nunu": "channel cc slow healS aoe", "Olaf": "aa healS",
+    "Orianna": "shieldA cc knock aoe poke ult", "Ornn": "cc2 knock terrain engage aoe",
+    "Pantheon": "dash burst cc global", "Poppy": "cc kb dash shieldS",
+    "Pyke": "dash stealth cc execute", "Qiyana": "dash2 cc terrain burst stealth",
+    "Quinn": "aa dash", "Rakan": "dash2 cc knock engage healA",
+    "Rammus": "cc engage aoe", "RekSai": "dash2 cc knock burst",
+    "Rell": "cc2 knock engage shieldA", "Renata": "shieldA cc aoe",
+    "Renekton": "dash2 healS cc aoe", "Rengar": "dash stealth burst healS",
+    "Riven": "dash2 shieldS cc knock aoe burst", "Rumble": "aoe dot shieldS spam",
+    "Ryze": "spam aoe shieldS cc", "Samira": "aa dash aoe burst",
+    "Sejuani": "cc2 knock engage aoe dash", "Senna": "aa poke healA shieldA global stack",
+    "Seraphine": "aoe cc shieldA healA poke", "Sett": "shieldS cc knock aoe engage",
+    "Shaco": "stealth pet burst cc", "Shen": "shieldA global dash cc",
+    "Shyvana": "transform aoe dot", "Singed": "dot aoe kb",
+    "Sion": "stack engage cc knock shieldS", "Sivir": "aa aoe shieldS",
+    "Skarner": "cc2 engage", "Smolder": "stack poke aoe execute spam",
+    "Sona": "healA cc aoe spam", "Soraka": "healA cc global spam",
+    "Swain": "healS aoe cc dot", "Sylas": "dash healS cc burst ult",
+    "Syndra": "burst poke cc kb aoe stack", "TahmKench": "cc shieldS healS",
+    "Taliyah": "terrain cc knock kb aoe poke", "Talon": "dash2 burst stealth aoe",
+    "Taric": "healA shieldA cc revive", "Teemo": "stealth dot poke aa onhit",
+    "Thresh": "cc2 shieldA engage stack", "Tristana": "aa dash kb burst",
+    "Trundle": "aa terrain healS onhit", "Tryndamere": "aa dash healS revive",
+    "TwistedFate": "global poke cc onhit", "Twitch": "aa stealth dot onhit aoe",
+    "Udyr": "onhit aa shieldS cc", "Urgot": "aa shieldS cc execute",
+    "Varus": "aa onhit poke cc maxhp", "Vayne": "aa onhit dash stealth maxhp kb",
+    "Veigar": "burst stack cc aoe", "Velkoz": "poke aoe channel burst cc knock",
+    "Vex": "aoe cc dash shieldS burst", "Vi": "dash engage cc knock onhit shieldS maxhp",
+    "Viego": "dash stealth transform healS", "Viktor": "poke aoe cc stack",
+    "Vladimir": "healS revive aoe spam", "Volibear": "engage cc onhit healS",
+    "Warwick": "healS cc engage dash aa", "Xayah": "aa revive cc aoe",
+    "Xerath": "poke aoe cc channel", "XinZhao": "dash engage cc knock onhit",
+    "Yasuo": "dash2 shieldS cc knock aa", "Yone": "dash2 cc knock aa shieldS",
+    "Yorick": "pet terrain healS", "Yunara": "aa onhit aoe dash transform",
+    "Yuumi": "healA cc", "Zaahen": "dash2 cc knock healS onhit revive engage",
+    "Zac": "cc2 knock engage dash healS aoe", "Zed": "dash2 pet burst execute",
+    "Zeri": "aa dash spam onhit aoe", "Ziggs": "poke aoe kb global burst",
+    "Zilean": "revive cc spam", "Zoe": "poke burst cc", "Zyra": "pet aoe cc poke",
+}
+
+# 增幅 × 英雄特质（4.0：先按理解写，再用国服 16.21 逐张检查，明显说反的项改掉 / 拿掉，例：秘术冲拳看「技能带命中」不看技能多、
+# 由心及物不看坦、钢化你心 / 装甲冲击近战更重要、冲锋 / 利刃华尔兹对多段位移英雄并没有更好）：「特质:份量」（份量单位＝强度级，!特质＝没有这个特质时）；@开头＝阵容（见 comp_tokens）
+AUG_CHEM = {
+    1001: "tank:1 engage:0.5 cc:0.5 ranged:-0.5 @no_front:0.5",
+    1002: "engage:1",
+    1004: "ult:-1.5 spam:1 poke:0.5 global:-0.5",
+    1005: "ench:1 @ally_front:0.3",
+    1006: "dash:0.5 !dash:-0.5",
+    1007: "ad:1.5 aa:0.5",
+    1011: "ult:0.5 engage:1 melee:0.5 global:-0.5",
+    1013: "tank:1 engage:0.5 burst:-1 aa:-0.5",
+    1015: "healS:1.5 !heal:-1",
+    1018: "cc2:1.5 cc:0.8 !cc:-2 engage:0.5 melee:0.3",
+    1019: "dash2:0.5 !dash:-0.5",
+    1020: "melee:0.5 tank:0.3 @enemy_burst:0.3",
+    1022: "aa:1.5 onhit:1 !aa:-1",
+    1025: "engage:0.5 tank:0.5 melee:0.3",
+    1027: "dash:1.5 !dash:-2",
+    1028: "dot:1.5 spam:0.5 aoe:0.5",
+    1029: "onhit:1.5 aa:0.5 ad:0.3",
+    1030: "spam:0.8 ap:0.5 mana:0.3",
+    1034: "channel:0.5 @enemy_cc:0.5 @enemy_poke:0.3",
+    1036: "aa:1.5 onhit:0.8 !aa:-1",
+    1037: "ench:1.5 healS:0.8 shieldS:0.5 !ench:-0.5",
+    1038: "burst:1 poke:0.8 execute:0.3 tank:-1",
+    1041: "tank:1 melee:0.5 engage:0.5 ranged:-0.5",
+    1044: "slow:1.5 !slow:-1",
+    1045: "spam:1.5 dot:0.8 aoe:0.5 ap:0.5",
+    1046: "spam:0.3 aa:0.3",
+    1047: "aa:1.5 ad:0.5 ap:-1 tank:-1",
+    1048: "burst:1 spam:1 ap:0.5 dot:0.5 aa:-0.5",
+    1051: "aa:1.5 !aa:-1",
+    1054: "aa:1 onhit:1",
+    1056: "mana:1 !mana:-2.5",
+    1057: "poke:0.5 ranged:0.3",
+    1058: "onhit:1.5 aa:1 ult:0.5 !aa:-1.5",
+    1060: "spam:0.5 aoe:0.5 melee:0.3",
+    1063: "dash2:1 dash:1 !dash:-1.5",
+    1067: "spam:0.5 healS:0.3",
+    1068: "spam:0.8 ult:0.3",
+    1071: "aa:1.5 ranged:0.5 !aa:-1.5 melee:-0.5",
+    1072: "spam:0.5 cc:0.3 poke:0.5 @ally_aa:0.5",
+    1073: "dash2:1 stealth:1 dash:0.5 !dash:-1",
+    1074: "aa:1 tank:0.3",
+    1076: "ench:1.5 !ench:-1.5",
+    1077: "aa:1.5 !aa:-1.5",
+    1079: "aa:1 melee:0.5 onhit:0.5 !aa:-1",
+    1080: "melee:1 aa:0.5",
+    1081: "aa:1.5 onhit:0.5 !aa:-1.5",
+    1084: "burst:0.5 poke:0.3",
+    1087: "aa:1.5 onhit:1 !aa:-1.5",
+    1088: "ult:2 global:0.5 engage:0.5 !ult:-0.5",
+    1092: "dot:1.5 aa:0.3",
+    1095: "ench:1.5 !ench:-1.5",
+    1097: "ap:1",
+    1098: "",
+    1103: "cc:0.5 burst:0.3", 1150: "cc:0.5 burst:0.3", 1151: "cc:0.5 burst:0.3",
+    1104: "pet:2 !pet:-2",
+    1112: "ult:0.5 engage:1 channel:1 melee:0.3 @enemy_cc:0.5",
+    1113: "poke:2 ranged:0.5 !poke:-1",
+    1115: "aa:1.5 ranged:0.5 !aa:-1.5",
+    1116: "engage:0.5 burst:0.3 melee:0.3",
+    1118: "ench:1.5 healS:0.8 !ench:-1",
+    1129: "aa:1 ap:1 onhit:0.5",
+    1133: "spam:1 poke:1 aoe:0.3",
+    1134: "aa:1 ranged:0.3 ap:-1 poke:-1",
+    1136: "cc2:1.5 cc:0.8 !cc:-2",
+    1138: "healS:0.3 melee:0.5 aoe:0.5",
+    1141: "ench:1.5 !ench:-2",
+    1149: "cc2:1 cc:0.5 tank:1 !cc:-1.5",
+    1152: "tank:1.5 melee:1.5 ranged:-1.5",
+    1154: "aoe:0.5 global:0.5 engage:0.3",
+    1156: "ap:1 ad:-2 tank:-0.5",
+    1170: "aa:1 !aa:-1",
+    1180: "shieldS:0.5 @enemy_burst:0.5",
+    1181: "aa:1 melee:0.5 tank:0.5 @enemy_tank:0.3",
+    1187: "burst:0.3",
+    1194: "ult:1.5 aoe:0.5 engage:0.5 !ult:-0.5",
+    1195: "aa:0.5 burst:0.5 tank:-1 @enemy_tank:0.5",
+    1204: "stack:2.5 !stack:-2",
+    1205: "ap:1", 1206: "ad:1",
+    1211: "ult:1.5 global:1 burst:0.5 !ult:-0.5",
+    1214: "spin:2.5 !spin:-1.5",
+    1225: "aa:1.5 onhit:1 !aa:-1.5",
+    1301: "melee:0.3",
+    1305: "melee:0.5 @enemy_cc:0.3",
+    1310: "stealth:1 burst:0.5 dash:0.5 melee:0.5",
+    1311: "mana:1.5 spam:1 !mana:-2.5",
+    1314: "shieldS:1.5 !shieldS:-0.5 @ally_ench:0.5",
+    1315: "dash:1.5 !dash:-1.5",
+    1318: "ap:1 burst:0.5 ad:-2",
+    1319: "tank:1.5 melee:0.5 ranged:-1",
+    1320: "ad:1 aa:0.5 ap:-2",
+    1322: "reset:0.5 aa:0.5 dash:0.3 aoe:0.3", 3004: "reset:0.5 aa:0.5 dash:0.3 aoe:0.3",
+    1323: "cc2:1.5 cc:0.8 !cc:-2 aoe:0.3",
+    1324: "tank:1 healS:1 ench:0.8 !heal:-0.5",
+    1325: "burst:1 poke:1 ranged:0.5 tank:-2 melee:-0.5",
+    1326: "burst:1 execute:0.5 dash:0.5 stealth:0.5",
+    1328: "aa:1.5 !aa:-1.5",
+    1329: "engage:0.5 tank:0.3",
+    1332: "ap:1 healS:0.5 spam:0.5 melee:0.3",
+    1333: "aa:0.3 ranged:0.3 @enemy_burst:0.5",
+    1335: "spam:0.3 aa:0.3",
+    1336: "aa:1.5 ad:0.5 !aa:-2",
+    1344: "ult:1 melee:1 engage:0.5 ranged:-0.5",
+    1348: "engage:0.5 burst:0.3",
+    1349: "ult:1 spam:1 burst:0.5",
+    1353: "tank:1.5 engage:0.5 ranged:-1",
+    1358: "engage:0.3",
+    1373: "spam:0.5",
+    1375: "cc2:1.5 cc:0.8 tank:0.5 !cc:-2",
+    1379: "aa:1.5 ench:0.5 !aa:-1.5",
+    1388: "spam:1 ult:0.5 aoe:0.3",
+    1390: "spam:1.5 poke:1 ap:0.5 ad:-1",
+    1392: "engage:0.5 melee:0.5 ranged:-0.3",
+    1401: "engage:0.5 tank:0.5 melee:0.5",
+    1413: "ult:0.5 tank:1 engage:1 melee:0.5 ranged:-1",
+    1415: "spam:1 poke:0.5",
+    1416: "aoe:0.3",
+    1420: "ench:0.3",
+    1421: "engage:0.5 melee:0.5",
+    1996: "onhit:1.2 aa:0.5",
+    2004: "ench:1.5 !ench:-2 @ally_aa:0.5",
+    2005: "spam:0.8 aa:0.5 burst:0.3",
+    2009: "aa:1.5 !aa:-1.5",
+    2010: "aa:1.5 onhit:1 !aa:-1.5",
+    2016: "mana:1 aa:0.8 onhit:0.5 !mana:-2",
+    2018: "spam:1 ap:0.5 aa:-1.5",
+    2026: "melee:0.5 execute:0.5",
+    2032: "tank:0.3 engage:0.3",
+    2054: "poke:1 cc:0.5 burst:0.5",
+    2055: "spam:1 poke:1",
+    2062: "burst:1 cc:0.5 poke:0.5",
+    2064: "melee:0.5 !dash:0.5",
+    2065: "engage:1 cc:0.5 melee:0.5",
+    2072: "poke:1 spam:0.5",
+    2073: "spam:0.5 burst:0.3",
+    2076: "spam:0.8 tank:0.5 melee:0.5",
+    2077: "cc:1.5 !cc:-1.5",
+    2078: "kb:2 !kb:-2",
+    2080: "engage:0.5",
+    2083: "burst:0.5 aoe:0.5",
+    2087: "spam:1 ult:0.5",
+    2091: "melee:1 aoe:0.5 ranged:-0.5",
+    2096: "aa:1.5 !aa:-1",
+    2098: "spam:0.5",
+    2100: "spam:0.5 cc:0.5",
+    2102: "melee:1 tank:1 engage:0.5 ranged:-1",
+    2103: "poke:2 !poke:-1.5",
+    2104: "ench:1.5 healS:0.5 !ench:-1.5",
+    2107: "aa:1 spam:0.5",
+    2111: "onhit:1 aa:0.5 aoe:0.3",
+    2115: "tank:0.5 melee:0.5 engage:0.5",
+    2116: "burst:0.5 spam:0.5 poke:0.5",
+    2123: "spam:1 burst:1",
+    2125: "",
+    2129: "terrain:2.5 !terrain:-2.5",
+    2131: "channel:2.5 !channel:-2.5",
+    2132: "spam:0.5 melee:0.3",
+    2133: "ench:1 aa:1 !ench:-1.5",
+    2134: "ult:1 aoe:0.5 melee:0.3",
+    2135: "aa:1 onhit:0.5",
+    2136: "poke:0.5 spam:0.5",
+    2137: "melee:0.3 engage:0.3",
+    2138: "tank:0.5 melee:0.5 spam:0.5",
+    2139: "tank:1.5 engage:0.5 melee:0.5 ranged:-1",
+    2140: "melee:1 aa:0.5 ad:1 ap:-2 ranged:-1",
+    2141: "melee:1 ad:1 tank:0.5 ap:-2 ranged:-1",
+    2143: "melee:1 ad:1 aa:0.5 ap:-2",
+    2144: "shieldA:2 shieldS:1 !shieldA:-1",
+    2157: "ad:1 melee:1 ap:-2",
+    # 26.21 新增幅
+    3016: "aa:1.5 onhit:0.5 !aa:-1.5",          # 伤不过三：三次普攻爆炸
+    3018: "aa:0.5 !aa:-0.5",                    # 大腕：攻速转暴伤
+    3025: "shieldS:1 shieldA:0.5 @ally_ench:0.5",   # 音之屏障：吃到护盾加跑速
+    3036: "spam:1.5 mana:0.3",          # 翻倍时间：两个不同技能快速命中
+    3039: "melee:0.5 tank:0.5 engage:0.5 healA:0.3",   # 拯救：残血击退 + 治疗队友
+    3048: "onhit:1 aa:0.5 spam:0.5 reset:0.5",  # 弹跳蜜蜂：技能后的普攻弹射
+    3049: "tank:1.5 melee:1 ranged:-1",     # 装甲冲击：按物防强化普攻
+    3051: "mana:1.5 spam:1 !mana:-2",         # 蓝色屏障：按魔力消耗给护盾
+    3052: "aa:1 ranged:1 melee:-1.5",           # 远射天资：最远距离普攻加伤
+    3053: "ult:0.5 tank:0.5 engage:1 melee:0.5",       # 热舞怪兽：大绝后生命 + 缓速区
+    3055: "ult:1.5 global:0.5 !ult:-0.5",       # 终极循环往复：大绝加速
+    3058: "aa:1 onhit:1 ad:-0.5",               # 物攻转攻速
+    3063: "ad:1 burst:1 tank:-1.5",             # 溺水之赠礼：额外生命转穿甲
+    3071: "engage:0.5 aoe:0.3",                 # 黄铜爆音：击退音爆
+    3075: "ranged:0.5 poke:0.5 melee:-1 engage:-0.5",  # 反冲：施法后退
+    3078: "melee:1 onhit:0.5 aa:0.5",       # 鼓声暴起：施法后强化普攻
+    3079: "burst:1 dash2:0.5 tank:-1",   # 死之舞：5 秒不死，要拿人头
+    3085: "aa:1 spam:0.5",                      # 灵魂乐流：施法后渐增攻速
+    3086: "onhit:0.8 poke:0.8",          # 小蜜蜂：技能命中丢蜂窝
+    3088: "spam:0.5 burst:0.5",                 # 深红钴蓝：标记、消耗减冷却
+    3094: "tank:1.5 ap:0.5 ad:-0.5",            # 巫妖大脑：额外生命转法强
+    3116: "aa:0.5",            # 将他们放倒：五次命中
+    3118: "ult:1.5 burst:0.5 aoe:0.5",          # 奥术公理：参与击杀返还大绝冷却
+    3123: "aa:1.5 ult:0.5",                # 珠光手镯：大绝可暴击
+    3129: "aa:0.5",                             # 吸元秘术
+    3131: "healS:0.5",                # 屹立不倒
+    3132: "aa:1.5 melee:-0.5",       # 王冠之重：减跑速
+    3134: "melee:1 aa:0.5 ranged:-0.5",         # 孤勇者：附近敌人越多越硬
+    3149: "ench:2 !ench:-2",                    # 一起抱抱：治疗 / 护盾溅射
+    3150: "ap:1 burst:1 ad:-2",                 # 升级 风暴狂涌
+    3163: "ench:1.5 !ench:-1.5",                # 迷人蝴蝶
+}
+
+# 英雄 × 增幅的招牌化学反应（份量单位＝强度级 −2～+2.5），技能本身和增幅机制的直接配合
+CHAMP_AUG_CHEM = {
+    "MasterYi": {1058: 2, 1022: 1, 1029: 0.5}, "Ezreal": {1029: 2, 1058: 1.5, 1996: 1.5, 2123: 1},
+    "Kaisa": {1029: 1.5, 1058: 1}, "Varus": {1029: 1, 1058: 1.5, 1129: 1, 2103: 1},
+    "Kayle": {1129: 1, 1071: 1, 1087: 1.5, 2010: 1}, "Teemo": {1029: 1, 1129: 1.5, 1036: 1},
+    "KogMaw": {1029: 1, 1036: 1.5, 1225: 1.5, 1071: 1}, "Vayne": {1036: 1, 1225: 1.5, 2078: 1.5},
+    "Jinx": {1071: 1, 1115: 1, 3052: 1.5, 1225: 1}, "Twitch": {1071: 1.5, 1115: 1.5},
+    "Cassiopeia": {1045: 2, 1311: 1.5}, "Ryze": {1311: 2, 1056: 1.5, 2016: 1, 3051: 1.5},
+    "Kassadin": {1311: 1.5, 1056: 1, 1204: 1}, "Vladimir": {1015: 2, 3094: 1.5, 1324: 1},
+    "Swain": {1015: 1.5, 3094: 1.5}, "Sion": {1204: 2, 1001: 1, 1152: 1},
+    "Chogath": {1204: 2, 1041: 1, 3094: 1.5}, "Nasus": {1204: 2.5}, "Veigar": {1204: 2.5, 1390: 1.5},
+    "Senna": {1204: 2, 1071: 1}, "Smolder": {1204: 2, 1029: 1}, "AurelionSol": {1204: 2.5},
+    "Thresh": {1204: 1.5}, "Kindred": {1204: 1.5, 1019: 1}, "Bard": {1204: 1},
+    "Galio": {1088: 1.5, 1011: 1.5}, "Malphite": {1088: 1.5, 1349: 1, 1018: 1, 1194: 1, 3118: 1, 3049: 2},
+    "Amumu": {1018: 1.5, 1088: 1, 1323: 1.5}, "Leona": {1018: 1.5, 1323: 1.5, 1136: 1.5, 1375: 1.5},
+    "Nautilus": {1018: 1.5, 1323: 1, 1375: 1.5}, "Rell": {1018: 1.5, 1323: 1.5},
+    "Sejuani": {1018: 1.5, 1323: 1.5}, "Alistar": {2078: 2, 1018: 1.5}, "Poppy": {2078: 2},
+    "Janna": {2078: 1, 1076: 1.5, 3149: 1.5}, "Taliyah": {2129: 2.5}, "Anivia": {2129: 2, 2131: 1.5},
+    "Trundle": {2129: 2, 1058: 1}, "Ornn": {2129: 1.5}, "Azir": {2129: 1.5, 1104: 2},
+    "JarvanIV": {2129: 1.5, 1413: 1}, "Yorick": {1104: 2.5, 2129: 1.5}, "Malzahar": {1104: 2},
+    "Annie": {1104: 2}, "Zyra": {1104: 2.5}, "Heimerdinger": {1104: 2.5}, "Ivern": {1104: 1.5},
+    "Shaco": {1104: 2}, "Elise": {1104: 1.5}, "Naafiri": {1104: 1.5},
+    "Katarina": {1214: 2.5, 2131: 1.5, 1045: 1, 1019: 1.5}, "Garen": {1214: 2.5, 2102: 1},
+    "Darius": {1214: 2}, "Gwen": {1214: 1.5}, "MissFortune": {2131: 2, 1211: 1.5},
+    "Fiddlesticks": {2131: 2, 1088: 1.5, 1194: 1}, "Nunu": {2131: 2, 1329: 1.5, 1392: 1},
+    "Velkoz": {2131: 1.5, 1113: 1.5}, "Xerath": {2131: 1, 1113: 2, 2103: 2, 1325: 1},
+    "Jhin": {1113: 1, 2131: 1.5, 1336: 1.5}, "Lux": {1113: 1.5, 2103: 2, 1325: 1},
+    "Ziggs": {1113: 1.5, 2103: 1.5, 2078: 1}, "Zoe": {1113: 1.5, 2103: 1.5},
+    "Karthus": {1088: 2, 3055: 1.5, 1211: 1, 2131: 1.5}, "Soraka": {1088: 1.5, 3149: 1.5, 1015: 1.5},
+    "Sona": {1076: 1.5, 1072: 1, 1420: 0.5}, "Seraphine": {1076: 1, 1072: 1},
+    "Yuumi": {2004: 1.5, 3149: 2, 1037: 1}, "Nami": {1095: 1, 2004: 1.5}, "Lulu": {2144: 1.5, 1141: 1.5},
+    "Karma": {2144: 1.5}, "Milio": {1037: 1, 2104: 1.5}, "Taric": {3149: 1.5, 1095: 1.5},
+    "Tryndamere": {1047: 1, 2010: 1.5, 1328: 1.5, 1344: 1.5}, "Yasuo": {1047: 1.5, 1019: 1.5, 1006: 1.5, 1328: 1},
+    "Yone": {1047: 1.5, 1019: 1.5, 1006: 1.5, 1328: 1}, "Samira": {1022: 1, 1006: 1, 1027: 1},
+    "Irelia": {1019: 1.5, 1006: 2, 1027: 1.5, 1063: 1}, "Akali": {1019: 1.5, 1006: 1, 1027: 1.5},
+    "Fizz": {1019: 1.5, 1027: 1.5}, "LeeSin": {1019: 1.5, 2078: 2}, "Kalista": {1019: 1.5, 1006: 1.5, 1022: 1},
+    "Riven": {1019: 2, 1006: 1.5, 1027: 1}, "Kayn": {1019: 1}, "Ekko": {1019: 1, 1088: 1.5},
+    "Sylas": {1088: 1, 1349: 1}, "Viego": {1088: 1}, "Ambessa": {1019: 1.5, 1006: 1.5},
+    "Zed": {1006: 1}, "Kennen": {1018: 1, 1323: 1.5, 1088: 1.5}, "Orianna": {2144: 1, 1088: 1},
+    "Ahri": {1019: 1, 1088: 1}, "Vex": {1088: 1}, "Shen": {1088: 1.5, 2144: 1},
+    "TwistedFate": {1088: 1.5}, "Gangplank": {1336: 1.5, 1088: 1.5}, "Draven": {1336: 1.5, 1047: 1},
+    "Gragas": {2078: 1.5}, "Singed": {2102: 1, 1001: 1}, "DrMundo": {1152: 1.5, 1001: 1, 1324: 1},
+    "Rammus": {2139: 1.5, 3049: 2}, "Zac": {1324: 1.5, 1001: 1}, "Warwick": {1324: 1},
+    "Aatrox": {1324: 1, 1344: 1.5}, "Belveth": {1022: 1, 1081: 1.5}, "Jax": {1058: 1.5, 1022: 1, 2010: 1},
+    "Udyr": {1058: 2}, "Viktor": {1390: 1.5}, "Brand": {1045: 1.5}, "Zilean": {1088: 1.5, 1349: 1},
+    "Lissandra": {1088: 1, 1194: 1}, "Morgana": {2144: 1}, "Aphelios": {1071: 1.5},
+    "Caitlyn": {1071: 1, 1336: 1.5, 1113: 1}, "Ashe": {1044: 2, 1088: 1},
+}
+
+# 增幅 × 增幅（份量单位＝强度级；负的＝互相抵消）
+AUG_PAIR_CHEM = {
+    (1029, 1058): 2, (1029, 1036): 1, (1029, 1996): 1.5, (1058, 1022): 1, (1058, 2010): 1, (1022, 1081): 1,
+    (1047, 1328): 1.5, (1047, 2010): 1.5, (1047, 1077): 1, (1047, 1336): 1.5, (1047, 1092): 1, (1328, 2010): 1,
+    (1048, 1047): 1, (1048, 1092): 1, (1045, 1092): 1.5, (1045, 2102): 1, (1045, 1036): 1,
+    (1030, 1068): 1, (1030, 1388): 1, (1068, 1388): 1, (2018, 1030): 1,
+    (1311, 1056): 2, (1311, 3051): 1.5, (1056, 3051): 1, (1311, 2016): 1, (1056, 2016): 1.5,
+    (1088, 1349): 1.5, (1088, 1011): 1.5, (1088, 1112): 1, (1088, 1344): 1.5, (1088, 1413): 1.5,
+    (1088, 1194): 1.5, (1088, 1211): 1.5, (1088, 2134): 1.5, (1088, 3118): 1, (1088, 3055): 1.5,
+    (1088, 3053): 1.5, (1349, 3055): 1,
+    (1001, 1041): 1, (1001, 1013): 1, (1041, 1013): 1, (1041, 1353): 1, (1324, 1001): 1, (1324, 1041): 0.5,
+    (1152, 1041): 1.5, (1152, 1319): 1, (1152, 1353): 1, (3094, 1041): 1.5, (3094, 1013): 1.5, (3094, 1152): 1.5,
+    (3063, 1041): 1.5, (3063, 1013): 1.5,
+    (1019, 1027): 1.5, (1019, 1006): 1.5, (1019, 1063): 1, (1019, 1315): 1.5, (1019, 1073): 1,
+    (1006, 1027): 1, (1315, 1063): 1,
+    (1037, 1095): 1, (1037, 1141): 1, (1037, 1118): 1, (1037, 2104): 1, (1037, 3149): 1.5, (1037, 3163): 1,
+    (1141, 3149): 1.5, (1118, 3149): 1, (1095, 3149): 1, (1076, 3149): 1.5, (2004, 3149): 1.5,
+    (3163, 3149): 1.5, (1324, 1037): 1, (2144, 1141): 1,
+    (1071, 1115): 1, (1071, 2096): 1, (1115, 3052): 1.5, (1071, 3052): 1,
+    (1087, 1225): 1.5, (1087, 2010): 1, (1225, 2010): 1.5, (1087, 1036): 1, (1225, 1036): 1,
+    (1329, 1358): 1.5, (1329, 1392): 1, (1358, 1392): 1, (2080, 1329): 1, (2088, 1329): 1, (2034, 1329): 1,
+    (2088, 1358): 1,
+    (1018, 1323): 1, (1018, 1136): 1, (1136, 1375): 1, (1323, 1375): 1, (2077, 1018): 1,
+    (1204, 1390): 1.5, (1204, 1152): 1.5,
+    (1205, 1206): -2, (1134, 3052): -2, (1134, 1087): -1, (1325, 1013): -1, (1325, 1041): -1,
+    (1004, 1088): -2, (1004, 1349): -2, (1004, 1011): -2, (1004, 1112): -2, (1004, 1344): -2,
+    (1004, 1413): -2, (1004, 1194): -2, (1004, 1211): -2, (1004, 2134): -2, (1004, 3055): -2,
+    (1004, 3118): -2, (1004, 3053): -2, (1004, 3123): -2,
+}
+
+CHEM_LABEL = {"dash": "有位移", "dash2": "多段位移", "cc": "有硬控", "cc2": "控制多", "knock": "能击飞", "kb": "能击退",
+              "healA": "能治疗队友", "shieldA": "能给队友护盾", "ench": "能治疗 / 护盾队友", "heal": "有回复",
+              "healS": "自我回复", "shieldS": "自带护盾", "stealth": "能隐形", "aa": "靠普攻输出", "onhit": "技能带普攻 / 命中",
+              "reset": "击杀重置", "spam": "技能多、冷却短", "poke": "远程消耗", "aoe": "范围伤害", "burst": "爆发高",
+              "ult": "大绝强", "global": "全图大绝", "stack": "永久叠层", "pet": "有召唤物", "channel": "有咏唱技能",
+              "dot": "持续伤害", "maxhp": "百分比伤害", "execute": "能斩杀", "engage": "能开团", "terrain": "能造地形",
+              "transform": "能变身", "revive": "有无敌 / 复活", "slow": "缓速多", "spin": "有旋转技能", "melee": "近战",
+              "ranged": "远程", "mana": "用魔力", "ap": "法术输出", "ad": "物理输出", "tank": "坦克",
+              "no_front": "队友没有前排", "ally_front": "队友有前排", "ally_ench": "队友有软辅", "ally_aa": "队友普攻核多",
+              "enemy_burst": "对面爆发多", "enemy_cc": "对面控制多", "enemy_poke": "对面消耗多", "enemy_tank": "对面坦克多"}
 
 # 装备（海斗商店的成品装 / 二级鞋）：(强度 T, 需求)。需求多一个 F＝战士（近战物理 + 生命）
 EXPERT_ITEMS = {
