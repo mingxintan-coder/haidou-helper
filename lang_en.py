@@ -1039,3 +1039,7 @@ EN.update({'国服 {0}': 'CN {0}', '测试服': 'PBE', ' · 国服 {0}（{1:.0f}
            '[国服] {0} 版本 {1} 局，补上 {2} 个新增幅名': '[CN data] patch {0}, {1} games, {2} new augment names added',
            '[国服] 读取失败：{0}': '[CN data] load failed: {0}', '{0} 校验不符': '{0} checksum mismatch'})
 EN.update({'（相似英雄推算 {0:+.1f}%）': ' (similar champions: {0:+.1f}%)', '国服相似英雄推算': 'CN data, inferred from similar champions'})
+EN.update({'强': 'strong', '偏强': 'above average', '普通': 'average', '偏弱': 'below average', '弱': 'weak',
+           '很适合你': 'a great fit for you', '适合你': 'fits you', '不太适合你': 'not a good fit for you',
+           '专家评分：{0}': 'Expert rating: {0}', '专家评分 {0:+.1f}%': 'Expert rating {0:+.1f}%',
+           '；专家评分 {0:+.1f}%': '; expert rating {0:+.1f}%'})

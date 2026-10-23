@@ -1,15 +1,15 @@
 {
- "version": "3.8.0",
+ "version": "3.9.0",
  "date": "2026-10-22",
  "notes": [
-  "新因子「相似英雄推算」：新增幅 / 冷门组合样本少时，用和你最像的 15 个英雄的数据推算这张适不适合你（回测误差小 17%～40%）",
-  "国服有分段数据时，高分段用「高分」段",
+  "新因子「专家评分」：每张增幅 / 每件装备的强度和「适不适合你」，没有数据时当先验，有数据时只加小增量（份量由国服 5000 万局校准）",
+  "（3.8.0）相似英雄推算",
   "（3.7.0）加入国服 AramHex 数据"
  ],
  "files": {
-  "haidou_helper.py": "b569e66e6118bd93b268653c22d8a47b2de4701a455878762bc82550f0f1a267",
-  "lang_en.py": "2cf9ebd3cfdc6e3b42a36050c307bc485b15ecae4b71b91ec23ea25e9cd4b56c",
-  "README.md": "35b40b671e8ee62aaffe499a867de872d77b97eb68440b706a088e42ed44de92",
+  "haidou_helper.py": "a1c81e7418021f0062ce956abc5f542c5abe44ad984f2b122fd74fceeeb6776a",
+  "lang_en.py": "096a48e2cf0a4241b4ca5de8bcbe072e9f0e789655c0e6800b2cda002ec4338b",
+  "README.md": "50d7a1af5c23b9f454b627133351fd778bbb90fd76b3d4662d5758a842524d7a",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
