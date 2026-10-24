@@ -36,7 +36,7 @@ from collections import Counter
 
 
 APP_VERSION = "4.0.0"
-APP_BUILD = 2026102302         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_BUILD = 2026102303         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -2113,6 +2113,63 @@ class Advisor:
             out.add("enemy_tank")
         return out
 
+    def comp_counts(self, me, allies, enemies):
+        """阵容数量（给学到的阵容项用）：队友法系 / 普攻核、对面爆发 / 突进"""
+        mates = [p for p in allies if p.cid != me.cid]
+        at = [self.chem_traits(p.cid) for p in mates]
+        et = [self.chem_traits(p.cid) for p in enemies]
+        return {"a_ap": sum(1 for x in at if "ap" in x), "a_aa": sum(1 for x in at if "aa" in x),
+                "e_burst": sum(1 for x in et if x & {"burst", "stealth"}),
+                "e_dive": sum(1 for x in et if x & {"dash2", "engage"}), "n_a": len(mates), "n_e": len(enemies)}
+
+    # 4.0 阵容项：先按理解提出假设，再用自建库 4851 局（每人一行、扣掉英雄和增幅本身）逐条检验，只留 |z| ≥ 2 的，系数 × 0.7：
+    #   保命增幅 × 对面爆发英雄数：每多 1 个 +2.1%（z≈2.6）
+    #   法术类增幅 × 队友法系数：每多 1 个 −1.05%（z≈−4.9，全队魔法伤害太单一，对面只要堆魔抗）
+    #   保命装（中娅、守护天使…）× 对面爆发 + 突进数：每多 1 个 +0.94%（z≈2.1）
+    #   治疗护盾装 × 队友普攻核数：每多 1 个 +1.28%（z≈2.4）
+    #   魔抗装 × 对面法系数：+2.3%（z≈4.1，已经在有效生命项里）
+    #   没通过的（不加分）：坦克增幅 / 坦克装 × 队友没前排（z≈0）、%生命伤害 × 对面坦克（z≈0）、韧性 × 对面控制（z≈−1）、
+    #   穿甲 / 法穿 × 对面坦克（z≈−1.7）、重伤 × 对面治疗（z≈−1.6，自建库是「最后出装」，买重伤多半是被奶住的局）
+    SURV_AUGS = {1034, 1180, 1333, 1020, 3039}
+    COMP_SURV_AUG = 0.7 * 2.07
+    COMP_AP_AUG = 0.7 * -1.05
+    COMP_SURV_ITEM = 0.7 * 0.94
+    COMP_HS_ITEM = 0.7 * 1.28
+
+    def comp_aug_pct(self, aid, cn):
+        """学到的阵容项（增幅）：(百分点, 说明) 或 None"""
+        if not cn:
+            return None
+        if aid in self.SURV_AUGS and cn.get("n_e"):
+            v = max(-2.0, min(2.5, self.COMP_SURV_AUG * (cn["e_burst"] - 1.4)))    # 数据里很少超过 3 个：不外推太远
+            if abs(v) >= 0.3:
+                return v, tr("阵容：对面爆发型 {0} 个").format(cn["e_burst"])
+        fam = self.aug_family(aid)
+        apw = min(1.5, fam.get("ap", 0) + fam.get("R_P", 0))
+        if apw > 0 and cn.get("n_a"):
+            v = max(-2.5, min(1.5, self.COMP_AP_AUG * apw * (cn["a_ap"] - 2.0)))
+            if abs(v) >= 0.3:
+                return v, tr("阵容：队友已有 {0} 个法系").format(cn["a_ap"])
+        return None
+
+    def comp_item_pct(self, nv, special, cn):
+        if not cn:
+            return None
+        v, why = 0.0, []
+        if "SURVIVE" in special and cn.get("n_e"):
+            x = self.COMP_SURV_ITEM * (cn["e_burst"] + cn["e_dive"] - 2.8)
+            v += x
+            if abs(x) >= 0.3:
+                why.append(tr("对面爆发 / 突进 {0} 个").format(cn["e_burst"] + cn["e_dive"]))
+        hs = nv.get("HEALSHIELD", 0)
+        if hs > 0.2 and cn.get("n_a"):
+            x = self.COMP_HS_ITEM * hs * (cn["a_aa"] - 1.0)
+            v += x
+            if abs(x) >= 0.3:
+                why.append(tr("队友普攻核 {0} 个").format(cn["a_aa"]))
+        v = max(-2.0, min(2.0, v))
+        return (v, tr("阵容：{0}").format(tr("、").join(why))) if abs(v) >= 0.05 else None
+
     def chem_aug(self, aid, cid, my_augs, comp=frozenset()):
         """回传 {"trait", "pair", "augpair", "comp", "texts"}：英雄特质分、招牌组合分、和已选增幅的组合分、阵容分（都是强度级）"""
         tr_ = self.chem_traits(cid)
@@ -2566,8 +2623,9 @@ class Advisor:
         t["ally_augs"] = ally_augs
         try:
             t["comp_tok"] = self.comp_tokens(me, allies, enemies)
+            t["comp_n"] = self.comp_counts(me, allies, enemies)
         except Exception:  # noqa
-            t["comp_tok"] = set()
+            t["comp_tok"], t["comp_n"] = set(), {}
         return t
 
     # ---------- 共用：克制因子 ----------
@@ -2761,6 +2819,11 @@ class Advisor:
             # 针对对面需要的保命 / 克制装只轻微扣分，并写明「偏离路线但本局需要」
             extra = self.route_factor(route, nv, factors)
             rf0 = extra[0]                   # 3.10：路线调整（评估各条路线时要拿掉）
+            ci = self.comp_item_pct(nv, special, t.get("comp_n"))
+            if ci:                           # 4.0：学到的阵容项（直接加百分点）
+                extra = (extra[0] + ci[0],) + tuple(extra[1:])
+                if abs(ci[0]) >= 0.5:
+                    factors.append((0.02 if ci[0] > 0 else -0.05, ci[1]))
             lead = ""
             if base_id in upg and not quest:  # 增幅强化了这件：加分（3.0.8：1.2 → 2.0，选了「升级」增幅就该出那件）
                 extra = (extra[0] + 2.0, (extra[1] + "；" if extra[1] else "") +
@@ -3355,8 +3418,37 @@ class Advisor:
                 return k
         return None
 
+    def ah_spells(self, cid):
+        """4.0：国服这个英雄的召唤师技能组合 [(编号组, 收缩后胜率, 选用率, 局数)]（往英雄平均收缩 2000 局）"""
+        ah = getattr(self.gd, "aramhex", None)
+        key = str((self.gd.champ(cid) or {}).get("key", ""))
+        rows = ((ah or {}).get("spells") or {}).get(key) or {}
+        tot = sum(v.get("games", 0) for v in rows.values())
+        if tot < 5000:
+            return []
+        base = sum(v.get("wins", 0) for v in rows.values()) / tot
+        out = []
+        for k, v in rows.items():
+            n = v.get("games", 0)
+            if n < 0.02 * tot:
+                continue
+            try:
+                ids = tuple(int(x) for x in k.split("+"))
+            except ValueError:
+                continue
+            out.append((ids, (v.get("wins", 0) + base * 2000) / (n + 2000), n / tot, n))
+        return out
+
     def spells_pick(self, cid):
-        """推荐的召唤师技能（两个编号）：样本够多里胜率最高的；没有就最多人用的"""
+        """推荐的召唤师技能（两个编号）：国服当前版本（几百万局）优先，收缩后胜率比最多人用的高 0.5% 以上才换；
+           没有国服数据就用网上（样本够多里胜率最高的；没有就最多人用的）"""
+        ahs = self.ah_spells(cid)
+        if ahs:
+            pop = max(ahs, key=lambda x: x[2])
+            best = max(ahs, key=lambda x: x[1])
+            pick = best if best[1] - pop[1] >= 0.005 else pop
+            if len(pick[0]) == 2:
+                return list(pick[0])
         c = self.gd.champ(cid) or {}
         cs = self.stats.get(c.get("key"), light=True) if self.stats and c.get("key") else None
         if not cs or not cs.get("summoners"):
@@ -3764,6 +3856,11 @@ class Advisor:
                          tr("专家评分：{0}").format(lv + (tr("，") + fit_w if fit_w else "")))
         exp_pct *= self.expert_boost      # 4.0：你选的专家评分份量（预设 1.5 倍）
         exp_pct = max(-3.0 * self.expert_boost, min(3.0 * self.expert_boost, exp_pct))
+        cmp_l = self.comp_aug_pct(a.get("id"), (t or {}).get("comp_n"))    # 4.0：学到的阵容项（数据检验过，不乘份量）
+        if cmp_l:
+            exp_pct += cmp_l[0]
+            if abs(cmp_l[0]) >= 0.5 and (exp_f is None or abs(cmp_l[0]) > 1.0):
+                exp_f = (0.12 if cmp_l[0] > 0 else -0.12, cmp_l[1])
         if exp_f is None and aff_txt:
             exp_f = (0.12 if aff_txt[0] > 0 else -0.12, aff_txt[1])
         if exp_f is None and ch and ch["texts"]:
@@ -4241,6 +4338,15 @@ class Advisor:
             best = max((x for x in cs["summoners"] if x[3] >= 20000), key=lambda x: x[1], default=None)
             if best and best[0] != pop[0] and best[1] - pop[1] >= 0.01:
                 g["spells"] += tr('；胜率最高 {0}（{1:.1f}%）').format(name(best[0]), best[1] * 100)
+        ahs = self.ah_spells(me.cid)
+        if ahs and self.stats:
+            sn = self.stats.spell_names or {}
+            name = (lambda ids: tr("＋").join(sn.get(i, str(i)) for i in ids))
+            pick = self.spells_pick(me.cid)
+            row = next((x for x in ahs if list(x[0]) == list(pick or [])), None)
+            if row:
+                g["spells"] = (g.get("spells") or "") + (tr("；") if g.get("spells") else "") + \
+                    tr("国服推荐 {0}（{1:.0f}% 的人）").format(name(row[0]), row[2] * 100)
         return g
 
     # ---------- full ----------
@@ -7181,7 +7287,7 @@ AUG_CHEM = {
     1015: "healS:1.5 !heal:-1",
     1018: "cc2:1.5 cc:0.8 !cc:-2 engage:0.5 melee:0.3",
     1019: "dash2:0.5 !dash:-0.5",
-    1020: "melee:0.5 tank:0.3 @enemy_burst:0.3",
+    1020: "melee:0.5 tank:0.3",
     1022: "aa:1.5 onhit:1 !aa:-1",
     1025: "engage:0.5 tank:0.5 melee:0.3",
     1027: "dash:1.5 !dash:-2",
@@ -7241,7 +7347,7 @@ AUG_CHEM = {
     1154: "aoe:0.5 global:0.5 engage:0.3",
     1156: "ap:1 ad:-2 tank:-0.5",
     1170: "aa:1 !aa:-1",
-    1180: "shieldS:0.5 @enemy_burst:0.5",
+    1180: "shieldS:0.5",
     1181: "aa:1 melee:0.5 tank:0.5 @enemy_tank:0.3",
     1187: "burst:0.3",
     1194: "ult:1.5 aoe:0.5 engage:0.5 !ult:-0.5",
@@ -7268,7 +7374,7 @@ AUG_CHEM = {
     1328: "aa:1.5 !aa:-1.5",
     1329: "engage:0.5 tank:0.3",
     1332: "ap:1 healS:0.5 spam:0.5 melee:0.3",
-    1333: "aa:0.3 ranged:0.3 @enemy_burst:0.5",
+    1333: "aa:0.3 ranged:0.3",
     1335: "spam:0.3 aa:0.3",
     1336: "aa:1.5 ad:0.5 !aa:-2",
     1344: "ult:1 melee:1 engage:0.5 ranged:-0.5",
@@ -7543,7 +7649,9 @@ def load_aramhex(log=print, bracket="all"):
         return None
     files = latest.get("files") or {}
     out = {}
-    for name in ("heroes.json", "hero_augments.json", "augments.json", "meta.json"):
+    for name in ("heroes.json", "hero_augments.json", "augments.json", "meta.json", "hero_spells.json"):
+        if name == "hero_spells.json" and name not in files:
+            continue                                  # 4.0：召唤师技能（国服 16.21 起才有）
         path = os.path.join(d, name)
         sha = (files.get(name) or {}).get("sha256") if isinstance(files.get(name), dict) else files.get(name)
         have = None
@@ -7605,6 +7713,7 @@ def load_aramhex(log=print, bracket="all"):
             "matches": ((meta.get("matches") or {}).get("valid") or latest.get("matches") or 0),
             "snapshot": meta.get("snapshot_at", ""), "heroes": heroes, "ha": ha, "band": band,
             "augs": out.get("augments.json") or {}, "prov": meta.get("provisional_augments") or {},
+            "spells": out.get("hero_spells.json") or {},
             "excluded": set((meta.get("excluded_augments") or {}).keys())}
 
 
