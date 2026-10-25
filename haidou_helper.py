@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.1.0"
-APP_BUILD = 2026102401         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.1.1"
+APP_BUILD = 2026102402         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -990,6 +990,46 @@ class GameData:
     def item_name(self, iid):
         it = self.items.get(iid)
         return it["name"] if it else str(iid)
+
+    def item_search_key(self, iid):
+        """4.1.1：商店搜索框打的英文代号（游戏资料里的搜索词，例：无尽之刃 → ie、中娅沙漏 → zhg）。
+           游戏商店的搜索框贴不上剪贴板，打几个英文字母最快、也不会叫出中文输入法。
+           挑「别的装备的名字 / 搜索词里都没有」的最短英文词；没有英文搜索词就回传空字串"""
+        cache = self.__dict__.setdefault("_skey", {})
+        if iid in cache:
+            return cache[iid]
+        if "_corpus" not in self.__dict__:
+            self._corpus = {i: (str(v.get("name", "")) + ";" + str(v.get("colloq", ""))).lower()
+                            for i, v in self.items.items()
+                            if (v.get("gold") or {}).get("purchasable", True) and (v.get("maps") or {}).get("12", True)}
+        it = self.items.get(iid) or self.items.get(iid % 10000 if iid >= 100000 else iid) or {}
+        terms = [t.strip() for t in str(it.get("colloq", "")).split(";")]
+        terms = [t for t in terms if len(t) >= 2 and re.fullmatch(r"[A-Za-z0-9' ]+", t)]
+        name_l = str(it.get("name", "")).lower()
+
+        def unique(t):                    # 别的装备没有任何一个词是这样开头的
+            tl = t.lower()
+            return not any(re.search(r"(^|[;\s'])" + re.escape(tl), txt) for i, txt in self._corpus.items()
+                           if i != iid and not txt.startswith(name_l + ";"))
+        cands = list(terms)
+        for t in terms:                  # 英文全名太长：也试第一个字（Sunfire Aegis → sunfire）
+            w0 = re.sub(r"'s$", "", t.split(" ")[0])
+            if " " in t and len(w0) >= 3:
+                cands.append(w0)
+        cands = sorted(set(cands), key=lambda t: (" " in t, len(t)))
+        key = next((t for t in cands if " " not in t and unique(t)), None) or \
+            next((t for t in cands if unique(t)), None) or \
+            next((t for t in cands if " " not in t), None) or (cands[0] if cands else "")
+        cache[iid] = key.lower() if key and " " not in key else key
+        return cache[iid]
+
+    def item_key_by_name(self, name):
+        for i, v in self.items.items():
+            if v.get("name") == name:
+                k = self.item_search_key(i)
+                if k:
+                    return k
+        return ""
 
     def is_boots(self, iid):
         it = self.items.get(iid)
@@ -3175,7 +3215,8 @@ class Advisor:
         detail = tr("网上数据：") + de["text"] + "\n" + tr("本局调整 {0:+.1f}%：").format(adj) + why
         if abs(extra) >= 0.05:
             detail += "\n" + tr("本局路线 {0:+.1f}%").format(extra)
-        return {"name": ("👟 " if boots else "") + self.gd.item_name(iid), "id": iid, "score": self.item_score(total),
+        return {"name": ("👟 " if boots else "") + self.gd.item_name(iid), "id": iid, "key": self.gd.item_search_key(iid),
+                "score": self.item_score(total),
                 "raw": total, "total": total, "d": de["d"] * 100, "ci": de["ci"] * 100 if de["ci"] else None,
                 "n": de["n"], "adj": adj, "has_data": de["has"], "data_text": de["text"],
                 "price": self.gd.item_price(iid), "reason": why, "wr": de["wr"], "stat_text": detail,
@@ -4432,6 +4473,7 @@ class Advisor:
             shop = self.shopping_plan(me, gold, items)
             shop["respawn"] = me.respawn
             shop["names"] = [self.gd.item_name(i) for i, _ in shop["buy"]]
+            shop["keys"] = [self.gd.item_search_key(i) for i, _ in shop["buy"]]
         guide = self.champ_guide(me, cs, prof)
         ealerts = self.enemy_aug_alerts(me, enemies, manual.get("enemy", []))
         for a in augs:                               # 每个推荐的增幅附一句「怎么用」
@@ -10352,7 +10394,9 @@ def shop_line(shop, gd_names=None):
         return ""
     names = shop.get("names") or []
     rs = shop.get("respawn", 0)
-    return "💰 " + " → ".join(names) + "   {0:.0f}s".format(rs)
+    keys = shop.get("keys") or []
+    return "💰 " + " → ".join(n + (" " + k if k else "") for n, k in zip(names, keys + [""] * len(names))) + \
+        "   {0:.0f}s".format(rs)
 
 
 def fmt_total(d):
@@ -11480,6 +11524,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             mark = "● " if d.get("mine") else ""
             r["nm"].config(text=star + mark + d["name"], fg=GOLD if (cand and i == 0) or d.get("best") else FG)
             meta = []
+            if d.get("key"):                    # 4.1.1：商店搜索框打这几个英文字母
+                meta.append(d["key"])
             if d.get("comp_wp") is not None:
                 meta.append("{0:.0f}%".format(d["comp_wp"] * 100))
             r["meta"].config(text=" · ".join(meta))
@@ -11568,7 +11614,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             root.update()                       # Windows：要处理一次事件，剪贴板才会留住
         except tk.TclError:
             return
-        engine.q.put(("data", tr("已复制「{0}」：打开商店按 Ctrl+V 贴到搜索框（没有光标就先点一下搜索框）").format(name)))
+        key = engine.gd.item_key_by_name(name)
+        engine.q.put(("data", tr("{0}：商店搜索框打 {1}").format(name, key) if key else tr("已复制「{0}」").format(name)))
 
     def mini_click(e=None):
         names = st.get("mini_names") or []
@@ -11804,7 +11851,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         else:
             parts = []
             if its:
-                parts.append(f"▶ {its[0]['name']} {fmt_total(its[0])}%")
+                parts.append(f"▶ {its[0]['name']}" + (f" [{its[0]['key']}]" if its[0].get("key") else "") +
+                             f" {fmt_total(its[0])}%")
             if boots:
                 parts.append(boots["name"])
             line = "   ".join(parts) or tr("等待推荐…")

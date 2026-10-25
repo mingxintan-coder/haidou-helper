@@ -1065,3 +1065,4 @@ EN.update({'国服推荐 {0}（{1:.0f}% 的人）': 'CN pick {0} ({1:.0f}% of pl
            '阵容：队友已有 {0} 个法系': 'Team comp: allies already have {0} mages'})
 EN.update({' 高分段': ' high elo', '刚才选了哪张？': 'Which one did you pick?', '缺 {0}': 'Missing {0}',
            '英雄 {0:.1f}%': 'Champion {0:.1f}%', '补{0}': 'fills {0}', '重骰': 'Reroll'})
+EN.update({'{0}：商店搜索框打 {1}': '{0}: type {1} in the shop search', '已复制「{0}」': 'Copied "{0}"'})

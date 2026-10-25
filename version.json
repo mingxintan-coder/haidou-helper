@@ -1,18 +1,18 @@
 {
- "version": "4.1.0",
+ "version": "4.1.1",
  "date": "2026-10-24",
  "notes": [
+  "推荐装备旁边显示商店搜索代号（例：中娅沙漏 zhg），在商店打英文字母就能找到（商店搜索框不支持 Ctrl+V）",
   "选英雄：卡片直接显示这局预估胜率（国服当前版本所有英雄的胜率 + 你的战绩 + 补位）",
-  "刷新建议只算这一轮会出的增幅",
-  "界面精简：卡片一行、说明放到鼠标移上去"
+  "刷新建议只算这一轮会出的增幅"
  ],
  "files": {
-  "haidou_helper.py": "b78c0dec174e464b5ee671bfe13cad08d519267b9697baae1dff36c1006e2ca1",
-  "lang_en.py": "593de3743f6f0f278eea6a2277341592c26385b2f7ffda5192c7120d1c7401f7",
-  "README.md": "0f1d637d9979c8f4da4243acafa0906a974737bcab824630177dbded68ee3340",
+  "haidou_helper.py": "4d7699300aed4181c6065adb343d7c5004a36bbb198f4160e2d6f99a7797ab73",
+  "lang_en.py": "f50366b59278472d2fb9775dd3fa69677a5b3201f3cc63ecafc7e7c0da908575",
+  "README.md": "0426abe1b8d6e6a3395dd33620055fa39be86a43f4175ae8ce8d70eefd811ba2",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026102401
+ "build": 2026102402
 }
