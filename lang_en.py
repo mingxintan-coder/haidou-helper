@@ -1063,3 +1063,5 @@ EN.update({'不吃 ': 'weak with ', '吃 ': 'strong with ', '增幅偏好（国�
 EN.update({'国服推荐 {0}（{1:.0f}% 的人）': 'CN pick {0} ({1:.0f}% of players)', '对面爆发 / 突进 {0} 个': '{0} enemy burst / divers',
            '队友普攻核 {0} 个': '{0} allied auto-attackers', '阵容：对面爆发型 {0} 个': 'Team comp: {0} enemy burst champions',
            '阵容：队友已有 {0} 个法系': 'Team comp: allies already have {0} mages'})
+EN.update({' 高分段': ' high elo', '刚才选了哪张？': 'Which one did you pick?', '缺 {0}': 'Missing {0}',
+           '英雄 {0:.1f}%': 'Champion {0:.1f}%', '补{0}': 'fills {0}', '重骰': 'Reroll'})

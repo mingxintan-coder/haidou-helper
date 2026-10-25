@@ -1,18 +1,18 @@
 {
- "version": "4.0.0",
- "date": "2026-10-23",
+ "version": "4.1.0",
+ "date": "2026-10-24",
  "notes": [
-  "专家评分 v2：从国服数据学英雄玩法 + 技能 × 增幅化学反应（份量预设 1.5 倍）",
-  "阵容：保命增幅 / 保命装 × 对面爆发、法术增幅 × 队友法系、治疗护盾装 × 队友普攻核（自建库 4851 局检验过）",
-  "召唤师技能改用国服 16.21（514 万局）"
+  "选英雄：卡片直接显示这局预估胜率（国服当前版本所有英雄的胜率 + 你的战绩 + 补位）",
+  "刷新建议只算这一轮会出的增幅",
+  "界面精简：卡片一行、说明放到鼠标移上去"
  ],
  "files": {
-  "haidou_helper.py": "0dfa88cfc0003647b08c192cc8ef3fbc4c90e9ba8cc065afbfd47b0c459dba50",
-  "lang_en.py": "5ea532c192a03af69bdb3d50292005fcdc0c8aefa35f17be0759df2881f00a36",
-  "README.md": "0b5b3abf8d36ccd008d5766a927da2d787ef8b93fa7362bea113478d4ccbf3fc",
+  "haidou_helper.py": "b78c0dec174e464b5ee671bfe13cad08d519267b9697baae1dff36c1006e2ca1",
+  "lang_en.py": "593de3743f6f0f278eea6a2277341592c26385b2f7ffda5192c7120d1c7401f7",
+  "README.md": "0f1d637d9979c8f4da4243acafa0906a974737bcab824630177dbded68ee3340",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026102303
+ "build": 2026102401
 }

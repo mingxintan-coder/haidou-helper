@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.0.0"
-APP_BUILD = 2026102303         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.1.0"
+APP_BUILD = 2026102401         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -1532,6 +1532,9 @@ class StatsProvider:
               "aug_stages": {int(k): {int(r["id"]): {"wr": r.get("winRate", 0), "pick": r.get("pickRate", 0),
                                                     "n": r.get("sampleCount", 0)} for r in v if "id" in r}
                              for k, v in (augs.get("stages") or {}).items()},
+              # 4.1：每张增幅会在第几次三选一出现（刷新池 / 局势推荐只算这一轮真的会出的）
+              "aug_avail": {int(r["id"]): {int(x) for x in r["availableStages"] if str(x).isdigit()}
+                            for r in augs.get("all", []) if "id" in r and r.get("availableStages")},
               "core": []}
         # 主流核心出装（胜率最高的前几套）
         b = (raw.get("builds", {}).get("filtered") or {}).get("archetypes", [])
@@ -1924,6 +1927,12 @@ class Advisor:
     REQ_LABEL = {"M": "近战类", "R": "远程类", "D": "位移类", "C": "控制类", "H": "治疗护盾类", "K": "坦克类", "A": "普攻类",
                  "P": "法术类", "S": "技能急速类", "U": "大绝类", "N": "魔力类", "X": "刺客类", "E": "开团类"}
 
+    @staticmethod
+    def aug_in_stage(aid, cs, stage):
+        """这张增幅会不会在第 stage 次三选一出现（ARAMKit availableStages；没有资料就当会）"""
+        av = (cs or {}).get("aug_avail") or {}
+        return aid not in av or not av[aid] or stage in av[aid]
+
     def aug_offered(self, aid, cid):
         """这张增幅会不会出给这个英雄（国服数据里这个英雄有记录、这张却 0 局 → 不会出；全新增幅不算）"""
         ah = getattr(self.gd, "aramhex", None)
@@ -2025,6 +2034,7 @@ class Advisor:
         aff = list(by.values())
         pos = [x for x in sorted(aff, reverse=True) if x[0] >= 0.5][:3]
         neg = [x for x in sorted(aff) if x[0] <= -0.5][:2]
+        self._aug_style = ([self.aff_label(k) for v, k in pos], [self.aff_label(k) for v, k in neg])
         if not pos and not neg:
             return ""
         txt = tr("增幅偏好（国服数据学到）：")
@@ -3344,19 +3354,30 @@ class Advisor:
         p = (w + 0.5 * CHAMP_K) / (n + CHAMP_K)
         return math.log(p / (1 - p))
 
+    def champ_base_wr(self, cid):
+        """4.1：英雄本身的胜率（当前版本）：国服 AramHex（所有英雄都有，几百万局）和 ARAMKit（下载过的）平均，
+           各自按局数往 50% 收缩；都没有就用自建库。回传 (胜率, 局数)"""
+        c = self.gd.champ(cid) or {}
+        est = []
+        ah = getattr(self.gd, "aramhex", None)
+        h = ((ah or {}).get("heroes") or {}).get(str(c.get("key"))) if c else None
+        if h and h.get("games"):
+            est.append((0.5 + (h["win_rate"] - 0.5) * h["games"] / (h["games"] + 3000), h["games"]))
+        cs = self.stats.champs.get(c.get("key")) if self.stats and c.get("key") else None
+        if cs and cs.get("n") and cs.get("wr"):
+            est.append((0.5 + (cs["wr"] - 0.5) * cs["n"] / (cs["n"] + 3000), cs["n"]))
+        if est:
+            return sum(x for x, _ in est) / len(est), sum(n for _, n in est)
+        db = getattr(self, "riotdb", None)
+        x = db.champ(c.get("id", cid)) if db is not None else None
+        return ((x["w"] + 0.5 * CHAMP_K) / (x["n"] + CHAMP_K), x["n"]) if x else (0.5, 0)
+
     def champ_win_est(self, cid):
         """这个英雄（由你来玩）的预估胜率：
              英雄本身＝网上海斗胜率（已下载的才用，按样本数往 50% 收缩）；没有就用自建数据库（先给 CHAMP_K 局五五开）；
              你自己＝你玩这个英雄的胜率，以英雄本身为先验、给 8 局的份量（玩得多才会偏离）"""
         c = self.gd.champ(cid) or {}
-        base = None
-        cs = self.stats.champs.get(c.get("key")) if self.stats and c.get("key") else None
-        if cs and cs.get("n") and cs.get("wr"):
-            base = 0.5 + (cs["wr"] - 0.5) * cs["n"] / (cs["n"] + 2000)
-        if base is None:
-            db = getattr(self, "riotdb", None)
-            x = db.champ(c.get("id", cid)) if db is not None else None
-            base = (x["w"] + 0.5 * CHAMP_K) / (x["n"] + CHAMP_K) if x else 0.5
+        base = self.champ_base_wr(cid)[0]
         store = getattr(self, "habits_store", None)
         if store is not None and store.enabled:
             hp = store.profile(c.get("id", cid))
@@ -3570,42 +3591,32 @@ class Advisor:
             c = self.gd.champ(cid)
             if not c:
                 continue
-            cs = self.stats.get(c.get("key"), light=True) if self.stats else None
-            reasons = []
-            if cs and cs.get("n"):
-                W = max(0.0, min(1.0, 0.5 + 8 * (cs["wr"] - 0.5) * cs["n"] / (cs["n"] + 5000)))
-                reasons.append(tr('海斗胜率 {0:.1f}%').format(cs["wr"] * 100) +
-                               (tr('（{0} 级）').format(cs["tier"]) if cs.get("tier") else ""))
-                wr = cs["wr"]
-            else:
-                W, wr = 0.5, None
-            U = 0.5
+            # 4.1：直接估这局的胜率 ＝ 英雄本身（国服 + ARAMKit 当前版本）＋ 你玩它的战绩（最多 ±4%）＋ 补上队伍缺的（每项 +1.5%）
+            base, n = self.champ_base_wr(cid)
+            reasons = [tr("英雄 {0:.1f}%").format(base * 100)] if n else []
+            you = 0.0
             if store is not None and store.enabled:
                 hp = store.profile(c["id"])
-                if hp["games"]:
-                    fam = math.sqrt(min(hp["games"], 20) / 20)
-                    pw = (hp["wins"] + 1) / (hp["decided"] + 2) if hp["decided"] else 0.5
-                    U = 0.5 * fam + 0.5 * max(0.0, min(1.0, 0.5 + 2 * (pw - 0.5)))
-                    reasons.append(tr('你 {0} 局 {1} 胜').format(hp["games"], hp["wins"]))
-                else:
-                    U = 0.25
+                if hp["decided"]:
+                    mine_p = (hp["wins"] + 8 * base) / (hp["decided"] + 8)
+                    you = max(-0.04, min(0.04, mine_p - base))
+                    reasons.append(tr("你 {0} 局 {1} 胜").format(hp["games"], hp["wins"]))
             t = self.champ_traits(cid)
             fills = [k for k in need if need[k] and t[k]]
-            C = min(1.0, 0.3 + 0.35 * len(fills))
             if fills:
-                reasons.append(tr('补上队伍缺的{0}').format(tr("、").join(label[k] for k in fills)))
-            score = 100 * (0.55 * W + 0.25 * U + 0.20 * C)
+                reasons.append(tr("补{0}").format(tr("、").join(label[k] for k in fills)))
+            p = base + you + 0.015 * len(fills)
             try:
                 cwp = self.comp_wp_vs_avg(list(team) + [cid])
             except Exception:  # noqa
                 cwp = None
             cm = getattr(getattr(self, "riotdb", None), "comp_model", None)
             if not cm or (cm.get("acc") or 0) < 0.53:
-                cwp = None            # 阵容模型留出对局的准确率不到 53%（你的库：50.5%，跟猜硬币一样）→ 不显示「阵容 xx%」
-            out.append({"id": cid, "name": c["name"], "score": int(round(score)), "raw": score / 100, "wr": wr,
-                        "comp_wp": cwp,
+                cwp = None            # 阵容模型留出对局的准确率不到 53%（你的库：50.5%，跟猜硬币一样）→ 不用
+            out.append({"id": cid, "name": c["name"], "pct": p, "score": int(round(50 + 1000 * (p - 0.5))),
+                        "raw": p, "wr": base if n else None, "comp_wp": cwp,
                         "reason": tr("，").join(reasons) or tr("暂无数据"), "mine": cid == mine,
-                        "hint": tr("你现在的英雄") if cid == mine else ""})
+                        "hint": ""})
         out.sort(key=lambda x: -x["raw"])
         return out, [label[k] for k in need if need[k]]
 
@@ -3945,7 +3956,8 @@ class Advisor:
         self._reroll = None
         mine = {a["name"] for a in my_augs}
         res = [self.score_aug(a, prof, t, my_augs, me, cs, stage) for a in self.aug_index.values()
-               if a["name"] not in mine and a.get("desc") and self.aug_offered(a.get("id"), me.cid)]
+               if a["name"] not in mine and a.get("desc") and self.aug_offered(a.get("id"), me.cid)
+               and self.aug_in_stage(a.get("id"), cs, stage)]
         res.sort(key=lambda x: -x["raw"])
         self._aug_snap = {x["name"]: x["total"] for x in res}     # 赛后「你选的 vs 推荐的」用
         return res[:k]
@@ -3998,7 +4010,8 @@ class Advisor:
             skip = {a["name"] for a in my_augs} | {a["name"] for a in candidates}
             pool = [a for a in self.aug_index.values()
                     if a["name"] not in skip and a.get("desc") and a.get("rarity", 0) == rar
-                    and self.aug_offered(a.get("id"), me.cid)]     # 4.0 修正：不会出给这个英雄的不算进刷新池
+                    and self.aug_offered(a.get("id"), me.cid)      # 4.0 修正：不会出给这个英雄的不算进刷新池
+                    and self.aug_in_stage(a.get("id"), cs, stage)]  # 4.1：这一轮不会出的也不算
             pool_scores = [self.score_aug(a, prof, t, my_augs, me, cs, stage)["total"] for a in pool]
             self._reroll_cache = (key, time.time(), pool_scores)
         if len(pool_scores) < 8:
@@ -4284,7 +4297,9 @@ class Advisor:
         g = {"combos": [], "style": "", "skills": "", "spells": "", "auto": False,
              "habit": getattr(self, "_habit_line", ""), "mvp": self.mvp_consensus(me)}
         try:
+            self._aug_style = ([], [])
             g["aug_style"] = self.aug_style_line(me.cid)
+            g["aug_pos"], g["aug_neg"] = self._aug_style
         except Exception:  # noqa
             g["aug_style"] = ""
         if me.cid in COMBOS:
@@ -4322,8 +4337,10 @@ class Advisor:
                 if lines:
                     parts.append(tr('{0}「{1}」{2}').format(key, ability, lines[0]))
             g["balance"] = tr("海斗平衡：") + (tr("，").join(parts) if parts else tr("无调整"))
+            g["balance_parts"] = parts
         if cs and cs.get("skills"):
             order, wr, pick, n = max(cs["skills"], key=lambda x: x[2])     # 最多人用的
+            g["skill_order"] = order.replace(">", " > ")
             ks = order.split(">")
             names = (lambda k: tr('{0}「{1}」').format(k, kit[k]['name']) if kit and k in kit else k)
             g["skills"] = tr('加点：主{0} 副{1}（{2}，{3:.0f}% 的人，胜率 {4:.1f}%）').format(names(ks[0]), names(ks[1]) if len(ks) > 1 else '', order, pick * 100, wr * 100)
@@ -4338,6 +4355,12 @@ class Advisor:
             best = max((x for x in cs["summoners"] if x[3] >= 20000), key=lambda x: x[1], default=None)
             if best and best[0] != pop[0] and best[1] - pop[1] >= 0.01:
                 g["spells"] += tr('；胜率最高 {0}（{1:.1f}%）').format(name(best[0]), best[1] * 100)
+        try:
+            sp = self.spells_pick(me.cid)
+            sn = (self.stats.spell_names or {}) if self.stats else {}
+            g["spell_pick"] = tr("＋").join(sn.get(i, SPELL_NAMES.get(i, str(i))) for i in sp) if sp else ""
+        except Exception:  # noqa
+            g["spell_pick"] = ""
         ahs = self.ah_spells(me.cid)
         if ahs and self.stats:
             sn = self.stats.spell_names or {}
@@ -10328,13 +10351,14 @@ def shop_line(shop, gd_names=None):
     if not shop or not shop.get("buy"):
         return ""
     names = shop.get("names") or []
-    left = shop.get("left", 0)
     rs = shop.get("respawn", 0)
-    return tr('💰 复活前买：{0}（剩 {1}g · {2:.0f} 秒后复活）').format(" → ".join(names), int(left), rs)
+    return "💰 " + " → ".join(names) + "   {0:.0f}s".format(rs)
 
 
 def fmt_total(d):
     """推荐卡片左边的大数字：有 total（胜率百分点）就显示 +2.5，旧格式（选英雄）就显示分数"""
+    if "pct" in d:                       # 4.1：选英雄卡片直接显示这局的预估胜率
+        return "{0:.0f}%".format(d["pct"] * 100)
     return "{0:+.1f}".format(d["total"]) if "total" in d else str(d.get("score", ""))
 
 
@@ -10343,6 +10367,7 @@ def aug_tier(total):
     return "S" if total >= 3 else "A" if total >= 1.5 else "B" if total >= 0 else "C" if total >= -1.5 else "D"
 
 
+SPELL_NAMES = {1: "净化", 3: "虚弱", 4: "闪现", 6: "疾跑", 7: "治疗", 13: "清晰", 14: "引燃", 21: "屏障", 32: "雪球"}
 TIER_COLOR = {"S": "#ff9f43", "A": "#3ddc84", "B": "#e6e9ef", "C": "#8a93a6", "D": "#5b6477"}
 
 
@@ -10726,9 +10751,10 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         for i, (lb, tx) in enumerate(brief_rows):
             if i < len(items):
                 label, text, hot = items[i]
-                lb.config(text=label)
-                tx.config(text=text, fg=ORANGE if hot else FG)
-                lb.grid(row=i, column=0, sticky="nw", padx=(0, 8))
+                # 4.1：不再显示左边的小标签（胜率 / 挑战 / 打法…），内容本身就看得懂；紧急的用橙色
+                lb.grid_forget()
+                tx.config(text=text, fg=ORANGE if hot else FG,
+                          font=F["name"] if i == 0 and label == tr("胜率") else F["tip"])
                 tx.grid(row=i, column=1, sticky="w")
             else:
                 lb.grid_forget()
@@ -10857,7 +10883,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             meta = tk.Label(top, text="", bg=CARD, fg=SUB, font=F["small"], anchor="e")
             meta.pack(side="right", padx=6)
             rs = tk.Label(fr, text="", bg=CARD, fg=SUB, font=F["small"], anchor="w", justify="left")
-            rs.pack(fill="x", padx=(6, 6), pady=(0, 3))
+            # 4.1：卡片只留一行（分数 + 名字），理由和数据都在鼠标移上去的说明里
             full = {"text": ""}
             for w in (fr, nm, rs, meta, sc):
                 hover(w, lambda full=full: full["text"])
@@ -10899,8 +10925,6 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             for w in route_box.winfo_children():
                 w.destroy()
             st["route_chips"] = {}
-            tk.Label(route_box, text=tr("路线"), bg=BG, fg=SUB, font=F["small"]).grid(row=0, column=0, sticky="nw",
-                                                                                     padx=(0, 4), pady=1)
             cells = [r["kind"] for r in rs] + (["_auto"] if rec.get("user_route") else [])
             for n, k in enumerate(cells):
                 b = tk.Label(route_box, text="", font=F["small"], padx=5, pady=2, cursor="hand2")
@@ -10915,7 +10939,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         for k, b in st["route_chips"].items():
             b.unbind("<Button-1>")
             if k == "_auto":
-                b.config(text=tr("自动"), bg=CARD, fg=SUB)
+                b.config(text="✕", bg=CARD, fg=SUB)
                 b.bind("<Button-1>", lambda e: engine.set_route(None))
                 continue
             r = cur.get(k)
@@ -10937,7 +10961,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
 
     # 增幅页
     confirm_box = tk.Frame(pages["augs"], bg="#2a2412")          # 3.0.8：「刚才选了哪张？」补点
-    confirm_lbl = tk.Label(confirm_box, text=tr("刚才三选一选了哪张？点一下记下（出装会跟着调整）"), bg="#2a2412", fg=GOLD,
+    confirm_lbl = tk.Label(confirm_box, text=tr("刚才选了哪张？"), bg="#2a2412", fg=GOLD,
                            font=F["small"], anchor="w", justify="left")
     confirm_lbl.pack(fill="x", padx=6, pady=(3, 1))
     wraps.append(confirm_lbl)
@@ -10945,7 +10969,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     for _ in range(3):
         b = tk.Label(confirm_box, text="", bg="#3a3220", fg=FG, font=F["small"], padx=6, pady=2, cursor="hand2", anchor="w")
         confirm_btns.append(b)
-    confirm_skip = tk.Label(confirm_box, text=tr("都没选 / 不记"), bg="#2a2412", fg=SUB, font=F["small"], cursor="hand2",
+    confirm_skip = tk.Label(confirm_box, text="✕", bg="#2a2412", fg=SUB, font=F["small"], cursor="hand2",
                             anchor="e")
     confirm_skip.bind("<Button-1>", lambda e: (engine.confirm_pick(None), confirm_box.pack_forget()))
     aug_head = tk.Label(pages["augs"], text="", bg=BG, fg=SUB, font=F["small"], anchor="w")
@@ -10966,9 +10990,13 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                          padx=8, pady=6)
     guide_lbl.pack(fill="x")
     wraps.append(guide_lbl)
+    kit_lbl = tk.Label(pages["guide"], text="", bg=BG, fg=SUB, font=F["small"], anchor="w", justify="left", padx=8)
+    pos_lbl = tk.Label(pages["guide"], text="", bg=BG, fg=GREEN, font=F["small"], anchor="w", justify="left", padx=8)
+    neg_lbl = tk.Label(pages["guide"], text="", bg=BG, fg=ORANGE, font=F["small"], anchor="w", justify="left", padx=8)
     intel_lbl = tk.Label(pages["guide"], text="", bg=BG, fg=FG, font=F["small"], anchor="w", justify="left",
                          padx=8, pady=4)
-    wraps.append(intel_lbl)
+    for w_ in (kit_lbl, pos_lbl, neg_lbl, intel_lbl):
+        wraps.append(w_)
 
     def show_intel(intel):
         """玩法页下方：这局每个人的情报（队友 / 敌方各一段）"""
@@ -11449,24 +11477,14 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 r["sc"].config(text=t + " " + fmt_total(d), fg=TIER_COLOR[t], width=6)
             else:
                 r["sc"].config(text=fmt_total(d), fg=score_color(d["score"]), width=4)
-            r["nm"].config(text=star + d["name"], fg=GOLD if cand and i == 0 else FG)
+            mark = "● " if d.get("mine") else ""
+            r["nm"].config(text=star + mark + d["name"], fg=GOLD if (cand and i == 0) or d.get("best") else FG)
             meta = []
-            if "total" in d:                    # 2.0：网上数据（胜率差 ± 误差），跟本局调整分开
-                meta.append(fmt_data(d))
-            elif d.get("wr"):
-                meta.append(f"{d['wr'] * 100:.1f}%")
             if d.get("comp_wp") is not None:
-                meta.append(tr("阵容 {0:.0f}%").format(d["comp_wp"] * 100))
-            if d.get("hint"):
-                meta.append(d["hint"])
-            elif not d.get("known", True):
-                meta.append(tr("未收录"))
+                meta.append("{0:.0f}%".format(d["comp_wp"] * 100))
             r["meta"].config(text=" · ".join(meta))
-            why = brief(d["reason"])
-            if "adj" in d and abs(d["adj"]) >= 0.1:
-                why = tr("本局 {0:+.1f}：").format(d["adj"]) + why
-            r["rs"].config(text=short(why, 26))
-            r["full"]["text"] = d["reason"] + (f"\n{d['stat_text']}" if d.get("stat_text") else "")
+            r["full"]["text"] = d["reason"] + (f"\n{d['stat_text']}" if d.get("stat_text") else "") + \
+                (f"\n\n{d['howto']}" if d.get("howto") else "")
             if before is not None:
                 r["fr"].pack(fill="x", pady=2, before=before)
             else:
@@ -11479,42 +11497,39 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             return
         best = cands[0]
         needs = sel.get("needs") or []
-        summary.config(text=tr("选英雄") + (" · " + tr('队伍缺：{0}').format(tr("、").join(needs)) if needs else ""))
+        # 4.1：只写要做的事；卡片上是每个英雄这局的预估胜率，● 是你现在的英雄
+        summary.config(text=(tr("缺 {0}").format(tr("、").join(needs)) if needs else ""))
         alert.pack_forget()
         brief_box.pack_forget()
-        summary.pack(fill="x", pady=(5, 0), before=tabs_bar)
+        if needs:
+            summary.pack(fill="x", pady=(5, 0), before=tabs_bar)
+        else:
+            summary.pack_forget()
         shop_lbl.pack_forget()
         for lb in tip_lbls:
             lb.pack_forget()
         mine = next((c for c in cands if c.get("mine")), None)
-        cw = (mine or best).get("comp_wp")
-        if cw is not None:
-            summary.config(text=summary.cget("text") + " · " + tr("阵容预估胜率 {0:.0f}%").format(cw * 100))
-        if mine and best is not mine and best["score"] - mine["score"] >= 3:
-            tip = tr('★ 建议从备选席换成 {0}（{1} 分，你现在的 {2} {3} 分）').format(
-                best["name"], best["score"], mine["name"], mine["score"])
+        best["best"] = True
+        if mine and best is not mine and best["raw"] - mine["raw"] >= 0.01:
+            tip = "⇄ {0}   {1:+.0f}%".format(best["name"], (best["raw"] - mine["raw"]) * 100)
         elif mine:
-            tip = tr('保持 {0} 就好（备选席里没有明显更好的）').format(mine["name"])
-        elif sel.get("subset"):
-            tip = tr('★ 推荐 {0}（{1}）').format(best["name"], best.get("hint") or "")
+            tip = "✓ " + mine["name"]
         else:
-            tip = tr('★ 推荐 {0}').format(best["name"])
-        tip_lbls[0].config(text=tip)
+            tip = "★ " + best["name"]
+        tip_lbls[0].config(text=tip, fg=GOLD)
         tip_lbls[0].pack(fill="x", pady=(0, 1))
         rr = sel.get("reroll")
-        if rr and len(tip_lbls) > 1:                 # 要不要重骰（和重骰的平均期望比）
-            tip_lbls[1].config(text="↻ " + rr["text"], fg=GOLD if rr["act"] in ("reroll", "bench") else FG)
+        if rr and rr["act"] == "reroll" and len(tip_lbls) > 1:     # 只在该重骰时出现
+            rtxt = "↻ {0}   {1:+.0f}%".format(tr("重骰"), (rr["ev"] - rr["est"]) * 100)
+            tip_lbls[1].config(text=rtxt, fg=GOLD)
             tip_lbls[1].pack(fill="x", pady=(0, 1))
-            if rr["act"] == "reroll":
-                mini_extra = "\n↻ " + rr["text"]
-            else:
-                mini_extra = ""
+            mini_extra = "\n" + rtxt
         else:
             mini_extra = ""
         # 你自己的英雄、分给你挑的 1~3 个一定要看得到（备选席很多时会被挤出前 4），剩下的位置给分数最高的
         must = [c for c in cands if c is mine or c["id"] in (sel.get("subset") or [])][:4]
         rows = must + [c for c in cands if c not in must][:4 - len(must)]
-        rows.sort(key=lambda c: -c["score"])
+        rows.sort(key=lambda c: -c["raw"])
         fill_rows(item_rows, rows)
         if st["tab"] != "items" and not st.get("select_tab_done"):
             st["select_tab_done"] = True                # 选英雄开始时切到出装页一次（推荐英雄在那页）
@@ -11653,8 +11668,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             curve_cv.pack_forget()
         # 出装页
         normal = [] if has_brief else [x for x in tips if not x[2]][:2]
-        if rec.get("route"):                       # 本局路线（定路线）永远放第一行
-            normal = [(0, rec["route"], False, GOLD if rec.get("route_locked") else SUB)] + normal[:1]
+        # 4.1：路线不再写成一行字（上面的路线按钮已经标出现在走哪条）
         for i, lb in enumerate(tip_lbls):
             lb.pack_forget()
             if i < len(normal):
@@ -11688,27 +11702,22 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             confirm_box.pack_forget()
         # 增幅页
         cand = rec.get("cand_mode")
-        aug_head.config(text=(tr("识别到三选一 · ★ 推荐 · 点卡片记为已选") if rec.get("auto_cand") else
-                              tr("三选一评分 · ★ 推荐 · 点卡片记为已选")) if cand else tr("当前局势推荐的增幅"),
-                        fg=GOLD if cand else SUB)
+        aug_head.pack_forget()                     # 4.1：不要标题，★ 和排序已经说明
         rr = rec.get("aug_reroll") if cand else None
-        if rr:
-            reroll_lbl.config(text=rr["text"], fg=GOLD if rr["act"] == "reroll" else DIM)
+        if rr and rr["act"] == "reroll":           # 4.1：只在该刷新时出现：↻ 哪张 + 平均多多少
+            reroll_lbl.config(text="↻ {0}   {1:+.1f}%".format(rr["card"], rr["gain"]), fg=GOLD)
             if mine_lbl.winfo_manager():
                 reroll_lbl.pack(fill="x", pady=(1, 0), before=mine_lbl)
             else:
                 reroll_lbl.pack(fill="x", pady=(1, 0))
         else:
             reroll_lbl.pack_forget()
-        mine_lbl.config(text=tr("已选增幅：") + (tr("、").join(mine_names) if mine_names else tr("（还没有）")))
+        mine_lbl.config(text=" · ".join(mine_names))
         mine_lbl.pack(fill="x", pady=(2, 0))
         ea = rec.get("enemy_augs") or []
         if ea:
-            enemy_lbl.config(text=tr("敌方增幅：") + "\n" + "\n".join(
+            enemy_lbl.config(text="\n".join(
                 tr("{0}「{1}」").format(x["who"], x["aug"]) + (" → " + x["fix"] if x["fix"] else "") for x in ea[:6]))
-            enemy_lbl.pack(fill="x", pady=(2, 0), after=mine_lbl)
-        elif not rec.get("eaug_visible") and rec.get("game_time", 0) > 420:
-            enemy_lbl.config(text=tr("游戏没提供敌方增幅"), fg=DIM)
             enemy_lbl.pack(fill="x", pady=(2, 0), after=mine_lbl)
         else:
             enemy_lbl.pack_forget()
@@ -11716,42 +11725,45 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             enemy_lbl.config(fg=ORANGE)
         fill_rows(aug_rows, rec.get("augs", [])[:3 if cand else 4], cand, before=mine_lbl)
         top_aug = (rec.get("augs") or [{}])[0]
-        if cand and top_aug.get("howto"):           # 教学：推荐的那张要怎么打出效果
-            howto_lbl.config(text=tr("★ {0} 怎么用：{1}").format(top_aug["name"], top_aug["howto"]))
-            howto_lbl.pack(fill="x", pady=(2, 0), before=mine_lbl)
-        else:
-            howto_lbl.pack_forget()
-        # 玩法页
+        howto_lbl.pack_forget()                    # 4.1：怎么用放在卡片的说明里（鼠标移上去）
+        _ = top_aug
+        # 玩法页（4.1：不用小标题；第一行是本局打法，接着连招、加点 / 召唤师 / 平衡，绿色▲吃、红色▼不吃的增幅）
         g = rec.get("guide") or {}
         co = rec.get("coach") or {}
         lines = []
-        if rec.get("plan"):                          # 本局打法（双方阵容比较）
-            lines.append(tr("【本局打法】") + tr("；").join(rec["plan"]))
+        if rec.get("plan"):
+            lines.append(tr("；").join(rec["plan"]))
             lines.append("")
-        if co.get("items") or co.get("augs"):        # 教学：怎么打出效果
-            lines.append(tr("【怎么打出效果】"))
-            lines += [tr("按 {0} {1}：{2}").format(k, n, tip) for k, n, tip in co.get("items", [])]
-            lines += [tr("「{0}」：{1}").format(n, tip) for n, tip in co.get("augs", [])]
-            lines.append("")
-        lines += [x for x in (g.get("habit"), g.get("mvp"), g.get("balance"), g.get("aug_style"), g.get("skills"), g.get("spells")) if x]
-        lines += [tr('连招  {0}\n        {1}').format(c, note) for c, note in g.get("combos", [])]
+        lines += [tr("{0} {1}：{2}").format(k, n, tip) for k, n, tip in co.get("items", [])]
+        lines += [tr("「{0}」{1}").format(n, tip) for n, tip in co.get("augs", [])]
+        lines += ["{0}    {1}".format(c, note) for c, note in g.get("combos", [])]
         if g.get("style"):
-            lines.append(tr("玩法  ") + g["style"])
-        guide_lbl.config(text="\n".join(lines) or tr("（暂无这个英雄的玩法数据）"))
-        # 分段 / 数据来源
+            lines.append(g["style"])
+        if g.get("habit"):
+            lines.append(g["habit"])
+        guide_lbl.config(text="\n".join(lines).strip() or "—")
+        kit = [x for x in (g.get("skill_order"), g.get("spell_pick")) if x] + list(g.get("balance_parts") or [])
+        kit_lbl.config(text="   ·   ".join(kit))
+        pos_lbl.config(text="▲ " + " · ".join(g.get("aug_pos") or []))
+        neg_lbl.config(text="▼ " + " · ".join(g.get("aug_neg") or []))
+        last = guide_lbl
+        for lbl, show_it in ((kit_lbl, kit), (pos_lbl, g.get("aug_pos")), (neg_lbl, g.get("aug_neg"))):
+            if show_it:
+                lbl.pack(fill="x", pady=(3, 0), after=last)
+                last = lbl
+            else:
+                lbl.pack_forget()
+        # 分段 / 数据来源（4.1：只留版本和来源名，细节在鼠标移上去的说明里；点一下切分段）
         so = S()
         gv = ".".join(str(engine.gd.version).split(".")[:2])
-        if so is not None:
-            ver = (so.version or {}).get("version", "")
-            tier = tr("高分段") if so.dataset == "high" else tr("全部分段")
-            footer.config(text=tr('游戏 {0} · ARAMKit {1} · {2} ⇄').format(gv, ver, tier) if ver else tr('游戏 {0} · {1} ⇄').format(gv, tier))
-        else:
-            footer.config(text=tr('游戏 {0}').format(gv))
-        ahd = getattr(engine.gd, "aramhex", None)
-        if ahd:                                   # 3.7：国服数据版本（CC BY-NC，注明来源）
-            footer.config(text=footer.cget("text").replace(" ⇄", "") +
-                          tr(" · 国服 {0}（{1:.0f}万局）").format(ahd["patch"], (ahd["matches"] or 0) / 1e4) +
-                          (" ⇄" if so is not None else ""))
+        src = []
+        if so is not None and (so.version or {}).get("version"):
+            src.append("ARAMKit" + (tr(" 高分段") if so.dataset == "high" else ""))
+        if getattr(engine.gd, "aramhex", None):
+            src.append("AramHex")
+        if getattr(engine.gd, "am_combos", None):
+            src.append("arammayhem")
+        footer.config(text="   ".join(([gv] if gv[:1].isdigit() else []) + src))
         # 自动选分页：出现新的三选一（或重骰）时切到增幅一次；你自己切走就不再拉回来
         cand_key = tuple(a["name"] for a in rec.get("augs", [])[:3]) if cand else \
             (("confirm",) + tuple(rec["confirm"]) if rec.get("confirm") else None)
