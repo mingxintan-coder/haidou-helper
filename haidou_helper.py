@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.1.3"
-APP_BUILD = 2026102502         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.1.4"
+APP_BUILD = 2026102503         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -2858,11 +2858,16 @@ class Advisor:
                 owned_fx.setdefault(n, gd.item_name(i))
         champ_ad = cp.get("AD", 0) + cp.get("CRIT", 0) + cp.get("LETHAL", 0)
         champ_ap = cp.get("AP", 0) + cp.get("MPEN", 0)
+        owned_groups = set()
+        for i in me.items:
+            owned_groups |= item_groups(i)
         for iid in gd.candidate_items(map_id, allowed):
             if gd.item_name(iid) in owned_names:
                 continue
             if gd.is_boots(iid):
                 continue                     # 鞋子另外单独推荐（见 recommend_boots）
+            if item_groups(iid) & owned_groups:
+                continue                     # 4.1.4：你已经有同一类的（例：有多米尼克就买不了致死宣告）
             vec, special = gd.item_vec(iid)
             raw_nv = norm({d: vec[d] for d in vec if d in BUILD_DIMS})
             nv = self.rule_vec(raw_nv, rules)
@@ -2960,6 +2965,14 @@ class Advisor:
             if getattr(self, "_ema_cid", None) == me.cid:
                 self._ema, self._top = {}, None
         out = self.smooth(me, out)          # 推荐只看装备本身好不好，不看你现在身上有多少钱（也不显示差多少钱）
+        seen_g, kept = set(), []
+        for x in out:                       # 4.1.4：同一类只能出一件 → 推荐清单每一类只留最好的那件
+            g = item_groups(x["id"])
+            if g & seen_g:
+                continue
+            seen_g |= g
+            kept.append(x)
+        out = kept
         self._item_snap = [(x["id"], x["total"]) for x in out]      # 赛后「你选的 vs 推荐的」用（按推荐顺序）
         boots = self.recommend_boots(me, t, prof, role, cs, gold, legend, phase, rules)
         return ([boots] if boots else []) + out[:k], prof
@@ -3093,9 +3106,13 @@ class Advisor:
                 for iid, nv, fit in low:
                     if route_member(nv, kind, sup_ok):
                         de = self.data_effect_item(iid, cs_, nslot_, aug_ids_)
-                        extra.append({"name": gd.item_name(iid), "base": de["d"] * 100 + self.situ_pct([], fit),
+                        extra.append({"name": gd.item_name(iid), "id": iid, "base": de["d"] * 100 + self.situ_pct([], fit),
                                       "_nv": nv})
                 mem = sorted(mem + extra, key=lambda x: -x["base"])
+            if len(mem) < 2:
+                continue
+            g0 = item_groups(mem[0].get("id", 0))       # 4.1.4：第二件不能和第一件同一类（买不了两件）
+            mem = [mem[0]] + [x for x in mem[1:] if not (item_groups(x.get("id", 0)) & g0)]
             if len(mem) < 2:
                 continue
             d_items = 0.6 * mem[0]["base"] + 0.4 * mem[1]["base"]
@@ -10512,6 +10529,26 @@ def fmt_total(d):
 def aug_tier(total):
     """增幅等级（S～D）：看总效果（网上数据 + 本局调整，单位：胜率百分点）"""
     return "S" if total >= 3 else "A" if total >= 1.5 else "B" if total >= 0 else "C" if total >= -1.5 else "D"
+
+
+# 4.1.4：同一类只能持有一件（游戏商店会挡）。按游戏规则 + 自建库 4.9 万人次的最后出装检验：
+#   每一组里任两件「照英雄出装比例该一起出现几十～几百次」，实际 0 次（例：致死宣告 × 多米尼克的问候 预期 367 次、实际 0）
+ITEM_LIMIT_GROUPS = {
+    "穿甲": {3033, 3036, 6694, 3071, 3302},          # 致死宣告、多米尼克的问候、席利妲咒怨、黑色切割者、终点
+    "法穿": {3135, 3137, 8010, 3302},                # 虚空之杖、秘库之花、噬血诅咒、终点
+    "咒刃": {3057, 2510, 3078, 3100, 3508, 6662},     # 闪耀剑、暮夜与黎明、三相之力、巫妖之祸、夺魄之镰、寒冰霸拳
+    "献祭": {6660, 3068, 6664, 223069},             # 巴米灰烬、日炎圣盾、空寂辉光
+    "九头蛇": {3077, 3074, 3748, 6698, 6631},        # 海神之斧、狂怒 / 泰坦 / 亵渎九头蛇、步履破坏者
+    "命脉": {3155, 2525, 3053, 3156, 6673},           # 吸魔剑、原生质束带、史特拉克手套、魔提斯深渊、不朽盾弓
+    "女神泪": {3070, 3003, 3040, 3004, 3042, 3119, 3121},   # 女神之泪、大天使 / 炽天使、魔剑正宗 / 终极魔剑、凛冬将至 / 芬布尔之冬
+    "凝滞": {2420, 2421, 3157},                     # 探索者护腕、破碎的护腕、中娅沙漏
+    "和声": {2526, 2530},                           # 密语之环、歌谣冠冕
+}
+
+
+def item_groups(iid):
+    b = iid % 10000 if iid >= 100000 else iid
+    return {g for g, ids in ITEM_LIMIT_GROUPS.items() if iid in ids or b in ids}
 
 
 SPELL_NAMES = {1: "净化", 3: "虚弱", 4: "闪现", 6: "疾跑", 7: "治疗", 13: "清晰", 14: "引燃", 21: "屏障", 32: "雪球"}
