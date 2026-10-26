@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.1.1"
-APP_BUILD = 2026102402         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.1.2"
+APP_BUILD = 2026102501         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -723,6 +723,14 @@ class GameData:
         need_dl = version and not os.path.exists(os.path.join(APP_DIR, f"ver_{version}_{lang}"))
         items_raw = cached(f"item_{lang}.json", base + "/item.json" if need_dl else None)
         champ_raw = cached(f"champion_{lang}.json", base + "/champion.json" if need_dl else None)
+        en_items = None                       # 4.1.2：英文装备名（商店搜索代号的后备）
+        if not lang.lower().startswith("en"):
+            en_path = os.path.join(APP_DIR, "item_en_US.json")
+            en_url = f"{DDRAGON}/cdn/{version}/data/en_US/item.json" if version and (need_dl or not os.path.exists(en_path)) else None
+            try:
+                en_items = cached("item_en_US.json", en_url, optional=True)
+            except Exception:  # noqa
+                en_items = None
         if not isinstance(items_raw, dict) or not isinstance(champ_raw, dict):
             raise RuntimeError(tr("没有装备/英雄数据：请确认能访问 ddragon.leagueoflegends.com 后重试"))
         if need_dl and fresh["ok"]:
@@ -731,6 +739,9 @@ class GameData:
             version = None     # 新版本没下载完整、用的还是旧缓存：版本号也照旧（下次检查会再下载）
 
         items = {int(k): v for k, v in items_raw.get("data", {}).items() if k.isdigit()}
+        for k, v in ((en_items or {}).get("data", {}) if isinstance(en_items, dict) else {}).items():
+            if k.isdigit() and int(k) in items:
+                items[int(k)]["name_en"] = v.get("name", "")
         champs = {v["id"].lower(): v for v in champ_raw.get("data", {}).values()}
         for v in items.values():  # 台服名称，转成简体字
             for f in ("name", "description", "plaintext"):
@@ -1006,20 +1017,40 @@ class GameData:
         terms = [t.strip() for t in str(it.get("colloq", "")).split(";")]
         terms = [t for t in terms if len(t) >= 2 and re.fullmatch(r"[A-Za-z0-9' ]+", t)]
         name_l = str(it.get("name", "")).lower()
+        if "_corpus_en" not in self.__dict__:
+            self._corpus_en = {i: str(v.get("name_en", "")).lower() for i, v in self.items.items() if v.get("name_en")}
 
-        def unique(t):                    # 别的装备没有任何一个词是这样开头的
+        def unique(t):                    # 别的装备没有任何一个词是这样开头的（中文资料的搜索词 + 英文名）
             tl = t.lower()
-            return not any(re.search(r"(^|[;\s'])" + re.escape(tl), txt) for i, txt in self._corpus.items()
-                           if i != iid and not txt.startswith(name_l + ";"))
-        cands = list(terms)
-        for t in terms:                  # 英文全名太长：也试第一个字（Sunfire Aegis → sunfire）
-            w0 = re.sub(r"'s$", "", t.split(" ")[0])
-            if " " in t and len(w0) >= 3:
-                cands.append(w0)
-        cands = sorted(set(cands), key=lambda t: (" " in t, len(t)))
-        key = next((t for t in cands if " " not in t and unique(t)), None) or \
-            next((t for t in cands if unique(t)), None) or \
-            next((t for t in cands if " " not in t), None) or (cands[0] if cands else "")
+            pat = re.compile(r"(^|[;\s'])" + re.escape(tl))
+            return not any(pat.search(txt) for i, txt in self._corpus.items()
+                           if i != iid and not txt.startswith(name_l + ";")) and \
+                not any(pat.search(txt) for i, txt in self._corpus_en.items()
+                        if i != iid and txt != str(it.get("name_en", "")).lower())
+
+        def pick(terms):
+            cands = list(terms)
+            for t in terms:              # 英文全名太长：也试其中一个字（Sunfire Aegis → sunfire、Immortal Shieldbow → shieldbow）
+                if " " in t:
+                    for w0 in t.split(" "):
+                        w0 = re.sub(r"'s$", "", w0)
+                        if len(w0) >= 3 and w0.lower() not in ("the", "and", "of"):
+                            cands.append(w0)
+            cands = sorted(set(cands), key=lambda t: (" " in t, len(t)))
+            return next((t for t in cands if " " not in t and unique(t)), None) or \
+                next((t for t in cands if unique(t)), None) or \
+                next((t for t in cands if " " not in t), None) or (cands[0] if cands else "")
+        key = pick(terms)
+        if not key and it.get("name_en"):          # 4.1.2：资料里没有英文搜索词 → 用英文装备名
+            key = pick([re.sub(r"[^A-Za-z0-9' ]", "", it["name_en"]).strip()])
+        if not key:                                # 再没有：中文名最短、别的装备名里没有的开头
+            nm = str(it.get("name", ""))
+            for n in range(2, len(nm) + 1):
+                if not any(str(v.get("name", "")).find(nm[:n]) >= 0 for i, v in self.items.items()
+                           if i != iid and v.get("name") != nm and i in self._corpus):
+                    key = nm[:n]
+                    break
+            key = key or nm[:2]
         cache[iid] = key.lower() if key and " " not in key else key
         return cache[iid]
 
@@ -2799,6 +2830,7 @@ class Advisor:
         rules = self.aug_rules(me, my_augs)          # 会改变出装的已选增幅（转换属性、变近战…）
         crit_now = float(s.get("critChance", 0) or 0)
         out = []
+        lowfit = []
         allowed = self.stats.item_allow if self.stats else None   # 海斗实际商店清单
         # 出装方向（2.13）：已经出的大件合起来是什么路线（坦 / 物理 / 法术 / 攻速…）；英雄本身打什么伤害
         route = self.build_route(me, my_augs, rules, allies, enemies, cs)
@@ -2838,7 +2870,9 @@ class Advisor:
             base_id = iid % 10000 if iid >= 100000 else iid
             loose = any(base_id in r.get("loose_ids", ()) for _, r in rules)
             quest = quest_need.get(base_id)
-            if fit < (0.25 if loose else 0.35) and not quest:
+            on_user_route = bool(route and route.get("user") and route_member(nv, route["kind"]))
+            if fit < (0.25 if loose else 0.35) and not quest and not on_user_route:
+                lowfit.append((iid, nv, fit))     # 4.1.2：不推荐，但你自己选冷门路线时要估它的胜率
                 continue
             self._ehp_pct = 0.0
             ehp = self.ehp_factor(iid, me, t, prof, role)
@@ -2915,6 +2949,7 @@ class Advisor:
             out[-1]["base"] = out[-1]["total"] - rf0 - (out[-1]["adj"] - adj_nr)
             out[-1]["_nv"] = nv
         try:
+            self._route_low = (lowfit, cs, nslot, my_aug_ids)
             self._routes = self.eval_routes(out, me, allies, enemies, my_augs, t, cp, role, route)
         except Exception:  # noqa
             log_crash("eval_routes failed", sys.exc_info())
@@ -3034,11 +3069,9 @@ class Advisor:
         n = max(1, t.get("n", 5))
         lean = max(-1.0, min(1.0, (t["armor"] - t["mr"]) / n / 60))     # 对面人均物防比魔防多多少
         res = []
+        low, cs_, nslot_, aug_ids_ = getattr(self, "_route_low", None) or ([], None, 1, [])
         for kind in ROUTE_ORDER:
-            if kind in ("ap", "atk") and rel.get(kind, 0) < 0.3:
-                continue
-            if kind == "tank" and rel.get("tank", 0) < 0.3 and role not in ("tank", "fighter"):
-                continue
+            # 4.1.2：物理 / 魔法 / 坦克三条一定列出来（冷门路线也让你自己选，胜率会照实算低）
             if kind in ("armor", "mr") and not (melee or rel.get("tank", 0) >= 0.3 or role in ("tank", "fighter")):
                 continue
             if kind == "haste" and cp.get("HASTE", 0) + cp.get("ULT", 0) < 0.3:
@@ -3047,6 +3080,15 @@ class Advisor:
                 continue
             sup_ok = cp.get("HEALSHIELD", 0) >= 0.25
             mem = sorted((x for x in out if route_member(x.get("_nv"), kind, sup_ok)), key=lambda x: -x["base"])
+            if len(mem) < 2 and kind in ("atk", "ap", "tank"):
+                # 推荐清单里没有这条路线的装备（这个英雄平常不走）：用同一套公式的简化版估（网上数据 + 契合度）
+                extra = []
+                for iid, nv, fit in low:
+                    if route_member(nv, kind, sup_ok):
+                        de = self.data_effect_item(iid, cs_, nslot_, aug_ids_)
+                        extra.append({"name": gd.item_name(iid), "base": de["d"] * 100 + self.situ_pct([], fit),
+                                      "_nv": nv})
+                mem = sorted(mem + extra, key=lambda x: -x["base"])
             if len(mem) < 2:
                 continue
             d_items = 0.6 * mem[0]["base"] + 0.4 * mem[1]["base"]
@@ -3174,11 +3216,13 @@ class Advisor:
         if route.get("user"):                      # 3.10：你选的路线 → 这条路线的装备明显优先
             lab = route["label"]
             if route_member(nv, route["kind"]):
-                return 1.5, tr("你选的路线（{0}）").format(lab), 0.08
+                return 2.0, tr("你选的路线（{0}）").format(lab), 0.08
             need = [txt for f, txt in factors if f > 0.1]
-            if need:
+            ks_ = kind_scores(nv)
+            dmg_other = max(ks_, key=ks_.get) in ("atk", "ap") and max(ks_.values()) >= 0.35
+            if need and not dmg_other:      # 保命 / 克制装：本局需要就只轻扣；别的伤害类型的装照样大扣
                 return -0.5, tr("不是你选的路线（{0}），但本局需要：{1}").format(lab, need[0]), -0.05
-            return -1.5, tr("不是你选的路线（{0}）").format(lab), -0.2
+            return -3.0, tr("不是你选的路线（{0}）").format(lab), -0.2   # 4.1.2：你选了就照你的走
         ks = kind_scores(nv)
         top = max(ks.values())
         if top <= 0:
@@ -3966,9 +4010,21 @@ class Advisor:
             if abs(own_pct) >= 0.3:
                 factors.insert(0, (0.1 if lift > 0 else -0.1,
                                    tr("自建库：拿这张的玩家比同英雄平均 {0:+.1f}%（{1} 次）").format(lift * 100, int(round(n)))))
-        total = de["d"] * 100 + adj + own_pct + exp_pct
+        route_pct = 0.0
+        ur = getattr(self, "_route", None)
+        if ur and ur.get("user") and bv:   # 4.1.2：你自己选的路线 → 增幅也跟着走（同路线 +1%、相反的伤害类型 −1%）
+            if route_member(bv, ur["kind"]):
+                route_pct = 1.0
+                exp_f = (0.12, tr("你选的路线（{0}）").format(ur["label"]))
+            else:
+                ks_ = kind_scores(bv)
+                main_k = max(ks_, key=ks_.get) if max(ks_.values()) > 0.3 else None
+                if main_k and main_k != ur["kind"] and main_k in ("atk", "ap") and ur["kind"] in ("atk", "ap", "tank"):
+                    route_pct = -1.0
+                    exp_f = (-0.12, tr("不是你选的路线（{0}）").format(ur["label"]))
+        total = de["d"] * 100 + adj + own_pct + exp_pct + route_pct
         rf = list(factors)
-        if exp_f and (abs(exp_pct) >= 0.3 or not de["has"]):
+        if exp_f and (abs(exp_pct) >= 0.3 or not de["has"] or route_pct):
             rf.append(exp_f)
         if am_pick is not None and (am_pick >= 0.3 or am_pick < 0.03):
             rf.append((0.05 if am_pick >= 0.3 else -0.05, tr('国服选取率 {0:.0f}%').format(am_pick * 100)))
@@ -10949,8 +11005,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     tips_box.pack(fill="x")
     # 3.10：选路线（每条路线的预估胜率；点一下就按那条推荐，再点一次取消）
     route_box = tk.Frame(pages["items"], bg=BG)
-    st["route_key"] = None
-    st["route_chips"] = {}
+    st["route_key"] = st["route_key2"] = None
+    st["route_chips"], st["route_chips2"] = {}, {}
 
     def route_tip(r):
         txt = tr("这条路线最好的两件：{0}").format(tr("、").join(r.get("items") or []))
@@ -10958,29 +11014,29 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         txt += "\n" + tr("阵容 {0:+.1f}%").format(r["team"]) + (tr("（{0}）").format(tr("，").join(r["why"])) if r.get("why") else "")
         return txt + "\n" + (tr("再点一次取消，回到自动") if r.get("chosen") else tr("点一下：之后的出装按这条路线推荐"))
 
-    def show_routes(rec):
+    def show_routes(rec, route_box=route_box, sk="", place=None):
         rs = rec.get("routes") or []
         if len(rs) < 2 and not rec.get("user_route"):
             route_box.pack_forget()
             return
         key = tuple(r["kind"] for r in rs) + (bool(rec.get("user_route")),)
-        if st["route_key"] != key:
-            st["route_key"] = key
+        if st["route_key" + sk] != key:
+            st["route_key" + sk] = key
             for w in route_box.winfo_children():
                 w.destroy()
-            st["route_chips"] = {}
+            st["route_chips" + sk] = {}
             cells = [r["kind"] for r in rs] + (["_auto"] if rec.get("user_route") else [])
             for n, k in enumerate(cells):
                 b = tk.Label(route_box, text="", font=F["small"], padx=5, pady=2, cursor="hand2")
-                b.grid(row=n // 3, column=1 + n % 3, sticky="we", padx=1, pady=1)
-                st["route_chips"][k] = b
+                b.grid(row=n // 4, column=1 + n % 4, sticky="we", padx=1, pady=1)
+                st["route_chips" + sk][k] = b
                 if k != "_auto":
-                    hover(b, lambda k=k: route_tip(st["route_data"][k]) if k in st.get("route_data", {}) else "")
-            for c in range(1, 4):
-                route_box.grid_columnconfigure(c, weight=1, uniform="route")
+                    hover(b, lambda k=k: route_tip(st["route_data" + sk][k]) if k in st.get("route_data" + sk, {}) else "")
+            for c in range(1, 5):
+                route_box.grid_columnconfigure(c, weight=1 if c <= len(cells) else 0, uniform="route")
         cur = {r["kind"]: r for r in rs}
-        st["route_data"] = cur
-        for k, b in st["route_chips"].items():
+        st["route_data" + sk] = cur
+        for k, b in st["route_chips" + sk].items():
             b.unbind("<Button-1>")
             if k == "_auto":
                 b.config(text="✕", bg=CARD, fg=SUB)
@@ -10995,7 +11051,10 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                      bg=GOLD if r.get("chosen") else CARD,
                      fg=BG if r.get("chosen") else (GOLD if r.get("best") or r.get("current") else FG))
             b.bind("<Button-1>", lambda e, k=k, on=r.get("chosen"): engine.set_route(None if on else k))
-        route_box.pack(fill="x", pady=(2, 3), before=tips_box)
+        if place:
+            place()
+        else:
+            route_box.pack(fill="x", pady=(2, 3), before=tips_box)
     tip_lbls = []
     for _ in range(2):
         lb = tk.Label(tips_box, text="", bg=BG, fg=FG, font=F["tip"], anchor="w", justify="left")
@@ -11018,6 +11077,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     confirm_skip.bind("<Button-1>", lambda e: (engine.confirm_pick(None), confirm_box.pack_forget()))
     aug_head = tk.Label(pages["augs"], text="", bg=BG, fg=SUB, font=F["small"], anchor="w")
     aug_head.pack(fill="x", pady=(0, 2))
+    aug_route_holder = tk.Frame(pages["augs"], bg=BG)      # 4.1.2：增幅页也能选路线
+    aug_route_holder.pack(fill="x")
+    route_box2 = tk.Frame(aug_route_holder, bg=BG)
     aug_rows = make_rows(pages["augs"], 4)
     reroll_lbl = tk.Label(pages["augs"], text="", bg=BG, fg=SUB, font=F["small"], anchor="w", justify="left")   # 3.1：要不要刷新
     wraps.append(reroll_lbl)
@@ -11725,6 +11787,10 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             show_routes(rec)
         except Exception:  # noqa
             route_box.pack_forget()
+        try:
+            show_routes(rec, route_box2, "2", lambda: route_box2.pack(fill="x", pady=(0, 3)))
+        except Exception:  # noqa
+            route_box2.pack_forget()
         fill_rows(item_rows, rec.get("items", [])[:4])
         # 补点：刚才选了哪张
         cf = rec.get("confirm") or []
