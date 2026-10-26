@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.1.2"
-APP_BUILD = 2026102501         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.1.3"
+APP_BUILD = 2026102502         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -3070,17 +3070,24 @@ class Advisor:
         lean = max(-1.0, min(1.0, (t["armor"] - t["mr"]) / n / 60))     # 对面人均物防比魔防多多少
         res = []
         low, cs_, nslot_, aug_ids_ = getattr(self, "_route_low", None) or ([], None, 1, [])
+        sup_ok0 = cp.get("HEALSHIELD", 0) >= 0.25
+        share = self.route_shares(me, cs_, sup_ok0)
+        user_kind = route["kind"] if route and route.get("user") else None
         for kind in ROUTE_ORDER:
-            # 4.1.2：物理 / 魔法 / 坦克三条一定列出来（冷门路线也让你自己选，胜率会照实算低）
-            if kind in ("armor", "mr") and not (melee or rel.get("tank", 0) >= 0.3 or role in ("tank", "fighter")):
-                continue
-            if kind == "haste" and cp.get("HASTE", 0) + cp.get("ULT", 0) < 0.3:
-                continue
-            if kind == "sup" and cp.get("HEALSHIELD", 0) < 0.25:
+            # 4.1.3：有数据时只列这个英雄最常走的几条（ARAMKit 核心出装 / 自建库），你选过的那条也留着
+            if share is not None:
+                if kind not in share and kind != user_kind:
+                    continue
+            elif kind != user_kind and (                       # 没有数据：按英雄本身判断能走哪几条
+                    (kind in ("ap", "atk") and rel.get(kind, 0) < 0.3) or
+                    (kind == "tank" and rel.get("tank", 0) < 0.3 and role not in ("tank", "fighter")) or
+                    (kind in ("armor", "mr") and not (melee or rel.get("tank", 0) >= 0.3 or role in ("tank", "fighter"))) or
+                    (kind == "haste" and cp.get("HASTE", 0) + cp.get("ULT", 0) < 0.3) or
+                    (kind == "sup" and cp.get("HEALSHIELD", 0) < 0.25)):
                 continue
             sup_ok = cp.get("HEALSHIELD", 0) >= 0.25
             mem = sorted((x for x in out if route_member(x.get("_nv"), kind, sup_ok)), key=lambda x: -x["base"])
-            if len(mem) < 2 and kind in ("atk", "ap", "tank"):
+            if len(mem) < 2:
                 # 推荐清单里没有这条路线的装备（这个英雄平常不走）：用同一套公式的简化版估（网上数据 + 契合度）
                 extra = []
                 for iid, nv, fit in low:
@@ -3115,6 +3122,7 @@ class Advisor:
                 why.append((tr("对面堆物防") if lean > 0 else tr("对面堆魔防")) + " {0:+.1f}".format(dfn))
             d = d_items + team + dfn
             res.append({"kind": kind, "label": tr(ROUTE_LABEL[kind]), "d": d, "items_d": d_items, "team": team + dfn,
+                        "share": (share or {}).get(kind),
                         "items": [x["name"] for x in mem[:2]], "why": why,
                         "chosen": bool(route and route.get("user") and route["kind"] == kind),
                         "current": bool(route and route["kind"] == kind)})
@@ -3122,6 +3130,45 @@ class Advisor:
             best = max(res, key=lambda r: r["d"])
             best["best"] = True
         return res
+
+    def route_shares(self, me, cs, sup_ok=False):
+        """4.1.3：这个英雄大家实际走哪几条路线、各占多少（ARAMKit 主流核心出装的选取率；没有就用自建库这个英雄的最后出装）。
+           一套核心出装算一条主路线（三件里最多的那一类），另外有两件以上是物防 / 魔防 / 减CD / 治疗护盾的也算那一条。
+           只留占 8% 以上的，最多 4 条；资料不够回传 None"""
+        tot = {}
+        gd = self.gd
+
+        def add(items, w):
+            nvs = [norm({d: x for d, x in gd.item_vec(i)[0].items() if d in BUILD_DIMS}) for i in items
+                   if i in gd.items and gd.is_completed(i) and not gd.is_boots(i)]
+            if len(nvs) < 2:
+                return
+            cnt = {k: sum(1 for v in nvs if route_member(v, k, sup_ok)) for k in ROUTE_ORDER}
+            main = max(("atk", "ap", "tank"), key=lambda k: (cnt[k], -("atk", "ap", "tank").index(k)))
+            if cnt[main]:
+                tot[main] = tot.get(main, 0.0) + w
+            for k in ("armor", "mr", "haste", "sup"):
+                if cnt[k] >= 2:
+                    tot[k] = tot.get(k, 0.0) + w
+        if cs and cs.get("core"):
+            for c in cs["core"]:
+                add(c["items"], c.get("pick") or 0.0)
+        if not tot:
+            db = getattr(self, "riotdb", None)
+            champ = (gd.champ(me.cid) or {}).get("id", me.cid)
+            try:
+                rows = [r for g in db.games().values() for r in g if r.get("c") == champ] if db is not None else []
+            except Exception:  # noqa
+                rows = []
+            if len(rows) >= 20:
+                for r in rows:
+                    add(r.get("i") or [], 1.0)
+        s_ = sum(v for k, v in tot.items() if k in ("atk", "ap", "tank"))
+        if not s_:
+            return None
+        sh = {k: v / s_ for k, v in tot.items()}
+        keep = sorted((k for k, v in sh.items() if v >= 0.08), key=lambda k: -sh[k])[:4]
+        return {k: sh[k] for k in keep} or None
 
     def build_route(self, me, my_augs, rules=None, allies=(), enemies=(), cs=None):
         """本局出装路线（法术 / 物理输出 / 坦 / 辅助）：
@@ -11009,7 +11056,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     st["route_chips"], st["route_chips2"] = {}, {}
 
     def route_tip(r):
-        txt = tr("这条路线最好的两件：{0}").format(tr("、").join(r.get("items") or []))
+        txt = (tr("{0:.0f}% 的人走这条").format(r["share"] * 100) + "\n" if r.get("share") else "") + \
+            tr("这条路线最好的两件：{0}").format(tr("、").join(r.get("items") or []))
         txt += "\n" + tr("装备 {0:+.1f}%（网上数据 + 对面伤害 / 装备 + 你的增幅）").format(r["items_d"])
         txt += "\n" + tr("阵容 {0:+.1f}%").format(r["team"]) + (tr("（{0}）").format(tr("，").join(r["why"])) if r.get("why") else "")
         return txt + "\n" + (tr("再点一次取消，回到自动") if r.get("chosen") else tr("点一下：之后的出装按这条路线推荐"))
