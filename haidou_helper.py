@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.1.4"
-APP_BUILD = 2026102503         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.1.5"
+APP_BUILD = 2026102504         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -10384,7 +10384,7 @@ class DataUpdater:
         self.busy = False
         self.last_result = ""
         self.app_new = None
-        self.last_app_check = time.time() - 6 * 3600 + 3     # 3.6：启动 3 秒后就查程序新版本（自动更新）
+        self.last_app_check = 0.0                             # 3.6：启动后第一圈就查程序新版本（自动更新）
 
     def check_app(self, manual=False):
         self.last_app_check = time.time()
@@ -10480,8 +10480,10 @@ class DataUpdater:
 
     def run(self, stop):
         was_connected = False
+        first = True
         while not stop.is_set():
-            manual = self.now.wait(20)
+            manual = self.now.wait(3 if first else 20)
+            first = False
             self.now.clear()
             conn = self.engine.connected
             game_over = was_connected and not conn
@@ -10492,7 +10494,8 @@ class DataUpdater:
                     self.check(manual)
                 except Exception as e:  # noqa
                     self.engine.q.put(("data", tr('更新出错：{0}').format(e)))
-            if manual or (not conn and time.time() - self.last_app_check > 6 * 3600):
+            # 4.1.5：不在对局中每 30 分钟查一次程序新版本（以前 6 小时，一直开着的助手要很久才发现新版），每局结束也查
+            if manual or (not conn and (game_over or time.time() - self.last_app_check > 1800)):
                 try:
                     self.check_app(manual)
                 except Exception:  # noqa
@@ -11889,7 +11892,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                     b.pack(fill="x", padx=6, pady=1)
             confirm_skip.pack_forget()
             confirm_skip.pack(fill="x", padx=6, pady=(0, 3))
-            confirm_box.pack(fill="x", pady=(0, 3), before=aug_head)
+            confirm_box.pack(fill="x", pady=(0, 3), before=aug_route_holder)   # 4.1.5 修正：标题已经不显示，改放在路线按钮前
             if st.get("confirm_key") != tuple(cf):
                 st["confirm_key"] = tuple(cf)
                 if st["tab"] != "augs":

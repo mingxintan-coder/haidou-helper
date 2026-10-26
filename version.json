@@ -1,18 +1,18 @@
 {
- "version": "4.1.4",
+ "version": "4.1.5",
  "date": "2026-10-25",
  "notes": [
-  "同一类只能出一件的装备（穿甲、法穿、咒刃、献祭、九头蛇、命脉、女神泪、凝滞、和声）不再一起推荐",
-  "路线按钮只列这个英雄最常走的几条（按网上主流出装 / 自建库的比例），鼠标移上去看多少人走",
-  "每件装备都有商店搜索代号"
+  "自动更新：不在对局中每 30 分钟查一次新版（以前 6 小时）",
+  "修正三选一后「刚才选了哪张」造成的界面报错",
+  "同一类只能出一件的装备（穿甲、法穿、咒刃、献祭、九头蛇、命脉、女神泪、凝滞、和声）不再一起推荐"
  ],
  "files": {
-  "haidou_helper.py": "0c06d97575f9c9b13c66d43c9b10267f14db0ceaf12ccd09681629254a1cd7f4",
+  "haidou_helper.py": "1788642e0d241043eb0695184f6d3d7c16dc2dedc58bc9c3ba35fe82acf208cc",
   "lang_en.py": "4b5b41d64ad1f84eec59fb3b5d9eb68325a862599517ee892c7413a6d0b67b3a",
-  "README.md": "166b94e851c9dc463f85b02c6ff12eba0d602c34ffef7af161042e77f7fefa83",
+  "README.md": "de9e26d12fde803c13898fd180c94f063b03b73869e12f9281c1b4c88ab05307",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026102503
+ "build": 2026102504
 }
