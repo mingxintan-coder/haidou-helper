@@ -1070,3 +1070,4 @@ EN.update({'{0:.0f}% 的人走这条': '{0:.0f}% of players go this way'})
 EN.update({'你 vs 同英雄平均（每分钟）：': 'You vs champion average (per minute): ', '击杀': 'kills', '助攻': 'assists',
            '同英雄平均：': 'vs champ avg: ', '对比': 'Compare', '我方重伤 {0}': 'our anti-heal {0}', '阵亡': 'deaths',
            '{0} 件吸血': '{0} lifesteal items'})
+EN.update({'红方': 'Red side', '蓝方': 'Blue side'})
