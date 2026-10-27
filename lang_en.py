@@ -1067,3 +1067,6 @@ EN.update({' 高分段': ' high elo', '刚才选了哪张？': 'Which one did yo
            '英雄 {0:.1f}%': 'Champion {0:.1f}%', '补{0}': 'fills {0}', '重骰': 'Reroll'})
 EN.update({'{0}：商店搜索框打 {1}': '{0}: type {1} in the shop search', '已复制「{0}」': 'Copied "{0}"'})
 EN.update({'{0:.0f}% 的人走这条': '{0:.0f}% of players go this way'})
+EN.update({'你 vs 同英雄平均（每分钟）：': 'You vs champion average (per minute): ', '击杀': 'kills', '助攻': 'assists',
+           '同英雄平均：': 'vs champ avg: ', '对比': 'Compare', '我方重伤 {0}': 'our anti-heal {0}', '阵亡': 'deaths',
+           '{0} 件吸血': '{0} lifesteal items'})

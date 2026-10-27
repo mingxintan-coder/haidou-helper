@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.1.5"
-APP_BUILD = 2026102504         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.2.0"
+APP_BUILD = 2026102601         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -1606,7 +1606,10 @@ class StatsProvider:
               # 4.1：每张增幅会在第几次三选一出现（刷新池 / 局势推荐只算这一轮真的会出的）
               "aug_avail": {int(r["id"]): {int(x) for x in r["availableStages"] if str(x).isdigit()}
                             for r in augs.get("all", []) if "id" in r and r.get("availableStages")},
-              "core": []}
+              "core": [],
+              # 4.2：这个英雄每局的平均数据（击杀 / 阵亡 / 助攻 / 输出 / 承伤 / 治疗护盾 / 控制秒数 / 对局秒数…）
+              "avg": {k: v for k, v in (raw.get("champion", {}).get("stats") or {}).items()
+                      if isinstance(v, (int, float))}}
         # 主流核心出装（胜率最高的前几套）
         b = (raw.get("builds", {}).get("filtered") or {}).get("archetypes", [])
         for arch in b:
@@ -2645,6 +2648,7 @@ class Advisor:
                 it_tags = gd.items.get(iid, {}).get("tags", [])
                 if "LifeSteal" in it_tags or "SpellVamp" in it_tags:
                     t["heal"] += 0.4
+                    t["heal_items"] = t.get("heal_items", 0) + 1
             nm = gd.champ_name(e.cid)
             if champ_role(gd, e.cid, "heal"):
                 t["heal"] += 1.0 * (1 + self.bal(e.cid, "healing")) * (1 + 0.5 * self.bal(e.cid, "shielding"))
@@ -4377,6 +4381,12 @@ class Advisor:
         style = {"tank": tr("先手开团"), "fighter": tr("侧翼进场"), "adc": tr("躲前排后输出"),
                  "mage": tr("远距消耗"), "assassin": tr("等控制交完再切"), "support": tr("保护主C")}[self.role_of(me, prof)]
         focus = getattr(self, "_focus", "")
+        hr = self.heal_row(t)
+        if hr:
+            out.append(hr)
+        br = self.bench_row(me)
+        if br:
+            out.append(br)
         out.append((tr("玩法"), style + (" · " + tr("打{0}").format(focus) if focus else ""), False))
         if ealerts:
             now = time.time()
@@ -4391,6 +4401,64 @@ class Advisor:
                 txt += " +{0}".format(len(ealerts) - 1)
             out.append((tr("敌增幅"), txt, bool(fresh)))
         return out
+
+    def heal_row(self, t):
+        """4.2 治疗装追踪：对面的回复（治疗型英雄 + 吸血 / 法术吸血装）和我方重伤数量；对面回复强、我方还没重伤就标橙色"""
+        healers = [h_ for h_ in t.get("healers") or [] if not h_.startswith(tr("「"))]
+        n_items = t.get("heal_items", 0)
+        if t.get("heal", 0) < 1.0 and not n_items:
+            return None
+        ah = t.get("team_antiheal", 0)
+        txt = "🩸 " + (tr("、").join(healers[:2]) if healers else "") + \
+            ((" + " if healers else "") + tr("{0} 件吸血").format(n_items) if n_items else "") + \
+            "   " + tr("我方重伤 {0}").format(ah)
+        return (tr("回复"), txt, t.get("heal", 0) >= 2.0 and ah == 0)
+
+    def bench_row(self, me):
+        """4.2：你这局（每分钟）和同英雄平均比：击杀 / 阵亡 / 助攻（ARAMKit 这个英雄几百万局的平均）。5 分钟后才显示"""
+        avg = (getattr(self, "_cs_now", None) or {}).get("avg") or {}
+        mins = (me.game_time or 0) / 60
+        dur = (avg.get("gameDuration") or 0) / 60
+        if mins < 5 or dur < 5 or not avg.get("kills"):
+            return None
+
+        def ratio(mine, key):
+            per = (avg.get(key) or 0) / dur
+            return (mine / mins) / per if per > 0 else None
+        rk, rd, ra = ratio(me.kills, "kills"), ratio(me.deaths, "deaths"), ratio(me.assists, "assists")
+        parts = []
+        for lab, r in ((tr("击杀"), rk), (tr("阵亡"), rd), (tr("助攻"), ra)):
+            if r is not None:
+                parts.append("{0} {1:.0f}%".format(lab, r * 100))
+        if not parts:
+            return None
+        return (tr("对比"), tr("同英雄平均：") + " · ".join(parts), bool(rd and rd >= 1.5 and me.deaths >= 4))
+
+    def post_bench_line(self, g):
+        """4.2 赛后：你和同英雄平均比（每分钟）：输出 / 承伤 / 给队友治疗护盾 / 控制 / 阵亡"""
+        ros = g.get("roster") or {}
+        post = g.get("post") or {}
+        mine = next((n for n, r in ros.items() if r.get("me")), None)
+        c = self.gd.champ(g.get("champ")) or {}
+        cs = self.stats.get(c.get("key"), light=True) if self.stats and c.get("key") else None
+        avg = (cs or {}).get("avg") or {}
+        mins = (g.get("len") or 0) / 60
+        dur = (avg.get("gameDuration") or 0) / 60
+        p = post.get(mine) if mine else None
+        if not p or mins < 5 or dur < 5:
+            return ""
+
+        def pct(v, a):
+            return "{0:.0f}%".format(100 * (v / mins) / (a / dur)) if a else None
+        items = [(tr("输出"), pct(p.get("dmg", 0), avg.get("damageToChampions"))),
+                 (tr("承伤"), pct(p.get("tank", 0), (avg.get("damageTaken") or 0) + (avg.get("damageSelfMitigated") or 0))),
+                 (tr("治疗护盾"), pct(p.get("support", 0), (avg.get("healsOnTeammates") or 0) +
+                                      (avg.get("damageShieldedOnTeammates") or 0)) if
+                  (avg.get("healsOnTeammates") or 0) + (avg.get("damageShieldedOnTeammates") or 0) > 2000 else None),
+                 (tr("控制"), pct(p.get("cc", 0), avg.get("timeCcingOthers"))),
+                 (tr("阵亡"), pct(ros[mine].get("d", 0), avg.get("deaths")))]
+        bits = ["{0} {1}".format(k, v) for k, v in items if v]
+        return (tr("你 vs 同英雄平均（每分钟）：") + " · ".join(bits)) if bits else ""
 
     # ---------- 英雄玩法 / 连招 ----------
     MOBILITY = r"冲刺|突进|跳跃|跃向|跃起|跃至|闪烁|传送|位移|冲向|冲锋|飞向|瞬移|翻滚|(?i:dash|leap|lunge|blink|teleport|jump|charges?\b)"
@@ -4569,6 +4637,7 @@ class Advisor:
             auto = True
         t = self.team_threat(enemies, enemy_augs, allies, ally_augs, me)
         cs = self.champ_stats(me.cid)          # 胜率全部来自海斗对局统计
+        self._cs_now = cs
         self._habit_line = self.habit_summary(me)
         items, prof = self.recommend_items(me, allies, enemies, my_augs, t, map_id, gold, cs=cs)
         augs = self.recommend_augs(me, my_augs, t, cands, cs=cs)
@@ -6722,6 +6791,9 @@ class Engine:
             else:
                 line = tr("最好的一波：") + km["facts"] + tr("。") + km["lesson"]
             detail = (detail + "\n" if detail else "") + line
+        pb = self.advisor.post_bench_line(g)
+        if pb:
+            detail = (detail + "\n" if detail else "") + pb
         pl = self.post_players_line(g)
         if pl:
             detail = (detail + "\n" if detail else "") + pl
@@ -10935,6 +11007,17 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         if not st["brief"] or not items:
             brief_box.pack_forget()
             return False
+        if len(items) > len(brief_rows):          # 4.2：放不下时，橙色（紧急）的一定留着，其余按原来的顺序补满
+            n_hot = sum(1 for x in items if x[2])
+            room = max(0, len(brief_rows) - n_hot)
+            keep = []
+            for x in items:
+                if x[2]:
+                    keep.append(x)
+                elif room > 0:
+                    keep.append(x)
+                    room -= 1
+            items = keep[:len(brief_rows)]
         for i, (lb, tx) in enumerate(brief_rows):
             if i < len(items):
                 label, text, hot = items[i]
