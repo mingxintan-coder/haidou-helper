@@ -1,18 +1,18 @@
 {
- "version": "4.2.1",
- "date": "2026-10-26",
+ "version": "4.2.2",
+ "date": "2026-10-27",
  "notes": [
-  "蓝红方：选英雄和开局实时胜率加上蓝方优势（ARAMKit 1500 万局，约 ±2.2%）",
-  "局中和赛后：你和同英雄平均比（击杀 / 阵亡 / 助攻；赛后加输出 / 承伤 / 治疗护盾 / 控制）",
-  "治疗装追踪：对面回复（治疗英雄 + 吸血装）vs 我方重伤"
+  "开局打法：比较双方阵容偏前期还是后期",
+  "对面车队和熟手一起提示，3 人以上车队标橙色",
+  "蓝红方：选英雄和开局实时胜率加上蓝方优势（ARAMKit 1500 万局，约 ±2.2%）"
  ],
  "files": {
-  "haidou_helper.py": "607c9de6e2ffeae3c72a57a4a4debf5c146ba22ce29b41c95600ac054c16de78",
-  "lang_en.py": "f175a6c271914b2ad6d1519e5eb36c612da9b86c3c890daf6e28a7ad16c3db41",
-  "README.md": "86892a3addfa3da1a88b5b13981269dc65ec434089f1498b4741b919fea3e8f6",
+  "haidou_helper.py": "0c4ba9e4199f7e8f10edfc27df4db9c8603e0d1873182971d8f3f3dd279bc92a",
+  "lang_en.py": "44a19d920eae45414971d24b6ec9382d6573a995bac0ca69e213ed4f5685bb5b",
+  "README.md": "48b6b31a49b01fd81b51ef7d14f2a5d771990208b6332276add071fcd6dc020e",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026102602
+ "build": 2026102701
 }

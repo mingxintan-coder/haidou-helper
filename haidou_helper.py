@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.2.1"
-APP_BUILD = 2026102602         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.2.2"
+APP_BUILD = 2026102701         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -3584,6 +3584,17 @@ class Advisor:
             (a["engage"] >= 2 and e["front"] <= 1, 5, tr("我方开团强、对面没前排 → 看到落单就开")),
             (e["sustain"] >= 1, 3, tr("对面有治疗 → 输出位早点出重伤")),
         ]
+        # 4.2.2：前期 / 后期：双方英雄的强势期加起来差 3 以上才提
+        def scale(team):
+            vals = [(CHAMP_SCALING.get((self.gd.champ(c) or {}).get("id", c), 0), c) for c in team]
+            return sum(v for v, _ in vals), [self.gd.champ_name(c) for v, c in sorted(vals, key=lambda x: -x[0]) if v > 0], \
+                [self.gd.champ_name(c) for v, c in sorted(vals, key=lambda x: x[0]) if v < 0]
+        sa, a_late, a_early = scale(allies)
+        se, e_late, e_early = scale(enemies)
+        if sa - se >= 3:
+            rules.append((True, 8, tr("我方后期强（{0}）→ 前期别硬打、别送，等 2～3 件装再找团").format(tr("、").join(a_late[:2]))))
+        elif se - sa >= 3:
+            rules.append((True, 8, tr("对面后期强（{0}）→ 趁前期多打、早点推塔，别拖").format(tr("、").join(e_late[:2]))))
         picks = [t for ok, _, t in sorted(rules, key=lambda r: -r[1]) if ok][:2]
         return picks
 
@@ -5976,15 +5987,18 @@ class Engine:
         threats = [i for i in intel if not i["ally"] and i["champ"] and
                    ((i["may_n"] >= 8 and i["may_w"] / i["may_n"] >= 0.6) or i["champ_n"] >= 5)]
         party = max((i.get("party", 0) for i in intel if not i["ally"]), default=0)
-        if not threats and party >= 2:
+        bits = []
+        if party >= 2:                       # 4.2.2：对面车队和熟手一起显示（以前有熟手就不提车队）
             names = tr("、").join(self.gd.champ_name(i["champ"]) for i in intel
                                  if not i["ally"] and i.get("party") == party and i["champ"])
-            return (tr("情报"), tr("对面 {0} 是 {1} 人车队 → 配合好，别落单").format(names, party), False)
-        if not threats:
+            bits.append(tr("对面 {0} {1} 人车队 → 配合好，别落单").format(names, party))
+        if threats:
+            threats.sort(key=lambda i: -(i["champ_n"] + i["may_w"]))
+            names = tr("、").join(self.gd.champ_name(i["champ"]) for i in threats[:2])
+            bits.append(tr("{0} 熟手 → 优先集火").format(names))
+        if not bits:
             return None
-        threats.sort(key=lambda i: -(i["champ_n"] + i["may_w"]))
-        names = tr("、").join(self.gd.champ_name(i["champ"]) for i in threats[:2])
-        return (tr("情报"), tr("{0} 是熟手 → 优先集火、别单挑").format(names), False)
+        return (tr("情报"), " · ".join(bits), party >= 3)
 
     CHALLENGE_TEXT = {"deaths": "死亡 ≤{0}", "towers": "推塔 ≥{0}", "first": "先倒下 ≤{0} 次"}
 
@@ -10662,6 +10676,25 @@ ITEM_LIMIT_GROUPS = {
 def item_groups(iid):
     b = iid % 10000 if iid >= 100000 else iid
     return {g for g, ids in ITEM_LIMIT_GROUPS.items() if iid in ids or b in ids}
+
+
+# 4.2.2：英雄偏前期（负）还是偏后期（正），按对英雄玩法的理解（+2 很吃后期 … −2 很吃前期）。
+# 自建库 579 局检查：15 分钟内结束的局，赢的一方偏前期（双方差 −0.47，z≈−1.9）；15～18 分钟赢的一方偏后期（+0.53）；
+# 整体相关不显著（z≈1.4）→ 只用在战术提示，不改胜率
+CHAMP_SCALING = {
+ "Kayle": 2, "Kassadin": 2, "Veigar": 2, "Nasus": 2, "Smolder": 2, "Senna": 2, "AurelionSol": 2,
+ "Vayne": 1, "KogMaw": 1, "Jinx": 1, "Azir": 1, "Cassiopeia": 1, "Ryze": 1, "Vladimir": 1, "Viktor": 1, "Sion": 1,
+ "Chogath": 1, "Gangplank": 1, "Twitch": 1, "Ezreal": 1, "Zeri": 1, "Aphelios": 1, "Kindred": 1, "Bard": 1,
+ "MasterYi": 1, "Tryndamere": 1, "Jax": 1, "Fiora": 1, "Gwen": 1, "Yone": 1, "Yasuo": 1, "Ornn": 1, "Anivia": 1,
+ "Karthus": 1, "Hwei": 1, "Belveth": 1, "Corki": 1, "Shyvana": 1, "Sona": 1, "DrMundo": 1, "Nilah": 1, "Kaisa": 1,
+ "Yunara": 1, "Tristana": 1, "Thresh": 1,
+ "Draven": -2, "Renekton": -2, "LeeSin": -2, "Pantheon": -2, "Elise": -2, "Nidalee": -2, "Leblanc": -2,
+ "Lucian": -1, "Caitlyn": -1, "Graves": -1, "Talon": -1, "Zed": -1, "Khazix": -1, "Rengar": -1, "Jayce": -1,
+ "Darius": -1, "Olaf": -1, "Volibear": -1, "Kled": -1, "Blitzcrank": -1, "Leona": -1, "XinZhao": -1,
+ "Trundle": -1, "Udyr": -1, "Sett": -1, "Qiyana": -1, "Zoe": -1, "Brand": -1, "MissFortune": -1, "Jhin": -1,
+ "Kalista": -1, "Karma": -1, "Shaco": -1, "MonkeyKing": -1, "Aatrox": -1, "Riven": -1, "Fizz": -1, "Rumble": -1,
+ "Heimerdinger": -1, "Zyra": -1, "Annie": -1, "Warwick": -1, "Briar": -1, "Naafiri": -1, "Quinn": -1, "Ambessa": -1,
+}
 
 
 SPELL_NAMES = {1: "净化", 3: "虚弱", 4: "闪现", 6: "疾跑", 7: "治疗", 13: "清晰", 14: "引燃", 21: "屏障", 32: "雪球"}

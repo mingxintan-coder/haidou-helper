@@ -1071,3 +1071,6 @@ EN.update({'你 vs 同英雄平均（每分钟）：': 'You vs champion average 
            '同英雄平均：': 'vs champ avg: ', '对比': 'Compare', '我方重伤 {0}': 'our anti-heal {0}', '阵亡': 'deaths',
            '{0} 件吸血': '{0} lifesteal items'})
 EN.update({'红方': 'Red side', '蓝方': 'Blue side'})
+EN.update({'{0} 熟手 → 优先集火': '{0} experienced → focus them', '对面 {0} {1} 人车队 → 配合好，别落单': 'Enemy {0}: {1}-stack premade → coordinated, don’t get caught alone',
+           '对面后期强（{0}）→ 趁前期多打、早点推塔，别拖': 'Enemy scales better ({0}) → fight early, push towers, don’t drag it out',
+           '我方后期强（{0}）→ 前期别硬打、别送，等 2～3 件装再找团': 'We scale better ({0}) → don’t force early fights or feed; look for fights at 2–3 items'})
