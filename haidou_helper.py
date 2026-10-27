@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.2.0"
-APP_BUILD = 2026102601         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.2.1"
+APP_BUILD = 2026102602         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -3507,6 +3507,32 @@ class Advisor:
         p = (w + 0.5 * CHAMP_K) / (n + CHAMP_K)
         return math.log(p / (1 - p))
 
+    # 4.2.1：蓝红方。ARAMKit 1500 万局：每个英雄都是蓝方胜率比红方高约 4～5 个百分点（例：金克丝 50.6% vs 46.2%、
+    # 另外 4 个英雄 4.1～5.0）→ 主要是整个模式的蓝方优势（约 ±2.2%），英雄之间的差别很小（±0.5%），只取一半
+    SIDE_GAP_DEFAULT = 0.044
+
+    def side_gap(self):
+        """整个模式的蓝 − 红胜率差：用已下载的英雄平均（至少 5 个），不够就用 4.4%"""
+        champs = getattr(self.stats, "champs", {}) if self.stats else {}
+        xs = [(c["avg"]["blueWinRate"] - c["avg"]["redWinRate"], c["avg"].get("sampleCount", 1))
+              for c in champs.values() if isinstance(c, dict) and (c.get("avg") or {}).get("blueWinRate")]
+        if len(xs) < 5:
+            return self.SIDE_GAP_DEFAULT
+        return sum(g * n for g, n in xs) / sum(n for _, n in xs)
+
+    def side_adj(self, cid, side):
+        """这个英雄在这一方的胜率调整（胜率，蓝方 side=1、红方 −1）：模式的蓝方优势 + 这个英雄自己的差别（取一半）"""
+        if not side:
+            return 0.0
+        league = self.side_gap()
+        c = self.gd.champ(cid) or {}
+        cs = self.stats.champs.get(c.get("key")) if self.stats and c.get("key") else None
+        avg = (cs or {}).get("avg") or {}
+        own = 0.0
+        if avg.get("blueWinRate") and avg.get("redWinRate"):
+            own = 0.5 * ((avg["blueWinRate"] - avg["redWinRate"]) - league)
+        return side * (league + own) / 2
+
     def champ_base_wr(self, cid):
         """4.1：英雄本身的胜率（当前版本）：国服 AramHex（所有英雄都有，几百万局）和 ARAMKit（下载过的）平均，
            各自按局数往 50% 收缩；都没有就用自建库。回传 (胜率, 局数)"""
@@ -3726,7 +3752,7 @@ class Advisor:
         z = sum(b * v for b, v in zip(model["beta"], comp_vec(d)))
         return 1 / (1 + math.exp(-max(-30, min(30, z))))
 
-    def rank_champions(self, cands, team, mine=None):
+    def rank_champions(self, cands, team, mine=None, side=0.0):
         """选英雄阶段：给你现在的英雄和备选席上的英雄打分
            分数 = 100 × (0.55 × 海斗胜率项 + 0.25 × 你的战绩项 + 0.20 × 阵容项)
              海斗胜率项 = clamp(0.5 + 8 × (胜率 − 50%) × n/(n+5000), 0, 1)        （还没下载到 = 0.5）
@@ -3758,7 +3784,10 @@ class Advisor:
             fills = [k for k in need if need[k] and t[k]]
             if fills:
                 reasons.append(tr("补{0}").format(tr("、").join(label[k] for k in fills)))
-            p = base + you + 0.015 * len(fills)
+            sa = self.side_adj(cid, side)
+            if abs(sa) >= 0.005:
+                reasons.append((tr("蓝方") if side > 0 else tr("红方")) + " {0:+.1f}%".format(sa * 100))
+            p = base + you + 0.015 * len(fills) + sa
             try:
                 cwp = self.comp_wp_vs_avg(list(team) + [cid])
             except Exception:  # noqa
@@ -5558,7 +5587,9 @@ class Engine:
         cands = list(dict.fromkeys(([mine] if mine else []) + subset_c + [b for b in bench_c if b and b != mine]))
         if not cands:
             return None
-        ranked, needs = self.advisor.rank_champions(cands, team, mine)
+        me_m = next((m for m in sess.get("myTeam", []) or [] if m.get("cellId") == cell), {})
+        side = 1.0 if me_m.get("team") == 1 else -1.0 if me_m.get("team") == 2 else 0.0   # 4.2.1：蓝 / 红方
+        ranked, needs = self.advisor.rank_champions(cands, team, mine, side)
         for c in ranked:                         # 标出每个英雄从哪里来
             if not c.get("hint"):
                 c["hint"] = tr("分给你的") if c["id"] in subset_c else tr("备选席") if c["id"] in bench_c else ""
@@ -6299,6 +6330,13 @@ class Engine:
         p = wp_predict(model, *f, comp=comp, aug=aug, side=side)
         if p is None:
             return None
+        try:                                    # 4.2.1：蓝红方（ARAMKit 1500 万局）：开局 ±2% 左右，之后经济 / 人头已经反映，15 分钟内淡出
+            sa = self.advisor.side_adj(state[2].cid, side) * max(0.0, 1 - f[0] / 15)
+            if sa:
+                z = math.log(max(1e-6, p) / max(1e-6, 1 - p)) + 4 * sa       # 50% 附近：1 个百分点 ≈ 0.04 胜算
+                p = 1 / (1 + math.exp(-z))
+        except Exception:  # noqa
+            pass
         try:                                    # 3.4.1：谁打得好 / 不好（每个人「换成平均水准的玩家」胜率会差多少）
             self._wp_players = self.player_impacts(model, f, state, raw, comp, aug, side, p)
         except Exception:  # noqa
