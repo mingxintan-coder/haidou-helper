@@ -1,18 +1,18 @@
 {
- "version": "4.2.2",
+ "version": "4.2.3",
  "date": "2026-10-27",
  "notes": [
-  "开局打法：比较双方阵容偏前期还是后期",
-  "对面车队和熟手一起提示，3 人以上车队标橙色",
-  "蓝红方：选英雄和开局实时胜率加上蓝方优势（ARAMKit 1500 万局，约 ±2.2%）"
+  "胜率模型：修正重启后不重练的问题，档案多 100 局就自动重练",
+  "胜率模型改用最新 3000 局训练（第 8 分钟准确率约 69.5% → 70.9%）",
+  "ARAMKit 数据更新到 2476 万局"
  ],
  "files": {
-  "haidou_helper.py": "0c4ba9e4199f7e8f10edfc27df4db9c8603e0d1873182971d8f3f3dd279bc92a",
+  "haidou_helper.py": "2c977bb041a0a93b5cd693374b7c522a3ca39e58cca8c5f792da3cba4ede021f",
   "lang_en.py": "44a19d920eae45414971d24b6ec9382d6573a995bac0ca69e213ed4f5685bb5b",
-  "README.md": "48b6b31a49b01fd81b51ef7d14f2a5d771990208b6332276add071fcd6dc020e",
+  "README.md": "283335de23654643af094514f135075c11af1caa26cf816b0faa3534ab34761b",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026102701
+ "build": 2026102702
 }

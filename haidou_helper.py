@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.2.2"
-APP_BUILD = 2026102701         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.2.3"
+APP_BUILD = 2026102702         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -8803,6 +8803,8 @@ class RiotAPI:
 # --------------------------------------------------------------------------------------
 WP_FEATS = ("gd", "kd", "ld", "td")
 WP_MIN_GAMES = 150
+WP_WINDOW = 3000                          # 胜率模型用最新几局训练
+WP_REFIT_NEW = 100                        # 时间线比上次训练多几局就重练
 
 
 def wp_vector(m, gd, kd, ld, td, comp=None, side=None, extra=None):
@@ -8971,8 +8973,8 @@ def fit_winmodel(rows, comp_fn=None, aug_fn=None):
     games = sorted({r["id"] for r in rows})
     if len(games) < WP_MIN_GAMES:
         return None
-    if len(games) > 2000:                 # 只用最新的 2000 局（训练快、跟得上版本）
-        keep = set(games[-2000:])
+    if len(games) > WP_WINDOW:            # 只用最新的 3000 局（4.2.3：比 2000 局 logloss 更低，仍跟得上版本）
+        keep = set(games[-WP_WINDOW:])
         rows = [r for r in rows if r["id"] in keep]
         games = sorted(keep)
     test_ids = {g for g in games if int(hashlib.md5(str(g).encode()).hexdigest(), 16) % 5 == 0}
@@ -9853,8 +9855,13 @@ class RiotCollector:
         if have and have.get("comp") and getattr(self, "comp_model", None) is None:
             self.comp_model = have["comp"]
         old_kind = have and adv is not None and (have.get("v") != 4 or have.get("nb") != 4)   # 3.5：v4＝经济 / 人头按分钟算   # 旧版模型：重练成新版（v3＝含你的增幅强度、校准、蓝红方）
-        if not force and have and not old_kind and self.tl_new < max(30, 0.25 * (have.get("games") or 0)):
-            return have                             # 多了 25%（至少 30 局）才重新训练
+        try:
+            total = self.timeline_games()
+        except Exception:  # noqa
+            total = 0
+        grown = max(self.tl_new, total - (have.get("tl_total") or have.get("games") or 0) if have else 0)
+        if not force and have and not old_kind and grown < WP_REFIT_NEW:
+            return have                             # 4.2.3：按档案总局数比上次训练多 100 局才重练（以前每次重启清零，模型一直不更新）
         path = os.path.join(self.dir, "timelines.jsonl")
         if not os.path.exists(path):
             return have
@@ -9881,6 +9888,7 @@ class RiotCollector:
             if comp_fn and getattr(self, "_comp_last", None):
                 model["comp"] = self._comp_last
                 self.comp_model = self._comp_last
+            model["tl_total"] = total
             write_json(os.path.join(self.dir, "winmodel.json"), model)
             self.tl_new = 0
             self.status = tr("胜率模型已更新：{0} 局，第 8 分钟后准确率 {1:.0f}%").format(
