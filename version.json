@@ -1,18 +1,18 @@
 {
- "version": "4.3.0",
+ "version": "4.3.1",
  "date": "2026-10-28",
  "notes": [
+  "关掉阵容项（当前版本的局太少，测不出来）",
   "自建库只用当前版本（16.21）的对局，旧版本不再并入",
-  "国服数据：热更新后 2255 万局；增幅公式按新数据重新校准",
-  "有实际数据时，专家招牌组合不再加分（新数据显示会高估）"
+  "国服数据：热更新后 2255 万局；增幅公式按新数据重新校准"
  ],
  "files": {
-  "haidou_helper.py": "71605f1decf7bac807d6cf7dda90d0b15f6d5983fbc3fd215e6afcec6875c310",
+  "haidou_helper.py": "6be0f4a83fefde5fec29fc9efe03ea0a569321907ca98f22c78c3c0ec5b7b682",
   "lang_en.py": "44a19d920eae45414971d24b6ec9382d6573a995bac0ca69e213ed4f5685bb5b",
-  "README.md": "c26db58eae7ee66ca69d1977c555c770e8520c6899e245184e1c88eea21ae90a",
+  "README.md": "c0a03299f21d360ed68255367f4ceea983864792aeee4823a798da7f4a01d30b",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026102801
+ "build": 2026102802
 }

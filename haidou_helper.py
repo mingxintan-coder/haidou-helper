@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.3.0"
-APP_BUILD = 2026102801         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.3.1"
+APP_BUILD = 2026102802         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -2225,10 +2225,11 @@ class Advisor:
     COMP_AP_AUG = 0.7 * -1.05
     COMP_SURV_ITEM = 0.7 * 0.94
     COMP_HS_ITEM = 0.7 * 1.28
+    COMP_ON = False           # 4.3.1：关掉（当前版本自建库局数太少，测不出来；攒够了再重新检验）
 
     def comp_aug_pct(self, aid, cn):
         """学到的阵容项（增幅）：(百分点, 说明) 或 None"""
-        if not cn:
+        if not cn or not self.COMP_ON:
             return None
         if aid in self.SURV_AUGS and cn.get("n_e"):
             v = max(-2.0, min(2.5, self.COMP_SURV_AUG * (cn["e_burst"] - 1.4)))    # 数据里很少超过 3 个：不外推太远
@@ -2243,7 +2244,7 @@ class Advisor:
         return None
 
     def comp_item_pct(self, nv, special, cn):
-        if not cn:
+        if not cn or not self.COMP_ON:
             return None
         v, why = 0.0, []
         if "SURVIVE" in special and cn.get("n_e"):
