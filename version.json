@@ -1,18 +1,18 @@
 {
- "version": "4.2.3",
- "date": "2026-10-27",
+ "version": "4.3.0",
+ "date": "2026-10-28",
  "notes": [
-  "胜率模型：修正重启后不重练的问题，档案多 100 局就自动重练",
-  "胜率模型改用最新 3000 局训练（第 8 分钟准确率约 69.5% → 70.9%）",
-  "ARAMKit 数据更新到 2476 万局"
+  "自建库只用当前版本（16.21）的对局，旧版本不再并入",
+  "国服数据：热更新后 2255 万局；增幅公式按新数据重新校准",
+  "有实际数据时，专家招牌组合不再加分（新数据显示会高估）"
  ],
  "files": {
-  "haidou_helper.py": "2c977bb041a0a93b5cd693374b7c522a3ca39e58cca8c5f792da3cba4ede021f",
+  "haidou_helper.py": "71605f1decf7bac807d6cf7dda90d0b15f6d5983fbc3fd215e6afcec6875c310",
   "lang_en.py": "44a19d920eae45414971d24b6ec9382d6573a995bac0ca69e213ed4f5685bb5b",
-  "README.md": "283335de23654643af094514f135075c11af1caa26cf816b0faa3534ab34761b",
+  "README.md": "c26db58eae7ee66ca69d1977c555c770e8520c6899e245184e1c88eea21ae90a",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026102702
+ "build": 2026102801
 }

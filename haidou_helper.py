@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.2.3"
-APP_BUILD = 2026102702         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.3.0"
+APP_BUILD = 2026102801         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -1962,14 +1962,18 @@ class Advisor:
     #   在「相似英雄推算」之后：需求吻合度 0（z≈−0.6，已经被数据抓到）、技能特质 +0.07%（z≈3.3）、招牌组合 +0.48%（z≈5.4）
     #   → 招牌组合是数据库（相似英雄）推不出来的；有这个英雄的实际数据时，按局数缩小（2000 / (2000 + 局数)）
     #   按英雄分两半交叉检验：误差 2.724% → 2.716%（只用强度 + 需求）；整体能解释的差别本来就小（全猜平均 2.742%）
-    EXP_T_PCT = 0.55
-    EXP_REQ_PCT = 0.24
+    # 4.3.0 重新校准（国服 16.21 热更新后，2255 万局，英雄 × 增幅 2.2 万格 ≥1500 局）：
+    #   没数据：强度每级 +0.58%（z≈3.3）、需求吻合 +0.19%（z≈8.7）、技能特质 +0.26%（z≈12.7）、招牌组合 +0.18%（z≈1.8）
+    #   有这个英雄的数据时（每格对半拆开，一半当数据、一半当考题）：技能特质 +0.01%（z≈0.4）、招牌组合 −0.70%（z≈−2.5）
+    #   → 有实际数据时专家的特质 / 招牌组合都不再加分（以前的 +0.48% 是旧数据的结果，新数据反而显示会高估）
+    EXP_T_PCT = 0.58
+    EXP_REQ_PCT = 0.19
     EXP_REQ_PCT_DATA = 0.0
     EXP_PRIOR_SD = 0.022
-    CHEM_TRAIT_PCT = 0.24
-    CHEM_PAIR_PCT = 0.16
-    CHEM_TRAIT_PCT_DATA = 0.07
-    CHEM_PAIR_PCT_DATA = 0.48
+    CHEM_TRAIT_PCT = 0.26
+    CHEM_PAIR_PCT = 0.18
+    CHEM_TRAIT_PCT_DATA = 0.0
+    CHEM_PAIR_PCT_DATA = 0.0
     CHEM_DATA_K = 2000
     CHEM_AUGPAIR_PCT = 0.3     # 增幅 × 增幅（估计值：自建库样本太少测不出，z≈0.5；网上有组合胜率时减半）
     CHEM_COMP_PCT = 0.25       # 阵容（估计值）
@@ -1990,12 +1994,14 @@ class Advisor:
     # 也能按「这个英雄吃不吃这一类」推算。国服数据每 3 小时更新，偏好跟着重算。
     # 回测（国服 16.21，按增幅分两半：一半学、一半考）：英雄 × 增幅的误差 2.16% → 1.98%（手写规则只到 2.15%）；
     # 已有相似英雄推算时再加 0.28 倍：误差 1.77% → 1.69%
-    AFF_LAM = 3.0
-    AFF_NEW_W = 0.46
-    AFF_PRIOR_W = 0.28
-    EXP_NEW_REQ = 0.078       # 有英雄玩法推算时（这张没数据）：需求吻合、技能特质、招牌组合剩下的份量
-    EXP_NEW_TRAIT = 0.17
-    EXP_NEW_PAIR = 0.03
+    # 4.3.0（16.21 热更新后 2255 万局）：收缩 λ 3 → 1（误差 2.152% → 2.143%），新增幅 0.375 倍（z≈66）；
+    #   相似英雄推算之后再加 0.2 倍；之后剩下的需求吻合 0.097、技能特质 0.29、招牌组合 0.01
+    AFF_LAM = 1.0
+    AFF_NEW_W = 0.375
+    AFF_PRIOR_W = 0.2
+    EXP_NEW_REQ = 0.097       # 有英雄玩法推算时（这张没数据）：需求吻合、技能特质、招牌组合剩下的份量
+    EXP_NEW_TRAIT = 0.29
+    EXP_NEW_PAIR = 0.01
     expert_boost = 1.5        # ⋯ →「专家评分份量」：1（数据校准）／ 1.5（加强，预设）／ 2
 
     REQ_LABEL = {"M": "近战类", "R": "远程类", "D": "位移类", "C": "控制类", "H": "治疗护盾类", "K": "坦克类", "A": "普攻类",
@@ -2282,7 +2288,7 @@ class Advisor:
     AH_K = 1000           # 3.8：往「相似英雄的效果」收缩的局数（回测：比往 0 收缩 300 局误差小 17%～33%）
     AH_SIM_N = 3000       # 算英雄相似度时只用样本 ≥ 这么多局的格子
     AH_NB = 15            # 取最像的 15 个英雄
-    AH_PRIOR_SD = 0.017   # 只有相似英雄推算（这个英雄完全没数据）时的误差（回测 RMSE 1.7%）
+    AH_PRIOR_SD = 0.019   # 只有相似英雄推算（这个英雄完全没数据）时的误差（回测 RMSE 1.7%）
 
     def _ah_vec(self, key):
         """这个英雄在国服数据里每张增幅的效果 {增幅: (胜率 − 英雄平均, 局数)}（缓存）"""
@@ -3178,7 +3184,9 @@ class Advisor:
             db = getattr(self, "riotdb", None)
             champ = (gd.champ(me.cid) or {}).get("id", me.cid)
             try:
-                rows = [r for g in db.games().values() for r in g if r.get("c") == champ] if db is not None else []
+                pw_ = db.patch_weights() if db is not None else {}
+                rows = [r for g in db.games().values() for r in g if r.get("c") == champ
+                        and pw_.get(r.get("v", ""), 0)] if db is not None else []
             except Exception:  # noqa
                 rows = []
             if len(rows) >= 20:
@@ -8000,8 +8008,13 @@ def load_aramhex(log=print, bracket="all"):
             bd = {}
             for name in ("heroes.json", "hero_augments.json"):
                 path = os.path.join(d, "high_" + name)
-                if not STARTUP_OFFLINE["on"] and (not os.path.exists(path) or
-                                                   time.time() - os.path.getmtime(path) > AH_REFRESH):
+                hsha = (files.get("bands/high/" + name) or {}).get("sha256") if isinstance(files.get("bands/high/" + name), dict) else None
+                if hsha and os.path.exists(path):     # 4.3.0：按校验码判断是不是这一期的（以前按时间，换期后最多 3 小时还在用旧的）
+                    with open(path, "rb") as f:
+                        stale = hashlib.sha256(f.read()).hexdigest() != hsha
+                else:
+                    stale = not os.path.exists(path) or time.time() - os.path.getmtime(path) > AH_REFRESH
+                if not STARTUP_OFFLINE["on"] and stale:
                     url = AH_BASE + latest["path"].strip("/") + "/bands/high/" + name
                     req = urllib.request.Request(url, headers={"User-Agent": f"haidou-helper/{APP_VERSION}"})
                     with urllib.request.urlopen(req, timeout=60) as r:
@@ -9492,11 +9505,10 @@ class RiotCollector:
                 self.cfront.remove(me)
             self.cfront.insert(0, me)                # 每轮都先看你自己（打完新的一局马上收）
         own_only = self.total_games() >= self.CLIENT_TARGET       # 收满了：只收你自己的新对局（名单留着不删）
-        pws = sorted(self.patch_weights(), key=ver_tuple, reverse=True)
-        keep = [v for v in pws if v][:2]                         # 最新两个版本
+        cur_v = self.current_patch()
 
-        def old_patch(v):
-            return len(keep) == 2 and ver_tuple(v) < ver_tuple(keep[1])
+        def old_patch(v):                                        # 4.3.0：只收当前版本（旧版本的局不再用）
+            return bool(cur_v) and ver_tuple(v) < ver_tuple(cur_v)
         limit = self.CLIENT_BATCH
         batch, looked = 0, 0
         while self.cfront and batch < limit and looked < 60 and not halt():
@@ -9757,7 +9769,7 @@ class RiotCollector:
                         al = [x + y for x, y in zip(al, v)]
                 ctx = al + [sum(1 for c in ally if tt(c)["ap"]), sum(1 for c in en if tt(c)["ap"]),
                             sum(1 for c in ally if tt(c)["front"]), sum(1 for c in en if tt(c)["front"])]
-                out.append({"c": r["c"], "p": main, "w": 1 if won else 0, "ctx": ctx, "q": pw.get(r.get("v", ""), 0.1),
+                out.append({"c": r["c"], "p": main, "w": 1 if won else 0, "ctx": ctx, "q": pw.get(r.get("v", ""), 0.0),
                             "m": r.get("m", "")})
         return out
 
@@ -10112,7 +10124,7 @@ class RiotCollector:
                 c = str(pick.get("c", "")).lower()
                 n, w = champ.get(c, (0, 0))
                 e = (w + 0.5 * CHAMP_K) / (n + CHAMP_K)
-                q = pw.get(pick.get("v", ""), 0.1) if g not in (held or ()) else 0.0
+                q = pw.get(pick.get("v", ""), 0.0) if g not in (held or ()) else 0.0
                 d = (1.0 if pick.get("w") else 0.0) - e
                 tot = 0.0
                 for a in dict.fromkeys(pick.get("a") or []):
@@ -10191,8 +10203,8 @@ class RiotCollector:
         pw = self.patch_weights()
         agg = {}
         for r in rows:
-            q = pw.get(r.get("v", ""), 0.1)          # 版本权重：旧版本的局打折
-            if not r.get("c"):
+            q = pw.get(r.get("v", ""), 0.0)          # 4.3.0：只算当前版本的局
+            if not q or not r.get("c"):
                 continue
             c = agg.setdefault(str(r["c"]).lower(), {"n": 0, "w": 0, "tiers": {}, "items": {}, "augs": {}, "items_t": {}})
             w = q if r.get("w") else 0
@@ -10262,23 +10274,24 @@ class RiotCollector:
         return out
 
     def patch_weights(self):
-        """版本权重（2.15）：海斗每个版本都调平衡，旧版本的对局打折 —— 最新版本 1，往前每隔一个「有 ≥150 局」的版本减半，
-           最低 0.1（刚出的新版本局数还少时，上一个版本也算 1）。{版本: 权重}"""
+        """版本权重：4.3.0 起只用当前版本（旧版本权重 0，不再打折并入）。当前版本＝游戏版本和自建库最新版本里比较新的那个：
+           改版当天自建库还没有新版本的局时，自建库就先不加分（网上数据当天就有新版本）。{版本: 权重}"""
         g = self.games()
         pw = getattr(self, "_pw", None)
         if pw and pw[0] is g:
             return pw[1]
-        cnt = {}
-        for rows in g.values():
-            v = rows[0].get("v", "")
-            cnt[v] = cnt.get(v, 0) + 1
-        out, k = {}, 0
-        for v in sorted(cnt, key=ver_tuple, reverse=True):
-            out[v] = max(0.1, 0.5 ** k)
-            if cnt[v] >= 150:
-                k += 1
+        vers = {rows[0].get("v", "") for rows in g.values() if rows}
+        gv = ".".join(str(getattr(self.gd, "version", "") or "").split(".")[:2])
+        cand = [v for v in vers | ({gv} if re.match(r"^\d+\.\d+$", gv) else set()) if v]
+        cur = max(cand, key=ver_tuple) if cand else ""
+        out = {v: (1.0 if v == cur else 0.0) for v in vers}
+        out[cur] = 1.0
         self._pw = (g, out)
         return out
+
+    def current_patch(self):
+        pw = self.patch_weights()
+        return next((v for v, q in pw.items() if q > 0), "")
 
     def aug_pairs(self):
         """增幅组合：{(a, b): [局数, 胜场]}、单张 {a: [局数, 胜场]}（每个玩家身上的增幅两两配对；局数按版本加权）"""
@@ -10291,7 +10304,9 @@ class RiotCollector:
         pw = self.patch_weights()
         pairs, single = {}, {}
         for r in rows:
-            q = pw.get(r.get("v", ""), 0.1)
+            q = pw.get(r.get("v", ""), 0.0)
+            if not q:
+                continue
             w = q if r.get("w") else 0
             augs = sorted(set(r.get("a") or []))
             for a in augs:
@@ -10317,7 +10332,9 @@ class RiotCollector:
         champ = {}
         for rows in game_list:
             for r in rows:
-                q = pw.get(r.get("v", ""), 0.1)
+                q = pw.get(r.get("v", ""), 0.0)
+                if not q:
+                    continue
                 x = champ.setdefault(str(r.get("c", "")).lower(), [0.0, 0.0])
                 x[0] += q
                 x[1] += q * (1 if r.get("w") else 0)
@@ -10328,7 +10345,9 @@ class RiotCollector:
                 c = str(r.get("c", "")).lower()
                 n, w = champ.get(c, (0, 0))
                 e = (w + 0.5 * CHAMP_K) / (n + CHAMP_K)
-                q = pw.get(r.get("v", ""), 0.1)
+                q = pw.get(r.get("v", ""), 0.0)
+                if not q:
+                    continue
                 d = (1.0 if r.get("w") else 0.0) - e
                 k = cls.get(c) or cls.setdefault(c, self.champ_class(r.get("c", "")))
                 for i, a in enumerate(dict.fromkeys(r.get("a") or [])):
