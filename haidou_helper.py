@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.3.1"
-APP_BUILD = 2026102802         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.4.0"
+APP_BUILD = 2026102803         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5845,7 +5845,7 @@ class Engine:
             out = []
             for p in t1 + t2:
                 pu = p.get("puuid")
-                if not pu or pu == me:
+                if not pu:
                     continue
                 cid = p.get("championId") or sel.get(pu)
                 champ = by_key.get(str(cid))
@@ -5853,7 +5853,11 @@ class Engine:
                 hist = lcu_get(f"/lol-match-history/v1/products/lol/{pu}/matches?begIndex=0&endIndex=20", cred, timeout=15)
                 games = ((hist or {}).get("games") or {}).get("games") or []
                 info = self.player_intel(games, cid)
-                info.update({"champ": champ, "ally": p in my_team, "puuid": pu,
+                try:                                  # 4.4.0：段位（单双排；没有就看灵活排）
+                    info["rank"] = parse_lcu_rank(lcu_get(f"/lol-ranked/v1/ranked-stats/{pu}", cred, timeout=10))
+                except Exception:  # noqa
+                    info["rank"] = None
+                info.update({"champ": champ, "ally": p in my_team, "puuid": pu, "me": pu == me,
                              "gids": [x.get("gameId") for x in games if x.get("gameId")],
                              "name": p.get("gameName") or p.get("summonerName") or ""})
                 out.append(info)
@@ -8746,6 +8750,35 @@ def tier_name(t):
             "CHALLENGER": tr("王者"), "UNRANKED": tr("未定级")}.get(t, t)
 
 
+def parse_lcu_rank(stats):
+    """4.4.0：客户端 /lol-ranked/v1/ranked-stats/{puuid} → {"tier", "div", "lp", "q", "w", "l", "prev"}（先看单双排，没有再看灵活排）"""
+    qm = (stats or {}).get("queueMap") or {}
+    if not qm and isinstance((stats or {}).get("queues"), list):
+        qm = {q.get("queueType"): q for q in stats["queues"] if isinstance(q, dict)}
+    solo = qm.get("RANKED_SOLO_5x5") or {}
+    prev = str(solo.get("previousSeasonEndTier") or "").upper()
+    for q in ("RANKED_SOLO_5x5", "RANKED_FLEX_SR"):
+        e = qm.get(q) or {}
+        t = str(e.get("tier") or "").upper()
+        if t in TIER_ORDER:
+            div = str(e.get("division") or "")
+            return {"tier": t, "div": "" if div in ("NA", "") or TIER_ORDER.index(t) >= 7 else div,
+                    "lp": e.get("leaguePoints") or 0, "q": "solo" if q == "RANKED_SOLO_5x5" else "flex",
+                    "w": e.get("wins") or 0, "l": e.get("losses") or 0, "prev": prev if prev in TIER_ORDER else ""}
+    return {"tier": "UNRANKED", "prev": prev if prev in TIER_ORDER else ""}
+
+
+def rank_text(r):
+    """{"tier"...} → 「黄金 II」「大师 120 点」「灵活 铂金 I」「未定级（上季 钻石）」"""
+    if not r:
+        return ""
+    t = r.get("tier", "UNRANKED")
+    if t not in TIER_ORDER:
+        return tr("未定级") + (tr("（上季 {0}）").format(tier_name(r["prev"])) if r.get("prev") else "")
+    txt = tier_name(t) + (" " + r["div"] if r.get("div") else tr(" {0} 点").format(r.get("lp", 0)))
+    return (tr("灵活 ") if r.get("q") == "flex" else "") + txt
+
+
 def riot_regions(platform):
     """(对局接口的区域, 账号接口的区域)"""
     p = platform.upper()
@@ -11385,10 +11418,14 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             if not grp:
                 continue
             lines.append(tr("【敌方】") if not ally else tr("【队友】"))
-            for i in grp:
+            for i in sorted(grp, key=lambda i: not i.get("me")):
                 head = engine.gd.champ_name(i["champ"]) if i.get("champ") else (i.get("name") or "?")
+                if i.get("me"):
+                    head = tr("你（{0}）").format(head)
+                rk = rank_text(i.get("rank"))
                 base = tr("近 20 局海斗 {0}/{1}").format(i["may_w"], i["may_n"]) if i["may_n"] else tr("近期没打海斗")
-                lines.append("· " + head + "：" + base + ("；" + i["note"] if i.get("note") else ""))
+                lines.append("· " + head + ("「" + rk + "」" if rk else "") + "：" + base +
+                             ("；" + i["note"] if i.get("note") else ""))
         intel_lbl.config(text="\n".join(lines))
         intel_lbl.pack(fill="x", pady=(4, 0))
 
@@ -12361,6 +12398,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                     manual_vals[k] = ""
             elif kind == "intel":          # 队友 / 对手情报
                 show_intel(payload)
+                if st["expanded"]:
+                    fit()                  # 4.4.0：情报到了要重新算高度（以前常被切掉看不到）
             elif kind == "select":         # 选英雄阶段
                 dot.config(fg=GOLD)
                 show_select(payload)
