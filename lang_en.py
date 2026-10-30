@@ -1075,3 +1075,12 @@ EN.update({'{0} 熟手 → 优先集火': '{0} experienced → focus them', '对
            '对面后期强（{0}）→ 趁前期多打、早点推塔，别拖': 'Enemy scales better ({0}) → fight early, push towers, don’t drag it out',
            '我方后期强（{0}）→ 前期别硬打、别送，等 2～3 件装再找团': 'We scale better ({0}) → don’t force early fights or feed; look for fights at 2–3 items'})
 EN.update({'（上季 {0}）': ' (last season {0})', ' {0} 点': ' {0} LP', '灵活 ': 'Flex ', '你（{0}）': 'You ({0})'})
+EN.update({'找不到游戏客户端：请先打开英雄联盟客户端（登录后）再查。': 'League client not found: open and log in to the League client, then try again.',
+           '读取第 {0}/{1} 局…': 'Reading game {0}/{1}…', '海斗': 'Mayhem', '赢': 'Win', '输': 'Loss',
+           '{0}  {1}  {2}  {3} 分钟': '{0}  {1}  {2}  {3} min', '（现在的段位）': ' (current ranks)',
+           '  【队友】': '  [Allies]', '  【对面】': '  [Enemies]', '你': 'You',
+           '  平均：队友 {0} · 对面 {1}': '  Average: allies {0} · enemies {1}',
+           '客户端里没有读到最近的对局。': 'No recent games found in the client.',
+           '最近 {0} 局每个人的段位（单双排；没有就看灵活排）': 'Ranks of every player in your last {0} games (Solo/Duo; Flex if no Solo)',
+           '最近几局玩家段位': 'Player ranks (recent games)', '从游戏客户端读取中…': 'Reading from the League client…',
+           '读取失败：{0}': 'Failed to read: {0}', '最近几局玩家段位…': 'Player ranks in recent games…'})

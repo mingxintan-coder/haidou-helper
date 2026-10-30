@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.4.0"
-APP_BUILD = 2026102803         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.5.0"
+APP_BUILD = 2026102901         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5866,10 +5866,88 @@ class Engine:
                 info["note"] = self.intel_note(info)
                 info.pop("gids", None)
             g["intel"] = out
+            try:                                  # 4.5.0：每局每个人当时的段位存在本机（不管「我的习惯」开不开）
+                with open(os.path.join(APP_DIR, "ranks_log.jsonl"), "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"gameId": gdat.get("gameId"), "ts": time.time(),
+                                        "p": {i["puuid"]: i.get("rank") for i in out if i.get("rank")}},
+                                       ensure_ascii=False) + "\n")
+            except OSError:
+                pass
             self.q.put(("intel", out))
             self.wake.set()
         except Exception:  # noqa
             log_crash("intel failed", sys.exc_info())
+
+    def recent_ranks(self, n=6, progress=None):
+        """4.5.0：最近 n 局每个玩家的段位（从游戏客户端读）。有本机记录的用「当时」的段位，没有的用现在的段位。回传文字"""
+        cred = getattr(self, "_lcu_cred", None) or lcu_credentials()
+        if not cred:
+            return tr("找不到游戏客户端：请先打开英雄联盟客户端（登录后）再查。")
+        then = {}
+        try:
+            with open(os.path.join(APP_DIR, "ranks_log.jsonl"), encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    if r.get("gameId"):
+                        then[r["gameId"]] = r.get("p") or {}
+        except OSError:
+            pass
+        me = (lcu_get("/lol-summoner/v1/current-summoner", cred, timeout=10) or {}).get("puuid")
+        hist = lcu_get(f"/lol-match-history/v1/products/lol/{me}/matches?begIndex=0&endIndex={n}", cred, timeout=15)
+        games = sorted(((hist or {}).get("games") or {}).get("games") or [], key=lambda g: -(g.get("gameCreation") or 0))[:n]
+        by_key = {str(c.get("key")): c["id"] for c in self.gd.champs.values()}
+        cache, out = {}, []
+        for gi, g0 in enumerate(games):
+            if progress:
+                progress(tr("读取第 {0}/{1} 局…").format(gi + 1, len(games)))
+            full = lcu_get(f"/lol-match-history/v1/games/{g0.get('gameId')}", cred, timeout=15) or {}
+            ids = {p.get("participantId"): p.get("player") or {} for p in full.get("participantIdentities") or []}
+            parts = full.get("participants") or []
+            my_team = next((p.get("teamId") for p in parts if ids.get(p.get("participantId"), {}).get("puuid") == me), 100)
+            won = next(((p.get("stats") or {}).get("win") for p in parts if p.get("teamId") == my_team), None)
+            old = then.get(full.get("gameId")) or {}
+            when = time.strftime("%m-%d %H:%M", time.localtime((full.get("gameCreation") or 0) / 1000.0))
+            mode = tr("海斗") if str(full.get("gameMode", "")).upper() == "KIWI" else str(full.get("gameMode", ""))
+            out.append("")
+            out.append(tr("{0}  {1}  {2}  {3} 分钟").format(when, mode, tr("赢") if won else tr("输"),
+                                                          round((full.get("gameDuration") or 0) / 60)) +
+                       ("" if old else tr("（现在的段位）")))
+            avg = {}
+            for side in (my_team, 300 - my_team):
+                out.append(tr("  【队友】") if side == my_team else tr("  【对面】"))
+                scores = []
+                for p in parts:
+                    if p.get("teamId") != side:
+                        continue
+                    pl = ids.get(p.get("participantId"), {})
+                    pu = pl.get("puuid")
+                    r = old.get(pu)
+                    if r is None:
+                        if pu not in cache:
+                            try:
+                                cache[pu] = parse_lcu_rank(lcu_get(f"/lol-ranked/v1/ranked-stats/{pu}", cred, timeout=10))
+                            except Exception:  # noqa
+                                cache[pu] = None
+                            time.sleep(0.15)
+                        r = cache[pu]
+                    sc = rank_score(r)
+                    if sc is not None:
+                        scores.append(sc)
+                    champ = self.gd.champ_name(by_key.get(str(p.get("championId")), str(p.get("championId"))))
+                    who = tr("你") if pu == me else "{0}#{1}".format(pl.get("gameName") or "?", pl.get("tagLine") or "")
+                    s_ = p.get("stats") or {}
+                    out.append("    {0}  「{1}」  {2}  {3}/{4}/{5}".format(champ, rank_text(r) or "?", who,
+                               s_.get("kills", 0), s_.get("deaths", 0), s_.get("assists", 0)))
+                avg[side] = sum(scores) / len(scores) if scores else None
+            a, b = avg.get(my_team), avg.get(300 - my_team)
+            if a is not None and b is not None:
+                out.append(tr("  平均：队友 {0} · 对面 {1}").format(score_tier_text(a), score_tier_text(b)))
+        if not games:
+            return tr("客户端里没有读到最近的对局。")
+        return tr("最近 {0} 局每个人的段位（单双排；没有就看灵活排）").format(len(games)) + "\n".join(out)
 
     @staticmethod
     def player_intel(games, cid):
@@ -8779,6 +8857,25 @@ def rank_text(r):
     return (tr("灵活 ") if r.get("q") == "flex" else "") + txt
 
 
+def rank_score(r):
+    """段位 → 分数（黑铁 IV＝0，每个小段 +1，大师以上按 LP 再往上）；没段位回传 None"""
+    t = (r or {}).get("tier")
+    if t not in TIER_ORDER:
+        return None
+    i = TIER_ORDER.index(t)
+    if i >= 7:
+        return 28 + (r.get("lp") or 0) / 100.0
+    return i * 4 + {"IV": 0, "III": 1, "II": 2, "I": 3}.get(r.get("div"), 0)
+
+
+def score_tier_text(sc):
+    if sc is None:
+        return ""
+    if sc >= 28:
+        return tier_name("MASTER") + "+"
+    return tier_name(TIER_ORDER[int(sc // 4)]) + " " + ("IV", "III", "II", "I")[int(sc) % 4]
+
+
 def riot_regions(platform):
     """(对局接口的区域, 账号接口的区域)"""
     p = platform.upper()
@@ -11669,6 +11766,40 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         txt.pack(fill="both", expand=True)
         st["hold_until"] = time.time() + 3
     menu.add_command(label=tr("每周战报…"), command=open_weekly)
+
+    def open_ranks():
+        """4.5.0：最近几局每个玩家的段位"""
+        w = tk.Toplevel(root)
+        w.title(tr("最近几局玩家段位"))
+        w.attributes("-topmost", True)
+        w.configure(bg=BG)
+        txt = tk.Text(w, bg=CARD, fg=FG, font=F["small"], width=70, height=30, bd=0, padx=10, pady=8, wrap="none")
+        txt.insert("1.0", tr("从游戏客户端读取中…"))
+        txt.config(state="disabled")
+        txt.pack(fill="both", expand=True)
+        box = {"msg": None, "done": None}
+
+        def work():
+            try:
+                box["done"] = engine.recent_ranks(6, progress=lambda m: box.__setitem__("msg", m))
+            except Exception as e:  # noqa
+                box["done"] = tr("读取失败：{0}").format(e)
+
+        def poll():
+            if not w.winfo_exists():
+                return
+            val = box["done"] or box["msg"]
+            if val:
+                txt.config(state="normal")
+                txt.delete("1.0", "end")
+                txt.insert("1.0", val)
+                txt.config(state="disabled")
+            if box["done"] is None:
+                w.after(300, poll)
+        threading.Thread(target=work, daemon=True, name="ranks").start()
+        w.after(300, poll)
+        st["hold_until"] = time.time() + 3
+    menu.add_command(label=tr("最近几局玩家段位…"), command=open_ranks)
 
     def weekly_popup():
         """新的一周第一次打开：上周有 3 局以上就自动跳出上周战报（一周一次）"""

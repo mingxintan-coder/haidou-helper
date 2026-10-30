@@ -1,18 +1,18 @@
 {
- "version": "4.4.0",
- "date": "2026-10-28",
+ "version": "4.5.0",
+ "date": "2026-10-29",
  "notes": [
-  "情报里显示每个玩家的排位段位（单双排 / 灵活 / 未定级＋上季）",
-  "关掉阵容项（当前版本的局太少，测不出来）",
-  "自建库只用当前版本（16.21）的对局；增幅公式按国服热更新后 2255 万局重新校准"
+  "⋯ → 最近几局玩家段位：最近 6 局每个人的段位和双方平均",
+  "每局开局读到的段位存在本机，之后查得到当时的段位",
+  "情报里显示每个玩家的排位段位"
  ],
  "files": {
-  "haidou_helper.py": "c7d7a239c3c3d13c7322885a1b87f9d780ece2401f56298d1ce78171239032d1",
-  "lang_en.py": "cface51e4ec08fbb5247257dedc37d63540a5c1de2d1fd60f599056ca6fc6d95",
-  "README.md": "e7ca031d51c908f5b4c5485af33c89c156e6c67080652905ccb4841eee6da4a1",
+  "haidou_helper.py": "498073d8c361d3f48dd852b3615023737f39e2fd23b5268eb31251048972bbd0",
+  "lang_en.py": "b1e72449cb69007456bf8249625d3a18a6fc3a7558c225d18b70cfc7ef1469b5",
+  "README.md": "e7baa2e09db0d968d85585168729c382ab181e7d678988ddd208bf23da19ca53",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026102803
+ "build": 2026102901
 }
