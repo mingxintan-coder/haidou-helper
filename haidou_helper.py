@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.5.0"
-APP_BUILD = 2026102901         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.6.0"
+APP_BUILD = 2026103001         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -1003,9 +1003,10 @@ class GameData:
         return it["name"] if it else str(iid)
 
     def item_search_key(self, iid):
-        """4.1.1：商店搜索框打的英文代号（游戏资料里的搜索词，例：无尽之刃 → ie、中娅沙漏 → zhg）。
-           游戏商店的搜索框贴不上剪贴板，打几个英文字母最快、也不会叫出中文输入法。
-           挑「别的装备的名字 / 搜索词里都没有」的最短英文词；没有英文搜索词就回传空字串"""
+        """商店搜索框打的代号（游戏资料里的搜索词，例：无尽之刃 → ie、中娅沙漏 → zhg）。
+           4.6.0：游戏商店只认「你游戏语言」的装备名和搜索词 —— 中文客户端打英文装备名搜不到（以前没有英文搜索词的装备用英文名，
+           海妖杀手 → kraken 这类都没用）。现在：有英文搜索词用英文（不用切输入法）；没有就用最短、别的装备都没有的中文
+           （装备名开头或资料里的中文搜索词，例：海妖杀手 → 海妖、死亡之帽 → 死帽）"""
         cache = self.__dict__.setdefault("_skey", {})
         if iid in cache:
             return cache[iid]
@@ -1014,44 +1015,46 @@ class GameData:
                             for i, v in self.items.items()
                             if (v.get("gold") or {}).get("purchasable", True) and (v.get("maps") or {}).get("12", True)}
         it = self.items.get(iid) or self.items.get(iid % 10000 if iid >= 100000 else iid) or {}
-        terms = [t.strip() for t in str(it.get("colloq", "")).split(";")]
-        terms = [t for t in terms if len(t) >= 2 and re.fullmatch(r"[A-Za-z0-9' ]+", t)]
-        name_l = str(it.get("name", "")).lower()
-        if "_corpus_en" not in self.__dict__:
-            self._corpus_en = {i: str(v.get("name_en", "")).lower() for i, v in self.items.items() if v.get("name_en")}
+        raw = [t.strip() for t in str(it.get("colloq", "")).split(";")]
+        name = str(it.get("name", ""))
+        name_l = name.lower()
+        same = {i for i, v in self.items.items() if str(v.get("name", "")) == name}     # 同名的不同编号（海斗版 / 一般版）
 
-        def unique(t):                    # 别的装备没有任何一个词是这样开头的（中文资料的搜索词 + 英文名）
+        def others():
+            return (txt for i, txt in self._corpus.items() if i not in same and i != iid)
+
+        def unique(t):                    # 别的装备的名字 / 搜索词里没有任何一个词是这样开头的
+            pat = re.compile(r"(^|[;\s'])" + re.escape(t.lower()))
+            return not any(pat.search(txt) for txt in others())
+
+        def unique_cn(t):                 # 中文：别的装备名 / 搜索词里任何地方都没有
             tl = t.lower()
-            pat = re.compile(r"(^|[;\s'])" + re.escape(tl))
-            return not any(pat.search(txt) for i, txt in self._corpus.items()
-                           if i != iid and not txt.startswith(name_l + ";")) and \
-                not any(pat.search(txt) for i, txt in self._corpus_en.items()
-                        if i != iid and txt != str(it.get("name_en", "")).lower())
+            return not any(tl in txt for txt in others())
 
-        def pick(terms):
+        terms = [t for t in raw if len(t) >= 2 and re.fullmatch(r"[A-Za-z0-9' ]+", t)]
+        key = None
+        if terms:
             cands = list(terms)
-            for t in terms:              # 英文全名太长：也试其中一个字（Sunfire Aegis → sunfire、Immortal Shieldbow → shieldbow）
+            for t in terms:              # 英文全名太长：也试其中一个字（Sunfire Aegis → sunfire）
                 if " " in t:
                     for w0 in t.split(" "):
                         w0 = re.sub(r"'s$", "", w0)
                         if len(w0) >= 3 and w0.lower() not in ("the", "and", "of"):
                             cands.append(w0)
             cands = sorted(set(cands), key=lambda t: (" " in t, len(t)))
-            return next((t for t in cands if " " not in t and unique(t)), None) or \
-                next((t for t in cands if unique(t)), None) or \
-                next((t for t in cands if " " not in t), None) or (cands[0] if cands else "")
-        key = pick(terms)
-        if not key and it.get("name_en"):          # 4.1.2：资料里没有英文搜索词 → 用英文装备名
-            key = pick([re.sub(r"[^A-Za-z0-9' ]", "", it["name_en"]).strip()])
-        if not key:                                # 再没有：中文名最短、别的装备名里没有的开头
-            nm = str(it.get("name", ""))
-            for n in range(2, len(nm) + 1):
-                if not any(str(v.get("name", "")).find(nm[:n]) >= 0 for i, v in self.items.items()
-                           if i != iid and v.get("name") != nm and i in self._corpus):
-                    key = nm[:n]
-                    break
-            key = key or nm[:2]
-        cache[iid] = key.lower() if key and " " not in key else key
+            key = next((t for t in cands if " " not in t and unique(t)), None) or \
+                next((t for t in cands if unique(t)), None)
+        if not key and re.fullmatch(r"[A-Za-z0-9' .-]+", name):     # 英文客户端：装备名本身就是英文
+            words = [re.sub(r"'s$", "", w0) for w0 in re.split(r"[\s.-]+", name) if len(w0) >= 3]
+            key = next((w0 for w0 in sorted(words, key=len) if unique(w0)), None)
+        if not key and terms:
+            key = next((t for t in sorted(terms, key=len) if " " not in t), terms[0])
+        if not key and name:
+            cn = [t for t in raw if t and not re.search(r"[A-Za-z]", t)] + \
+                 [name[:n] for n in range(2, len(name) + 1)]
+            cn = sorted(set(cn), key=lambda t: (len(t), not name.startswith(t)))
+            key = next((t for t in cn if unique_cn(t)), None) or name
+        cache[iid] = key.lower() if key and re.fullmatch(r"[A-Za-z0-9']+", key) else key
         return cache[iid]
 
     def item_key_by_name(self, name):
@@ -6087,6 +6090,17 @@ class Engine:
             threats.sort(key=lambda i: -(i["champ_n"] + i["may_w"]))
             names = tr("、").join(self.gd.champ_name(i["champ"]) for i in threats[:2])
             bits.append(tr("{0} 熟手 → 优先集火").format(names))
+        ours = [rank_score(i.get("rank")) for i in intel if i["ally"]]
+        ours = [x for x in ours if x is not None]
+        if len(ours) >= 2:                   # 4.6.0：对面段位比我方平均高两大段以上（只提醒，不算进胜率：还没验证过）
+            avg = sum(ours) / len(ours)
+            high = sorted(((rank_score(i.get("rank")), i) for i in intel if not i["ally"] and i["champ"]
+                           and rank_score(i.get("rank")) is not None and rank_score(i.get("rank")) >= avg + 8),
+                          key=lambda x: -x[0])
+            if high:
+                names = tr("、").join("{0} {1}".format(self.gd.champ_name(i["champ"]), rank_text(i["rank"]))
+                                     for _, i in high[:2])
+                bits.append(tr("{0} 段位比我方平均（{1}）高一截 → 小心").format(names, score_tier_text(avg)))
         if not bits:
             return None
         return (tr("情报"), " · ".join(bits), party >= 3)

@@ -1,18 +1,18 @@
 {
- "version": "4.5.0",
- "date": "2026-10-29",
+ "version": "4.6.0",
+ "date": "2026-10-30",
  "notes": [
-  "⋯ → 最近几局玩家段位：最近 6 局每个人的段位和双方平均",
-  "每局开局读到的段位存在本机，之后查得到当时的段位",
-  "情报里显示每个玩家的排位段位"
+  "装备代号修正：中文客户端搜不到英文名，没有英文搜索词的装备改用最短中文（海妖杀手 → 海妖）",
+  "对面有人段位比我方平均高两大段以上：情报提醒小心",
+  "⋯ → 最近几局玩家段位"
  ],
  "files": {
-  "haidou_helper.py": "498073d8c361d3f48dd852b3615023737f39e2fd23b5268eb31251048972bbd0",
-  "lang_en.py": "b1e72449cb69007456bf8249625d3a18a6fc3a7558c225d18b70cfc7ef1469b5",
-  "README.md": "e7baa2e09db0d968d85585168729c382ab181e7d678988ddd208bf23da19ca53",
+  "haidou_helper.py": "13dc61ca26997cd525cf8de9e039768ce92cc316bbee970f6c71f4931cfe050f",
+  "lang_en.py": "cd3c699de9dcf758104dbd43f4628291515ba709b906eb045abb2a137e284377",
+  "README.md": "2c11cdf0f22456e51e2e1354c7b7340d4c8852f9598f5dfa595e9fbaecdd8701",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026102901
+ "build": 2026103001
 }

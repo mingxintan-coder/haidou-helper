@@ -1084,3 +1084,4 @@ EN.update({'找不到游戏客户端：请先打开英雄联盟客户端（登�
            '最近 {0} 局每个人的段位（单双排；没有就看灵活排）': 'Ranks of every player in your last {0} games (Solo/Duo; Flex if no Solo)',
            '最近几局玩家段位': 'Player ranks (recent games)', '从游戏客户端读取中…': 'Reading from the League client…',
            '读取失败：{0}': 'Failed to read: {0}', '最近几局玩家段位…': 'Player ranks in recent games…'})
+EN.update({'{0} 段位比我方平均（{1}）高一截 → 小心': '{0} rank well above our average ({1}) → be careful'})
