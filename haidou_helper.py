@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.7.0"
-APP_BUILD = 2026103101         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.7.1"
+APP_BUILD = 2026103102         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5876,6 +5876,7 @@ class Engine:
         try:
             cred = getattr(self, "_lcu_cred", None) or lcu_credentials()
             if not cred:
+                g["intel_err"] = tr("连不上游戏客户端，读不到段位 / 车队")
                 return
             sess = lcu_get("/lol-gameflow/v1/session", cred, timeout=10) or {}
             try:
@@ -5890,6 +5891,8 @@ class Engine:
             sel = {str(x.get("puuid")): x.get("championId") for x in gdat.get("playerChampionSelections") or []
                    if isinstance(x, dict)}
             out = []
+            if not (t1 + t2):
+                g["intel_err"] = tr("客户端没有给这局的玩家名单，读不到段位 / 车队")
             for p in t1 + t2:
                 pu = p.get("puuid")
                 if not pu:
@@ -5922,7 +5925,8 @@ class Engine:
                 pass
             self.q.put(("intel", out))
             self.wake.set()
-        except Exception:  # noqa
+        except Exception as e:  # noqa
+            g["intel_err"] = tr("读取段位 / 车队失败：{0}").format(type(e).__name__)
             log_crash("intel failed", sys.exc_info())
 
     def recent_ranks(self, n=6, progress=None):
@@ -6148,6 +6152,28 @@ class Engine:
         if not bits:
             return None
         return (tr("情报"), " · ".join(bits), party >= 3)
+
+    def rank_row(self, state):
+        """4.7.1：战况条「段位」（开局 4 分钟内）：双方平均段位 + 车队；情报还在读时显示「读取中」"""
+        g = self.cur_game
+        me = state[2] if state else None
+        if not g or me is None or me.game_time > 240:
+            return None
+        intel = g.get("intel")
+        if intel is None:
+            return (tr("段位"), g.get("intel_err") or tr("读取每个人的段位、车队中…"), False)
+        parts = []
+        for ally in (True, False):
+            sc = [rank_score(i.get("rank")) for i in intel if i["ally"] == ally]
+            sc = [x for x in sc if x is not None]
+            txt = (tr("我方") if ally else tr("对面")) + " " + (score_tier_text(sum(sc) / len(sc)) if sc else tr("未定级"))
+            party = max((i.get("party", 0) for i in intel if i["ally"] == ally and not i.get("me")), default=0)
+            if ally:
+                party = max([party] + [i.get("party", 0) for i in intel if i.get("me")])
+            if party >= 2:
+                txt += tr("（{0} 人车队）").format(party)
+            parts.append(txt)
+        return (tr("段位"), " · ".join(parts) + tr("　→ 玩法页看每个人"), False)
 
     CHALLENGE_TEXT = {"deaths": "死亡 ≤{0}", "towers": "推塔 ≥{0}", "first": "先倒下 ≤{0} 次"}
 
@@ -7299,6 +7325,9 @@ class Engine:
             ir = self.intel_row()
             if ir and isinstance(rec.get("brief"), list):
                 rec["brief"].append(ir)
+            rr = self.rank_row(state)
+            if rr and isinstance(rec.get("brief"), list):
+                rec["brief"].insert((1 if wp else 0), rr)
             rec["intel"] = (self.cur_game or {}).get("intel")
             cr = self.challenge_row(raw, state)
             if cr and isinstance(rec.get("brief"), list):
@@ -11563,7 +11592,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         wraps.append(w_)
 
     def show_intel(intel):
-        """玩法页下方：这局每个人的情报（队友 / 敌方各一段）"""
+        """玩法页最上面：这局每个人的段位、车队、海斗战绩（4.7.1：以前放在最下面，窗口不够高时被切掉看不到）"""
         if not intel:
             intel_lbl.pack_forget()
             return
@@ -11577,12 +11606,14 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 head = engine.gd.champ_name(i["champ"]) if i.get("champ") else (i.get("name") or "?")
                 if i.get("me"):
                     head = tr("你（{0}）").format(head)
-                rk = rank_text(i.get("rank"))
-                base = tr("近 20 局海斗 {0}/{1}").format(i["may_w"], i["may_n"]) if i["may_n"] else tr("近期没打海斗")
-                lines.append("· " + head + ("「" + rk + "」" if rk else "") + "：" + base +
-                             ("；" + i["note"] if i.get("note") else ""))
+                bits = [head, rank_text(i.get("rank")) or "?"]
+                if i.get("note"):
+                    bits.append(i["note"])
+                if i.get("may_n") and tr("海斗高手") not in (i.get("note") or ""):
+                    bits.append(tr("海斗 {0}/{1}").format(i["may_w"], i["may_n"]))
+                lines.append("· " + " · ".join(bits))
         intel_lbl.config(text="\n".join(lines))
-        intel_lbl.pack(fill="x", pady=(4, 0))
+        intel_lbl.pack(fill="x", pady=(0, 4), before=guide_lbl)
 
     footer = tk.Label(body, text="", bg=BG, fg=DIM, font=F["small"], anchor="w", padx=8, cursor="hand2")
     footer.pack(fill="x", pady=(0, 4))

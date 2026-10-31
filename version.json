@@ -1,18 +1,18 @@
 {
- "version": "4.7.0",
+ "version": "4.7.1",
  "date": "2026-10-31",
  "notes": [
-  "推荐装备页加四组局势装：重伤 / 魔抗 / 护甲 / 保命，进商店直接点",
-  "装备代号修正：中文客户端没有英文搜索词的装备改用最短中文",
-  "对面有人段位比我方平均高两大段以上：情报提醒"
+  "段位 / 车队改放玩法页最上面（以前在最下面会被切掉）",
+  "开局 4 分钟内战况条显示双方平均段位和车队；读不到会写原因",
+  "推荐装备页加四组局势装：重伤 / 魔抗 / 护甲 / 保命"
  ],
  "files": {
-  "haidou_helper.py": "26476d4f025616742c41590dc70cc46aec6dfb1a5495c8fb5ce0a90882135b05",
-  "lang_en.py": "11c1b4f0a8ce1086fbed9ed45c5c174522571e33d4f1369916911d60a673cd51",
-  "README.md": "47f783ab21aad222a0b438bf27b99157b32f294b8b50754e9579c5062e8333e8",
+  "haidou_helper.py": "a831240381b2335ffc7bf11555fbe4bad6e7925c2a81e1dd7155ffee12caa58e",
+  "lang_en.py": "e584a6d683a14838af4bc78f227a9500b6b4d9be74e5c7cef781c56207ec827c",
+  "README.md": "2c22c3353b8576352549403039d4d779be5d51a837764c844663f34943fd2591",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026103101
+ "build": 2026103102
 }

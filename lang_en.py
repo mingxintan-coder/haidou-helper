@@ -1087,3 +1087,7 @@ EN.update({'找不到游戏客户端：请先打开英雄联盟客户端（登�
 EN.update({'{0} 段位比我方平均（{1}）高一截 → 小心': '{0} rank well above our average ({1}) → be careful'})
 EN.update({'局势：对面奶多（重伤）': 'If enemies heal a lot (anti-heal)', '局势：对面法系多（魔抗）': 'If enemies are mostly AP (magic resist)',
            '局势：对面物理多（护甲）': 'If enemies are mostly AD (armor)', '局势：被集火（保命）': 'If you get focused (survival)'})
+EN.update({'段位': 'Ranks', '读取每个人的段位、车队中…': 'Reading ranks and premades…', '我方': 'Allies', '对面': 'Enemies',
+           '（{0} 人车队）': ' ({0}-stack)', '　→ 玩法页看每个人': '  → see Guide tab', '连不上游戏客户端，读不到段位 / 车队': 'Cannot reach the League client: no ranks / premades',
+           '读取段位 / 车队失败：{0}': 'Failed to read ranks / premades: {0}', '客户端没有给这局的玩家名单，读不到段位 / 车队': 'Client gave no player list for this game: no ranks / premades',
+           '海斗 {0}/{1}': 'Mayhem {0}/{1}'})
