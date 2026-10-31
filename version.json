@@ -1,18 +1,18 @@
 {
- "version": "4.6.0",
- "date": "2026-10-30",
+ "version": "4.7.0",
+ "date": "2026-10-31",
  "notes": [
-  "装备代号修正：中文客户端搜不到英文名，没有英文搜索词的装备改用最短中文（海妖杀手 → 海妖）",
-  "对面有人段位比我方平均高两大段以上：情报提醒小心",
-  "⋯ → 最近几局玩家段位"
+  "推荐装备页加四组局势装：重伤 / 魔抗 / 护甲 / 保命，进商店直接点",
+  "装备代号修正：中文客户端没有英文搜索词的装备改用最短中文",
+  "对面有人段位比我方平均高两大段以上：情报提醒"
  ],
  "files": {
-  "haidou_helper.py": "13dc61ca26997cd525cf8de9e039768ce92cc316bbee970f6c71f4931cfe050f",
-  "lang_en.py": "cd3c699de9dcf758104dbd43f4628291515ba709b906eb045abb2a137e284377",
-  "README.md": "2c11cdf0f22456e51e2e1354c7b7340d4c8852f9598f5dfa595e9fbaecdd8701",
+  "haidou_helper.py": "26476d4f025616742c41590dc70cc46aec6dfb1a5495c8fb5ce0a90882135b05",
+  "lang_en.py": "11c1b4f0a8ce1086fbed9ed45c5c174522571e33d4f1369916911d60a673cd51",
+  "README.md": "47f783ab21aad222a0b438bf27b99157b32f294b8b50754e9579c5062e8333e8",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026103001
+ "build": 2026103101
 }

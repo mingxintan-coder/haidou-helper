@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.6.0"
-APP_BUILD = 2026103001         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.7.0"
+APP_BUILD = 2026103101         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -3713,7 +3713,51 @@ class Advisor:
         boots.sort(reverse=True)
         if boots:
             blocks.insert(1, (tr("鞋子"), [i for _, i in boots[:3]]))
+        try:
+            blocks += self.item_set_situational(cands, cs, [i for t_, its in blocks if t_ != tr("鞋子") for i in its[:2]])
+        except Exception:  # noqa
+            log_crash("item set situational failed", sys.exc_info())
         return blocks or None
+
+    def item_set_situational(self, cands, cs, core):
+        """4.7.0：推荐装备页的「局势装」—— 对面奶多（重伤）、法系多（魔抗）、物理多（护甲）、被集火（保命），
+           每组挑 2 件：先挑合这个英雄主路线的（法术 / 物理 / 坦克），按网上数据（第 3 件时）排；不合路线的才用纯防御装补"""
+        gd = self.gd
+
+        def nv_of(i):
+            return norm({d: x for d, x in gd.item_vec(i)[0].items() if d in BUILD_DIMS})
+        cnt = {k: sum(1 for i in core if route_member(nv_of(i), k)) for k in ("atk", "ap", "tank")}
+        main = max(("atk", "ap", "tank"), key=lambda k: (cnt[k], -("atk", "ap", "tank").index(k)))
+        groups = (
+            (tr("局势：对面奶多（重伤）"), lambda i, nv, sp: "ANTIHEAL" in sp),
+            (tr("局势：对面法系多（魔抗）"), lambda i, nv, sp: nv.get("MR", 0) >= 0.35),
+            (tr("局势：对面物理多（护甲）"), lambda i, nv, sp: nv.get("ARMOR", 0) >= 0.35),
+            (tr("局势：被集火（保命）"), lambda i, nv, sp: "SURVIVE" in sp),
+        )
+        out, shown = [], set()
+        for title, ok in groups:
+            if main == "tank" and title == tr("局势：被集火（保命）"):
+                continue                 # 坦克本来就扛得住：不放保命装
+            rows = []
+            for i in cands:
+                if gd.is_boots(i):
+                    continue
+                nv = nv_of(i)
+                sp = gd.item_vec(i)[1]
+                if not ok(i, nv, sp):
+                    continue
+                fit = route_member(nv, main) if main != "tank" else route_member(nv, "tank") or \
+                    nv.get("ARMOR", 0) + nv.get("MR", 0) + nv.get("HP", 0) >= 0.9
+                de = self.data_effect_item(i, cs, 3, [])
+                rows.append((not fit, not de.get("has"), i in shown, -(de.get("d") or 0.0), i))
+            rows.sort()
+            pick = [r[-1] for r in rows if not r[0]][:2]
+            if not pick:                 # 这个路线没有这类装：才用别的路线的（例：法师的护甲 → 中娅以外没有时）
+                pick = [r[-1] for r in rows if r[0]][:2]
+            if pick:
+                shown.update(pick)
+                out.append((title, pick))
+        return out
 
     def reroll_advice(self, mine, pool, rerolls, bench_best=None):
         """要不要重骰：重骰＝从你能用的英雄里随机换一个，期望胜率＝这些英雄预估胜率的平均。
