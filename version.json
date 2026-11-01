@@ -1,18 +1,18 @@
 {
- "version": "4.7.1",
+ "version": "4.7.2",
  "date": "2026-10-31",
  "notes": [
-  "段位 / 车队改放玩法页最上面（以前在最下面会被切掉）",
-  "开局 4 分钟内战况条显示双方平均段位和车队；读不到会写原因",
-  "推荐装备页加四组局势装：重伤 / 魔抗 / 护甲 / 保命"
+  "段位 / 车队改放新的「情报」页，玩法页只放连招和打法",
+  "开局 4 分钟内战况条显示双方平均段位和车队",
+  "一个人读超时不再让整份情报都没了"
  ],
  "files": {
-  "haidou_helper.py": "a831240381b2335ffc7bf11555fbe4bad6e7925c2a81e1dd7155ffee12caa58e",
-  "lang_en.py": "e584a6d683a14838af4bc78f227a9500b6b4d9be74e5c7cef781c56207ec827c",
-  "README.md": "2c22c3353b8576352549403039d4d779be5d51a837764c844663f34943fd2591",
+  "haidou_helper.py": "e07859791f7cacef109cdcd4659e2485e01baa33652ab2c38f3d596815c6a7f1",
+  "lang_en.py": "d5233a566c3380e7ce76cd990788f7c5934266540dfd21862ab580ae8d776eca",
+  "README.md": "618669bde2c6544b09a1fb8d06f48c0c4283fc7aaa84a38cc58ae6c494c5a724",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026103102
+ "build": 2026103103
 }

@@ -1091,3 +1091,5 @@ EN.update({'段位': 'Ranks', '读取每个人的段位、车队中…': 'Readin
            '（{0} 人车队）': ' ({0}-stack)', '　→ 玩法页看每个人': '  → see Guide tab', '连不上游戏客户端，读不到段位 / 车队': 'Cannot reach the League client: no ranks / premades',
            '读取段位 / 车队失败：{0}': 'Failed to read ranks / premades: {0}', '客户端没有给这局的玩家名单，读不到段位 / 车队': 'Client gave no player list for this game: no ranks / premades',
            '海斗 {0}/{1}': 'Mayhem {0}/{1}'})
+EN.update({'情报': 'Intel', '开局后显示每个人的段位、车队、最近海斗战绩': 'Shows every player’s rank, premade and recent Mayhem record once the game starts',
+           '　→ 情报页看每个人': '  → see Intel tab'})

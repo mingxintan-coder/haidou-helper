@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.7.1"
-APP_BUILD = 2026103102         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.7.2"
+APP_BUILD = 2026103103         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5900,7 +5900,10 @@ class Engine:
                 cid = p.get("championId") or sel.get(pu)
                 champ = by_key.get(str(cid))
                 time.sleep(0.5)
-                hist = lcu_get(f"/lol-match-history/v1/products/lol/{pu}/matches?begIndex=0&endIndex=20", cred, timeout=15)
+                try:                                  # 4.7.2：一个人读超时不影响其他人
+                    hist = lcu_get(f"/lol-match-history/v1/products/lol/{pu}/matches?begIndex=0&endIndex=20", cred, timeout=15)
+                except Exception:  # noqa
+                    hist = None
                 games = ((hist or {}).get("games") or {}).get("games") or []
                 info = self.player_intel(games, cid)
                 try:                                  # 4.4.0：段位（单双排；没有就看灵活排）
@@ -6173,7 +6176,7 @@ class Engine:
             if party >= 2:
                 txt += tr("（{0} 人车队）").format(party)
             parts.append(txt)
-        return (tr("段位"), " · ".join(parts) + tr("　→ 玩法页看每个人"), False)
+        return (tr("段位"), " · ".join(parts) + tr("　→ 情报页看每个人"), False)
 
     CHALLENGE_TEXT = {"deaths": "死亡 ≤{0}", "towers": "推塔 ≥{0}", "first": "先倒下 ≤{0} 次"}
 
@@ -11443,7 +11446,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         pages[name].pack(fill="x", padx=6, pady=(4, 4), before=footer)
         fit()
 
-    for key, text in (("items", tr("出装")), ("augs", tr("增幅")), ("guide", tr("玩法"))):
+    for key, text in (("items", tr("出装")), ("augs", tr("增幅")), ("guide", tr("玩法")), ("intel", tr("情报"))):
         holder = tk.Frame(tabs_bar, bg=BG)
         holder.pack(side="left", padx=(2, 10))
         lb = tk.Label(holder, text=text, bg=BG, fg=DIM, font=F["tab"], cursor="hand2")
@@ -11454,7 +11457,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         tab_btns[key] = (lb, ul)
     tk.Frame(body, bg="#232a36", height=1).pack(fill="x", padx=8)
 
-    pages = {k: tk.Frame(body, bg=BG) for k in ("items", "augs", "guide")}
+    pages = {k: tk.Frame(body, bg=BG) for k in ("items", "augs", "guide", "intel")}
 
     def make_rows(parent, n):
         rows = []
@@ -11586,15 +11589,16 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     kit_lbl = tk.Label(pages["guide"], text="", bg=BG, fg=SUB, font=F["small"], anchor="w", justify="left", padx=8)
     pos_lbl = tk.Label(pages["guide"], text="", bg=BG, fg=GREEN, font=F["small"], anchor="w", justify="left", padx=8)
     neg_lbl = tk.Label(pages["guide"], text="", bg=BG, fg=ORANGE, font=F["small"], anchor="w", justify="left", padx=8)
-    intel_lbl = tk.Label(pages["guide"], text="", bg=BG, fg=FG, font=F["small"], anchor="w", justify="left",
+    intel_lbl = tk.Label(pages["intel"], text="", bg=BG, fg=FG, font=F["small"], anchor="w", justify="left",
                          padx=8, pady=4)
     for w_ in (kit_lbl, pos_lbl, neg_lbl, intel_lbl):
         wraps.append(w_)
 
     def show_intel(intel):
-        """玩法页最上面：这局每个人的段位、车队、海斗战绩（4.7.1：以前放在最下面，窗口不够高时被切掉看不到）"""
+        """4.7.2「情报」页：这局每个人的段位、车队、海斗战绩（玩法页只放连招 / 打法）"""
         if not intel:
-            intel_lbl.pack_forget()
+            intel_lbl.config(text=tr("开局后显示每个人的段位、车队、最近海斗战绩"))
+            intel_lbl.pack(fill="x", pady=(0, 4))
             return
         lines = []
         for ally in (False, True):
@@ -11613,7 +11617,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                     bits.append(tr("海斗 {0}/{1}").format(i["may_w"], i["may_n"]))
                 lines.append("· " + " · ".join(bits))
         intel_lbl.config(text="\n".join(lines))
-        intel_lbl.pack(fill="x", pady=(0, 4), before=guide_lbl)
+        intel_lbl.pack(fill="x", pady=(0, 4))
 
     footer = tk.Label(body, text="", bg=BG, fg=DIM, font=F["small"], anchor="w", padx=8, cursor="hand2")
     footer.pack(fill="x", pady=(0, 4))
