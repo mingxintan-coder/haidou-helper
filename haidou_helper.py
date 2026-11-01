@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.7.2"
-APP_BUILD = 2026103103         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.8.0"
+APP_BUILD = 2026110101         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -4440,8 +4440,6 @@ class Advisor:
         """回传 [(标签, 文字, 是否紧急)]"""
         cn = self.gd.champ_name
         out = []
-        if guide.get("combo_keys"):
-            out.append((tr("连招"), guide["combo_keys"], False))
         dead_e = sum(1 for e in enemies if e.is_dead)
         dead_a = sum(1 for p in allies + [me] if p.is_dead)
         s = me.stats or {}
@@ -4647,6 +4645,9 @@ class Advisor:
                 x = x.strip()
                 return short.get(x) or (x[:1] + suf[x[1:]] if x[1:] in suf else x)
             g["combo_keys"] = "→".join(key(x) for x in combos[0][0].split(">"))
+            g["combo_notes"] = [(c, n) for c, n in g["combos"]]
+            if len(combos) > 1:
+                g["combo_keys2"] = "→".join(key(x) for x in combos[1][0].split(">"))
         if self.stats and self.stats.balance:
             b = self.stats.balance.get(me.cid.lower()) or {}
             label = {"damageDealt": tr("造成伤害"), "damageTaken": tr("承受伤害"), "abilityHaste": tr("技能急速"),
@@ -5235,6 +5236,40 @@ def _same_name(a, b):
 
 def same_offer(a, b):
     return bool(a) and bool(b) and len(a) == len(b) and all(_same_name(x, y) for x, y in zip(a, b))
+
+
+class ShopImeState:
+    """4.8.0：商店开没开 / 在不在聊天的判断（只看按键）。step() 回传 "zh"（切中文）、"en"（切英文）或 None"""
+    def __init__(self, shop_max=90):
+        self.shop_max = shop_max
+        self.reset()
+
+    def reset(self):
+        self.shop = self.chat = False
+        self.shop_t = self.last_letter = 0.0
+        self.p_close_at = None
+
+    def step(self, ev, now):
+        act = None
+        if ev.get("letter"):
+            self.last_letter = now
+            self.p_close_at = None               # P 之后马上又打了字：在搜索框打字，不是关商店
+        if ev.get("esc"):
+            self.chat, self.p_close_at = False, None
+            if self.shop:
+                self.shop, act = False, "en"
+        if ev.get("enter") and not self.shop:
+            self.chat = not self.chat
+        if ev.get("p") and not self.chat:
+            if not self.shop:
+                self.shop, self.shop_t, act = True, now, "zh"
+            elif now - self.last_letter > 0.6:
+                self.p_close_at = now + 0.6      # 等 0.6 秒：没再打字才当成关商店
+        if self.p_close_at is not None and now >= self.p_close_at:
+            self.p_close_at, self.shop, act = None, False, "en"
+        if self.shop and now - max(self.shop_t, self.last_letter) > self.shop_max:
+            self.shop = False
+        return act
 
 
 class HotkeyWatcher:
@@ -6160,7 +6195,7 @@ class Engine:
         """4.7.1：战况条「段位」（开局 4 分钟内）：双方平均段位 + 车队；情报还在读时显示「读取中」"""
         g = self.cur_game
         me = state[2] if state else None
-        if not g or me is None or me.game_time > 240:
+        if not g or me is None or me.game_time > 240 or isinstance(self.source, MockGame):
             return None
         intel = g.get("intel")
         if intel is None:
@@ -7126,34 +7161,65 @@ class Engine:
     IME_RESPAWN = 8       # 复活后 8 秒还在泉水，可能在买：不动
     IME_BACKOFF = 30      # 刚切回英文，你又马上切成中文（多半在聊天打字）：30 秒内不再动
 
+    SHOP_VK = 0x50            # P：打开 / 关掉商店（游戏默认键）
+    SHOP_MAX = 90             # 商店开着超过 90 秒没动静：当成已经关了（用鼠标点 X 关的看不到）
+
     def ime_guard(self):
-        """3.3.2：游戏中输入法只在「买装备」时可以是中文：阵亡（在泉水买）、开局 45 秒、复活后 8 秒不动；
-           其他时间每 2 秒检查一次，是中文就切回英文（不换键盘、不动别的程式，只关掉游戏视窗输入法的中文状态）。
-           切了以后你又马上切回中文 → 当成你要打字聊天，30 秒内不再动。买装备建议用「点推荐装备复制 → Ctrl+V」，不必打中文"""
-        alive_since, flips, backoff = None, [], 0.0
+        """4.8.0：输入法跟着商店走 —— 按 P 打开商店 → 切成中文（可以直接打中文搜装备）；再按 P / Esc 关掉 → 切回英文。
+           只读键盘状态（GetAsyncKeyState，跟快捷键一样），不送按键、不动游戏。
+           聊天：按 Enter 打开聊天框时不管 P（打字里的 P 不算），Enter / Esc 结束。
+           在商店搜索框打字时打到 P：后面 0.6 秒内还有别的字母 → 是在打字，不算关商店。
+           其他时间（商店没开、没在聊天）每 2 秒检查一次，是中文就切回英文（被你马上切回中文两次 → 30 秒内不再动）"""
+        if not sys.platform.startswith("win"):
+            return
+        import ctypes
+        user32 = ctypes.windll.user32
+        letters = [v for v in range(0x41, 0x5B) if v != self.SHOP_VK]
+        down = {}
+
+        def edge(vk):
+            st_ = user32.GetAsyncKeyState(vk)
+            pressed = bool(st_ & 0x8000)
+            hit = (pressed and not down.get(vk)) or bool(st_ & 0x0001 and not pressed)
+            down[vk] = pressed
+            return hit
+        sm = ShopImeState(self.SHOP_MAX)
+        shop = chat = False
+        flips, backoff, last_check, alive_since = [], 0.0, 0.0, None
         while True:
-            time.sleep(2)
+            time.sleep(0.04)
             try:
-                if not getattr(self, "ime_fix", True) or not self.connected:
-                    alive_since = None
+                if not getattr(self, "ime_fix", True) or not self.connected or not game_foreground():
+                    for vk in [self.SHOP_VK, 0x1B, 0x0D] + letters:
+                        edge(vk)                           # 不在游戏里：只清掉按键状态
+                    sm.reset()
                     continue
-                dead, gt, seen = getattr(self, "_ime_me", (True, 0, 0))
                 now = time.time()
-                if now - seen > 10:                 # 读不到游戏（读档、结算）
+                ev = {"letter": any([edge(vk) for vk in letters]), "esc": edge(0x1B), "enter": edge(0x0D),
+                      "p": edge(self.SHOP_VK)}
+                act = sm.step(ev, now)
+                if act == "zh":
+                    game_ime_to_chinese()
+                elif act == "en":
+                    game_ime_to_english()
+                shop, chat = sm.shop, sm.chat
+                if shop or chat or now - last_check < 2.0:
                     continue
+                last_check = now
+                dead, gt, seen = getattr(self, "_ime_me", (True, 0, 0))
                 if dead:
                     alive_since = None
-                    continue
-                if alive_since is None:
+                elif alive_since is None:
                     alive_since = now
-                if gt < self.IME_START or now - alive_since < self.IME_RESPAWN or now < backoff:
-                    continue
+                if now - seen > 10 or dead or now < backoff or gt < self.IME_START or \
+                        now - (alive_since or now) < self.IME_RESPAWN:
+                    continue                              # 读不到游戏 / 阵亡、开局、刚复活（可能用鼠标开商店在买）/ 你刚自己切回中文
                 if game_ime_to_english():
                     flips = [x for x in flips if now - x < 20] + [now]
-                    if len(flips) >= 2:             # 20 秒内被你切回中文又被我们切掉：你在打字，先别管
+                    if len(flips) >= 2:                   # 20 秒内被你切回中文又被切掉：你在打字，先别管
                         backoff, flips = now + self.IME_BACKOFF, []
             except Exception:  # noqa
-                pass
+                time.sleep(1)
 
     def ask_pick(self, names):
         """三选一关了、但没抓到你点哪张：浮窗显示这几张让你补点（45 秒内）"""
@@ -7324,7 +7390,7 @@ class Engine:
             sk = self.skill_row(raw, state)
             rec["skill_up"] = getattr(self, "_skill_up", None) if sk else None    # 3.9.1：挂件顶部大横幅
             if sk and isinstance(rec.get("brief"), list):
-                rec["brief"].insert((1 if wp else 0), sk)
+                pass                                   # 4.8.0：加点改在上面一直显示的那一行
             ir = self.intel_row()
             if ir and isinstance(rec.get("brief"), list):
                 rec["brief"].append(ir)
@@ -8660,6 +8726,74 @@ def lcu_credentials():
             if port and token:
                 return int(port.group(1)), token.group(1)
     return None
+
+
+def game_foreground():
+    """游戏视窗（RiotWindowClass）在最前面？"""
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        buf = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, buf, 64)
+        return buf.value == "RiotWindowClass"
+    except Exception:  # noqa
+        return False
+
+
+def game_ime_to_chinese():
+    """4.8.0：打开商店 → 游戏视窗的输入法切成中文（打开输入法 + 中文模式）。
+       之前被切到英文键盘的，换回中文键盘。只在游戏视窗在前面时动手。回传 True＝有切换"""
+    if not game_foreground():
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32, imm32 = ctypes.windll.user32, ctypes.windll.imm32
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        hwnd = user32.GetForegroundWindow()
+        imm32.ImmGetDefaultIMEWnd.restype = wintypes.HWND
+        user32.SendMessageTimeoutW.restype = ctypes.c_ssize_t
+        user32.SendMessageTimeoutW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+                                               wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t)]
+
+        def send(h, msg, wp, lp):
+            res = ctypes.c_size_t(0)
+            if not user32.SendMessageTimeoutW(h, msg, wp, lp, 0x0002, 200, ctypes.byref(res)):
+                raise TimeoutError("IME window busy")
+            return res.value
+        how = "ime"
+        tid = user32.GetWindowThreadProcessId(hwnd, None)
+        user32.GetKeyboardLayout.restype = ctypes.c_void_p
+        cur = user32.GetKeyboardLayout(tid) or 0
+        if (int(cur) & 0x3FF) != 0x04:                  # 现在不是中文键盘（例：之前被换成英文键盘）→ 换回中文键盘
+            n = user32.GetKeyboardLayoutList(0, None)
+            arr = (ctypes.c_void_p * max(1, n))()
+            n = user32.GetKeyboardLayoutList(n, arr)
+            zh = next((h for h in arr[:n] if h and (int(h) & 0x3FF) == 0x04), None)
+            if zh:
+                user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+                user32.PostMessageW(hwnd, 0x0050, 0, int(zh))     # WM_INPUTLANGCHANGEREQUEST
+                how = "layout"
+                time.sleep(0.15)
+        ime = imm32.ImmGetDefaultIMEWnd(hwnd)
+        if not ime:
+            return how == "layout"
+        WM_IME_CONTROL, IMC_GETCONVERSIONMODE, IMC_SETCONVERSIONMODE, IMC_SETOPENSTATUS = 0x0283, 0x0001, 0x0002, 0x0006
+        send(ime, WM_IME_CONTROL, IMC_SETOPENSTATUS, 1)
+        mode = send(ime, WM_IME_CONTROL, IMC_GETCONVERSIONMODE, 0)
+        if not mode & 0x0001:
+            send(ime, WM_IME_CONTROL, IMC_SETCONVERSIONMODE, mode | 0x0001)     # 英文 → 中文（微软拼音等）
+        _perf_write(time.strftime("%H:%M:%S ") + "IME -> Chinese ({0})".format(how))
+        return True
+    except Exception:  # noqa
+        return False
 
 
 def game_ime_to_english():
@@ -11263,6 +11397,44 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         w.bind("<B1-Motion>", do_drag)
         w.bind("<ButtonRelease-1>", lambda e: persist())
 
+    # ---------- 4.8.0：加点 / 连招 / 打法：一直显示（收起也看得到），说明放在鼠标移上去的提示框 ----------
+    play_strip = tk.Label(root, text="", bg="#1b2230", fg=GOLD, font=F["tip"], anchor="w", justify="left", padx=8, pady=3)
+    wraps.append(play_strip)
+    st["strip_tip"] = ""
+    hover(play_strip, lambda: st.get("strip_tip", ""))
+
+    def update_strip(rec):
+        g = rec.get("guide") or {}
+        top, low = [], []
+        su = rec.get("skill_up")
+        if su:
+            top.append(tr("⬆升{0}").format(su["key"]))
+        if g.get("skill_order"):
+            top.append(tr("加点 {0}").format(g["skill_order"].replace(" ", "")))
+        ck = [x for x in (g.get("combo_keys"), g.get("combo_keys2")) if x]
+        if ck:
+            top.append(tr("连招 {0}").format(" ／ ".join(ck)))
+        style = re.split(r"[，。；,;]", g.get("style") or "")[0].strip()
+        if style:
+            low.append(style if len(style) <= 18 else style[:17] + "…")
+        if not top and not low:
+            play_strip.pack_forget()
+            return
+        play_strip.config(text="   ".join(top) + ("\n" + "  ".join(low) if low else ""))
+        tip = []
+        if g.get("style"):
+            tip.append(tr("打法：") + g["style"])
+        for c, n in g.get("combos") or []:
+            tip.append(tr("连招：{0}").format(c) + (tr("　{0}").format(n) if n else ""))
+        if g.get("skills"):
+            tip.append(g["skills"])
+        if g.get("spells"):
+            tip.append(g["spells"])
+        st["strip_tip"] = "\n".join(tip)
+        if not play_strip.winfo_ismapped():
+            play_strip.pack(fill="x", after=header)
+            fit()
+
     # ---------- 单行模式 ----------
     mini = tk.Label(root, text=tr("等待对局…"), bg=BG, fg=FG, font=F["tip"], anchor="w", justify="left", padx=8, pady=5)
     wraps.append(mini)
@@ -12255,6 +12427,10 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         curve_cv.pack(fill="x", padx=0, pady=(0, 3), before=tips_box)
 
     def show(rec, flash=True):
+        try:
+            update_strip(rec)
+        except Exception:  # noqa
+            pass
         current["rec"] = rec
         st["select_tab_done"] = False             # 进了对局：下次选英雄再切一次出装页
         mine_names = rec.get("my_augs", [])
@@ -12263,7 +12439,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         su = rec.get("skill_up")
         has_brief = show_brief([x for x in rec.get("brief") or [] if not (su and x[0] == tr("加点"))])
         try:
-            show_skill(su, has_brief)
+            show_skill(None, has_brief)            # 4.8.0：加点提示只在上面一直显示的那一行
         except Exception:  # noqa
             pass
         draw_live(rec.get("wp_series") if has_brief else None)
@@ -12461,11 +12637,10 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             thr = bf.get(tr("威胁"), "").split(" · ")[0]
             hot_aug = next((x[1] for x in rec.get("brief") or [] if x[0] == tr("敌增幅") and x[2]), None)
             extra = "⚠" + hot_aug if hot_aug else \
-                "   ".join(x for x in (bf.get(tr("连招")), "⚠" + thr if thr else "") if x)
+                ("⚠" + thr if thr else "")            # 4.8.0：连招已经一直显示在上面
             mini.config(text=line + ("\n" + extra if st["brief"] and extra else ""), fg=FG)
         su = rec.get("skill_up")
-        if su and not cand:                        # 3.9.1：单行模式也在最前面提示加点
-            mini.config(text=tr("⬆升{0}").format(su["key"]) + "  " + mini.cget("text"))
+        # 4.8.0：加点提示改在上面一直显示的那一行
         # 只有和你有关的推荐真的变了才弹开（别人买装备、升级不弹）
         its_key = tuple(x["name"] for x in its[:2])
         key = (its_key, boots["name"] if boots else None, bool(cand),

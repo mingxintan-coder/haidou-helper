@@ -1,18 +1,18 @@
 {
- "version": "4.7.2",
- "date": "2026-10-31",
+ "version": "4.8.0",
+ "date": "2026-11-01",
  "notes": [
-  "段位 / 车队改放新的「情报」页，玩法页只放连招和打法",
-  "开局 4 分钟内战况条显示双方平均段位和车队",
-  "一个人读超时不再让整份情报都没了"
+  "加点 / 连招 / 打法一直显示在标题下面（收起也在），说明移上去看",
+  "按 P 打开商店自动切中文，关掉商店切回英文",
+  "段位 / 车队在「情报」页"
  ],
  "files": {
-  "haidou_helper.py": "e07859791f7cacef109cdcd4659e2485e01baa33652ab2c38f3d596815c6a7f1",
-  "lang_en.py": "d5233a566c3380e7ce76cd990788f7c5934266540dfd21862ab580ae8d776eca",
-  "README.md": "618669bde2c6544b09a1fb8d06f48c0c4283fc7aaa84a38cc58ae6c494c5a724",
+  "haidou_helper.py": "770372c3ada0d50a2050b0992773c3990039b87092074c02378973311a2fd8c2",
+  "lang_en.py": "a705c48ff6c14cda4ca3723bcf9653293410201a078f31b6712b8b52f6eddf40",
+  "README.md": "bb55d5130848660ce8d3386ebeb5282935fafa8df6f49f247fc343694bcfe2ea",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026103103
+ "build": 2026110101
 }
