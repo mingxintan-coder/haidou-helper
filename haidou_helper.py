@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.8.0"
-APP_BUILD = 2026110101         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "4.8.1"
+APP_BUILD = 2026110201         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -12599,11 +12599,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             st["tab_before_cand"] = None
             st["cand_jumped"] = None
         elif shop_text:
-            # 刚阵亡：切到出装页「一次」（看复活前买什么）；之后你切去别的页就不再拉回来
-            if not st.get("shop_tab_done"):
-                st["shop_tab_done"] = True
-                if st["tab"] != "items" and time.time() - st.get("user_tab_t", 0) > 60:
-                    select_tab("items")
+            pass                                   # 4.8.1：阵亡 / 买装备时不切分页（停在你看的那页）
         elif not st["user_tab"]:
             select_tab("guide" if rec.get("game_time", 999) < 90 else "items")
         if not shop_text:
