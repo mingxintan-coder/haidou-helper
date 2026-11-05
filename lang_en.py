@@ -1094,3 +1094,5 @@ EN.update({'段位': 'Ranks', '读取每个人的段位、车队中…': 'Readin
 EN.update({'情报': 'Intel', '开局后显示每个人的段位、车队、最近海斗战绩': 'Shows every player’s rank, premade and recent Mayhem record once the game starts',
            '　→ 情报页看每个人': '  → see Intel tab'})
 EN.update({'加点 {0}': 'Skills {0}', '连招 {0}': 'Combo {0}', '打法：': 'Playstyle: ', '连招：{0}': 'Combo: {0}', '　{0}': '  {0}'})
+EN.update({'选单': 'Menu', '固定展开（不自动收起）': 'Pin open (don’t auto-collapse)', '识别增幅三选一（快捷键 {0}）': 'Read the augment choice (hotkey {0})',
+           '识别增幅三选一': 'Read the augment choice', '升 {0}': 'Level {0}', '加点 ': 'Skills ', '连招 ': 'Combo ', '（你）': ' (you)'})

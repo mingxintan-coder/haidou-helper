@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "4.8.1"
-APP_BUILD = 2026110201         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.0.0"
+APP_BUILD = 2026110401         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -11080,7 +11080,7 @@ CHAMP_SCALING = {
 
 
 SPELL_NAMES = {1: "净化", 3: "虚弱", 4: "闪现", 6: "疾跑", 7: "治疗", 13: "清晰", 14: "引燃", 21: "屏障", 32: "雪球"}
-TIER_COLOR = {"S": "#ff9f43", "A": "#3ddc84", "B": "#e6e9ef", "C": "#8a93a6", "D": "#5b6477"}
+TIER_COLOR = {"S": "#f2b04a", "A": "#4fd18b", "B": "#e9ecf1", "C": "#a5aebc", "D": "#7f899a"}
 
 
 def fmt_data(d):
@@ -11206,14 +11206,36 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     import tkinter as tk
     import tkinter.font as tkfont
 
-    # ---------- 配色 ----------
-    BG, CARD, CARD_HI, HEAD = "#0f1218", "#161b25", "#1d2431", "#0a0d12"
-    FG, SUB, DIM, GOLD = "#e6e9ef", "#8a93a6", "#5b6477", "#c8aa6e"
-    GREEN, YELLOW, GREY, ORANGE = "#3ddc84", "#f5c542", "#7b8497", "#ff8a3d"
+    # ---------- 5.0：设计系统 ----------
+    # 在游戏画面旁边一眼扫过：底色压暗、只有一个强调色（海克斯青），黄 / 红只用在「要注意」，
+    # 不用卡片套卡片：区块之间用 1px 细线分开；数字用等宽数字字体，搜索代号用等宽字体（是资料，不是装饰）
+    BG, RAISE, LINE = "#0d1015", "#161b23", "#242b36"          # 底色 / 鼠标移上去 / 细线
+    CARD, CARD_HI, HEAD = BG, RAISE, BG
+    FG, SUB, DIM = "#e9ecf1", "#a5aebc", "#7f899a"               # 文字（对比度 ≥ 4.5:1）
+    ACC, ACC_BG = "#5cc8d6", "#173238"                            # 强调：可点、正在用的、推荐的
+    GOOD, WARN, BAD = "#4fd18b", "#f2b04a", "#ff6f57"
+    WARN_BG, GOOD_BG = "#2a2216", "#13251c"
+    GOLD, GREEN, YELLOW, ORANGE, GREY = ACC, GOOD, WARN, WARN, DIM
     FAMILY = "Microsoft YaHei UI" if sys.platform.startswith("win") else "Noto Sans CJK SC"
+    NUMFAM = "Bahnschrift SemiBold" if sys.platform.startswith("win") else "DejaVu Sans"
+    CODEFAM = "Consolas" if sys.platform.startswith("win") else "DejaVu Sans Mono"
+    ICON_GLYPHS = re.compile("[\U0001F300-\U0001FAFF\u2B06\u26A0\u2694\u2605\u25B6\u25B2\u25BC\u21EA\u25CF\uFE0F]\\s?")
+
+    class Label(tk.Label):
+        """5.0：画面上不用表情符号当图示（📋 ⚠ ★ ▶ 👟…）：意思改用颜色和字重表达"""
+        def __init__(self, *a, **kw):
+            if isinstance(kw.get("text"), str):
+                kw["text"] = ICON_GLYPHS.sub("", kw["text"])
+            tk.Label.__init__(self, *a, **kw)
+
+        def configure(self, cnf=None, **kw):
+            if isinstance(kw.get("text"), str):
+                kw["text"] = ICON_GLYPHS.sub("", kw["text"])
+            return tk.Label.configure(self, cnf, **kw)
+        config = configure
 
     def score_color(s):
-        return GREEN if s >= 80 else YELLOW if s >= 65 else GREY
+        return GOOD if s >= 80 else FG if s >= 65 else DIM
 
     cfg = load_ui_cfg()
     root = tk.Tk()
@@ -11225,7 +11247,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         root.attributes("-alpha", alpha)
     except tk.TclError:
         pass
-    root.configure(bg=BG, highlightthickness=1, highlightbackground="#2a3140")
+    root.configure(bg=BG, highlightthickness=1, highlightbackground=LINE)
     dpi = max(1.0, root.winfo_fpixels("1i") / 96.0)
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
     st = {"k": scale or cfg.get("scale", 1.0), "x": cfg.get("x"), "y": cfg.get("y", int(sh * 0.22)),
@@ -11235,9 +11257,11 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         st["x"] = sw - int(300 * dpi * st["k"]) - 12
     st["x"], st["y"] = min(max(0, st["x"]), sw - 120), min(max(0, st["y"]), sh - 60)
 
-    BASE = {"title": (10, "bold"), "tab": (9, "bold"), "name": (10, "bold"), "score": (11, "bold"),
-            "small": (8, "normal"), "tip": (9, "normal"), "icon": (10, "normal")}
-    F = {k: tkfont.Font(family=FAMILY, size=v, weight=w) for k, (v, w) in BASE.items()}
+    BASE = {"title": (10, "bold"), "tab": (9, "normal"), "name": (10, "normal"), "score": (11, "bold"),
+            "small": (8, "normal"), "tip": (9, "normal"), "icon": (10, "normal"), "num": (10, "normal"),
+            "code": (8, "normal"), "key": (9, "bold")}
+    FAMS = {"num": NUMFAM, "score": NUMFAM, "code": CODEFAM}
+    F = {k: tkfont.Font(family=FAMS.get(k, FAMILY), size=v, weight=w) for k, (v, w) in BASE.items()}
     wraps = []
 
     def W():
@@ -11287,8 +11311,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             tw = tk.Toplevel(root)
             tw.overrideredirect(True)
             tw.attributes("-topmost", True)
-            tk.Label(tw, text=text, bg="#232b3a", fg=FG, font=F["small"], justify="left",
-                     wraplength=int(260 * dpi * st["k"]), padx=8, pady=6).pack()
+            tw.configure(bg=LINE)
+            Label(tw, text=ICON_GLYPHS.sub("", text), bg=RAISE, fg=FG, font=F["small"], justify="left",
+                     wraplength=int(260 * dpi * st["k"]), padx=10, pady=7).pack(padx=1, pady=1)
             tw.update_idletasks()
             x = root.winfo_rootx() - tw.winfo_reqwidth() - 6
             if x < 0:
@@ -11304,12 +11329,24 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     # ---------- 标题栏 ----------
     header = tk.Frame(root, bg=HEAD)
     header.pack(fill="x")
-    dot = tk.Label(header, text="●", bg=HEAD, fg=GREY, font=F["small"])
-    dot.pack(side="left", padx=(8, 2), pady=5)
-    title = tk.Label(header, text=tr("海斗助手"), bg=HEAD, fg=GOLD, font=F["title"])
+    class Dot(tk.Canvas):
+        """连线状态：画一个小圆点（不用 ● 字符）；config(fg=颜色) 换颜色"""
+        def __init__(self, parent):
+            n = int(9 * dpi)
+            tk.Canvas.__init__(self, parent, width=n, height=n, bg=HEAD, highlightthickness=0)
+            self.o = self.create_oval(1, 1, n - 1, n - 1, fill=GREY, outline="")
+
+        def configure(self, cnf=None, **kw):
+            if "fg" in kw:
+                self.itemconfig(self.o, fill=kw.pop("fg"))
+            if kw or cnf:
+                return tk.Canvas.configure(self, cnf, **kw)
+        config = configure
+    dot = Dot(header)
+    dot.pack(side="left", padx=(10, 6), pady=8)
+    title = Label(header, text=tr("海斗助手"), bg=HEAD, fg=FG, font=F["title"])
     title.pack(side="left")
-    status = tk.Label(header, text="", bg=HEAD, fg=DIM, font=F["small"])
-    status.pack(side="left", padx=6)
+    status = Label(header, text="", bg=HEAD, fg=DIM, font=F["small"], anchor="w")     # 5.0：按钮先排，状态文字用剩下的宽度
 
     def set_status(text):
         """没有别的消息时，标题栏显示新版本提醒（金色，可点）"""
@@ -11339,15 +11376,45 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                            "\n".join("· " + x for x in st["app_new"].get("notes", [])[:6]) +
                            tr("\n点一下直接更新（从 GitHub 下载并校验），重新打开生效")) if st.get("app_new") else "")
 
-    def hbtn(text, cmd, fg=SUB, bg=HEAD):
-        b = tk.Label(header, text=text, bg=bg, fg=fg, font=F["small"], padx=7, pady=3, cursor="hand2")
+    class IconBtn(tk.Canvas):
+        """5.0：标题栏的小图示（选单 / 最小化 / 固定）用线条画，不用表情符号；config(fg=颜色) 换颜色"""
+        def __init__(self, kind, cmd, fg=SUB):
+            n = int(22 * dpi)
+            tk.Canvas.__init__(self, header, width=n, height=n, bg=HEAD, highlightthickness=0, cursor="hand2")
+            self.fg, self.kind, self.n = fg, kind, n
+            self.draw(fg)
+            self.bind("<Button-1>", lambda e: cmd())
+            self.bind("<Enter>", lambda e: (tk.Canvas.configure(self, bg=RAISE), self.draw(FG)), add="+")
+            self.bind("<Leave>", lambda e: (tk.Canvas.configure(self, bg=HEAD), self.draw(self.fg)), add="+")
+
+        def draw(self, col):
+            self.delete("all")
+            n, c, w = self.n, self.n / 2, max(1, round(1.5 * dpi))
+            if self.kind == "menu":
+                for dx in (-5, 0, 5):
+                    r = 1.4 * dpi
+                    self.create_oval(c + dx * dpi - r, c - r, c + dx * dpi + r, c + r, fill=col, outline="")
+            elif self.kind == "min":
+                self.create_line(c - 5 * dpi, c + 3 * dpi, c + 5 * dpi, c + 3 * dpi, fill=col, width=w)
+            elif self.kind == "pin":
+                self.create_oval(c - 4 * dpi, c - 6 * dpi, c + 4 * dpi, c + 2 * dpi, outline=col, width=w)
+                self.create_line(c, c + 2 * dpi, c, c + 7 * dpi, fill=col, width=w)
+
+        def configure(self, cnf=None, **kw):
+            if "fg" in kw:
+                self.fg = kw.pop("fg")
+                self.draw(self.fg)
+            if kw or cnf:
+                return tk.Canvas.configure(self, cnf, **kw)
+        config = configure
+
+    def hbtn(kind, cmd, fg=SUB):
+        b = IconBtn(kind, cmd, fg)
         b.pack(side="right", padx=(0, 2))
-        b.bind("<Button-1>", lambda e: cmd())
-        b.bind("<Enter>", lambda e: b.config(fg=FG), add="+")
-        b.bind("<Leave>", lambda e: b.config(fg=fg), add="+")
         return b
 
-    menu_btn = hbtn("⋯", lambda: open_menu())
+    menu_btn = hbtn("menu", lambda: open_menu())
+    hover(menu_btn, lambda: tr("选单"))
 
     def minimize():
         """最小化到工作列（无边框视窗要先暂时恢复边框才能最小化；点工作列还原后再拿掉边框）"""
@@ -11378,11 +11445,22 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             root.attributes("-topmost", True)
             root.after(50, fit)
     root.bind("<Map>", on_map, add="+")
-    min_btn = hbtn("—", minimize)
+    min_btn = hbtn("min", minimize)
     hover(min_btn, lambda: tr("最小化（点工作列的海斗助手还原）"))
-    pin_btn = hbtn("📌", lambda: toggle_pin(), fg=GOLD if st["pinned"] else SUB)
+    pin_btn = hbtn("pin", lambda: toggle_pin(), fg=GOLD if st["pinned"] else SUB)
+    hover(pin_btn, lambda: tr("固定展开（不自动收起）"))
     hk = getattr(getattr(engine, "hotkey", None), "name", "")
-    hbtn(tr('识别 {0}').format(hk).strip(), lambda: force_scan(), fg=FG, bg="#2b3a57")
+    scan_wrap = tk.Frame(header, bg=LINE)                 # 1px 细框的文字按钮
+    scan_wrap.pack(side="right", padx=(0, 6), pady=5)
+    scan_btn = Label(scan_wrap, text=tr('识别 {0}').format(hk).strip(), bg=HEAD, fg=ACC, font=F["small"],
+                        padx=7, pady=1, cursor="hand2")
+    scan_btn.pack(padx=1, pady=1)
+    scan_btn.bind("<Button-1>", lambda e: force_scan())
+    scan_btn.bind("<Enter>", lambda e: scan_btn.config(bg=ACC_BG), add="+")
+    scan_btn.bind("<Leave>", lambda e: scan_btn.config(bg=HEAD), add="+")
+    hover(scan_btn, lambda: tr("识别增幅三选一（快捷键 {0}）").format(hk) if hk else tr("识别增幅三选一"))
+    status.pack(side="left", padx=6, fill="x", expand=True)
+    tk.Frame(root, bg=LINE, height=1).pack(fill="x")
 
     drag = {}
 
@@ -11398,29 +11476,52 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         w.bind("<ButtonRelease-1>", lambda e: persist())
 
     # ---------- 4.8.0：加点 / 连招 / 打法：一直显示（收起也看得到），说明放在鼠标移上去的提示框 ----------
-    play_strip = tk.Label(root, text="", bg="#1b2230", fg=GOLD, font=F["tip"], anchor="w", justify="left", padx=8, pady=3)
-    wraps.append(play_strip)
+    play_strip = tk.Frame(root, bg=BG, padx=10, pady=5)
+    strip_top = tk.Frame(play_strip, bg=BG)
+    strip_top.pack(fill="x")
+    strip_style = Label(play_strip, text="", bg=BG, fg=SUB, font=F["small"], anchor="w", justify="left")
+    wraps.append(strip_style)
+    strip_line = tk.Frame(root, bg=LINE, height=1)
     st["strip_tip"] = ""
+    st["strip_key"] = None
+
+    def strip_runs(runs):
+        """一行里几段不同颜色的字：[(文字, 颜色, 字体)]"""
+        if st["strip_key"] == runs:
+            return
+        st["strip_key"] = runs
+        for w in strip_top.winfo_children():
+            w.destroy()
+        for text, col, font in runs:
+            lb = Label(strip_top, text=text, bg=BG, fg=col, font=F[font], padx=0)
+            lb.pack(side="left")
+            hover(lb, lambda: st.get("strip_tip", ""))
+
     hover(play_strip, lambda: st.get("strip_tip", ""))
+    hover(strip_style, lambda: st.get("strip_tip", ""))
 
     def update_strip(rec):
         g = rec.get("guide") or {}
-        top, low = [], []
+        runs = []
         su = rec.get("skill_up")
         if su:
-            top.append(tr("⬆升{0}").format(su["key"]))
+            runs += [(tr("升 {0}").format(su["key"]), WARN, "key"), ("    ", FG, "small")]
         if g.get("skill_order"):
-            top.append(tr("加点 {0}").format(g["skill_order"].replace(" ", "")))
+            runs += [(tr("加点 "), DIM, "small"), (g["skill_order"].replace(" ", ""), FG, "key"), ("    ", FG, "small")]
         ck = [x for x in (g.get("combo_keys"), g.get("combo_keys2")) if x]
         if ck:
-            top.append(tr("连招 {0}").format(" ／ ".join(ck)))
+            runs += [(tr("连招 "), DIM, "small"), ("  /  ".join(ck), ACC, "key")]
         style = re.split(r"[，。；,;]", g.get("style") or "")[0].strip()
-        if style:
-            low.append(style if len(style) <= 18 else style[:17] + "…")
-        if not top and not low:
+        if not runs and not style:
             play_strip.pack_forget()
+            strip_line.pack_forget()
             return
-        play_strip.config(text="   ".join(top) + ("\n" + "  ".join(low) if low else ""))
+        strip_runs(tuple(runs))
+        strip_style.config(text=style if len(style) <= 22 else style[:21] + "…")
+        if style:
+            strip_style.pack(fill="x", pady=(2, 0))
+        else:
+            strip_style.pack_forget()
         tip = []
         if g.get("style"):
             tip.append(tr("打法：") + g["style"])
@@ -11433,26 +11534,27 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         st["strip_tip"] = "\n".join(tip)
         if not play_strip.winfo_ismapped():
             play_strip.pack(fill="x", after=header)
+            strip_line.pack(fill="x", after=play_strip)
             fit()
 
     # ---------- 单行模式 ----------
-    mini = tk.Label(root, text=tr("等待对局…"), bg=BG, fg=FG, font=F["tip"], anchor="w", justify="left", padx=8, pady=5)
+    mini = Label(root, text=tr("等待对局…"), bg=BG, fg=FG, font=F["tip"], anchor="w", justify="left", padx=8, pady=5)
     wraps.append(mini)
 
     # ---------- 展开内容 ----------
     body = tk.Frame(root, bg=BG)
     body.pack(fill="both", expand=True)
-    summary = tk.Label(body, text="", bg=BG, fg=SUB, font=F["small"], anchor="w", justify="left", padx=8)
+    summary = Label(body, text="", bg=BG, fg=SUB, font=F["small"], anchor="w", justify="left", padx=8)
     summary.pack(fill="x", pady=(5, 0))
     wraps.append(summary)
-    alert = tk.Label(body, text="", bg="#3a2412", fg=ORANGE, font=F["tip"], anchor="w", justify="left", padx=8, pady=3)
+    alert = Label(body, text="", bg=WARN_BG, fg=WARN, font=F["tip"], anchor="w", justify="left", padx=8, pady=3)
     wraps.append(alert)
     # 3.9.1：有技能点没点 → 顶部大横幅「⬆ 升 Q」（以前只是战况条里的一小行）
     F["skill"] = tkfont.Font(family=FAMILY, size=13, weight="bold")
     skill_box = tk.Frame(body, bg="#4a3a12", padx=8, pady=4)
-    skill_key = tk.Label(skill_box, text="", bg="#4a3a12", fg="#ffd76a", font=F["skill"], anchor="w")
+    skill_key = Label(skill_box, text="", bg="#4a3a12", fg="#ffd76a", font=F["skill"], anchor="w")
     skill_key.pack(side="left")
-    skill_txt = tk.Label(skill_box, text="", bg="#4a3a12", fg=FG, font=F["tip"], anchor="w", justify="left")
+    skill_txt = Label(skill_box, text="", bg="#4a3a12", fg=FG, font=F["tip"], anchor="w", justify="left")
     skill_txt.pack(side="left", padx=(10, 0))
     wraps.append(skill_txt)
     st["skill_blink"] = 0
@@ -11486,11 +11588,11 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
 
     # 战况条：连招 / 战局 / 威胁 / 玩法（一直显示、即时更新）
     st["brief"] = load_ui_cfg().get("brief", True)
-    brief_box = tk.Frame(body, bg=CARD, padx=8, pady=4)
+    brief_box = tk.Frame(body, bg=BG, padx=10, pady=2)
     brief_rows = []
     for _ in range(6):
-        lb = tk.Label(brief_box, text="", bg=CARD, fg=GOLD, font=F["small"], anchor="w")
-        tx = tk.Label(brief_box, text="", bg=CARD, fg=FG, font=F["tip"], anchor="w", justify="left")
+        lb = Label(brief_box, text="", bg=CARD, fg=GOLD, font=F["small"], anchor="w")
+        tx = Label(brief_box, text="", bg=CARD, fg=FG, font=F["tip"], anchor="w", justify="left")
         brief_rows.append((lb, tx))
         wraps.append(tx)
 
@@ -11514,13 +11616,13 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 label, text, hot = items[i]
                 # 4.1：不再显示左边的小标签（胜率 / 挑战 / 打法…），内容本身就看得懂；紧急的用橙色
                 lb.grid_forget()
-                tx.config(text=text, fg=ORANGE if hot else FG,
-                          font=F["name"] if i == 0 and label == tr("胜率") else F["tip"])
-                tx.grid(row=i, column=1, sticky="w")
+                tx.config(text=text, fg=WARN if hot else (FG if i == 0 else SUB),
+                          font=F["score"] if i == 0 and label == tr("胜率") else F["tip"])
+                tx.grid(row=i, column=1, sticky="w", pady=(0, 1))
             else:
                 lb.grid_forget()
                 tx.grid_forget()
-        brief_box.pack(fill="x", padx=8, pady=(5, 0), before=tabs_bar)
+        brief_box.pack(fill="x", pady=(4, 2), before=tabs_bar)
         st["push_row"] = next((i for i, x in enumerate(items[:len(brief_rows)]) if x[0] == tr("推塔")), None)
         return True
 
@@ -11600,7 +11702,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         st["last_ev"] = ev
 
     tabs_bar = tk.Frame(body, bg=BG)
-    tabs_bar.pack(fill="x", padx=6, pady=(6, 2))
+    tabs_bar.pack(fill="x", padx=6, pady=(6, 0))
     tab_btns = {}
 
     def select_tab(name, user=False):
@@ -11611,7 +11713,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             st["tab_before_cand"] = None           # 你自己选了分页：三选一结束后不用切回
         for k, (lb, ul) in tab_btns.items():
             on = k == name
-            lb.config(fg=FG if on else DIM)
+            lb.config(fg=FG if on else DIM, font=F["key"] if on else F["tab"])
             ul.config(bg=GOLD if on else BG)
         for k, fr in pages.items():
             fr.pack_forget()
@@ -11620,34 +11722,42 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
 
     for key, text in (("items", tr("出装")), ("augs", tr("增幅")), ("guide", tr("玩法")), ("intel", tr("情报"))):
         holder = tk.Frame(tabs_bar, bg=BG)
-        holder.pack(side="left", padx=(2, 10))
-        lb = tk.Label(holder, text=text, bg=BG, fg=DIM, font=F["tab"], cursor="hand2")
+        holder.pack(side="left", padx=(4, 12))
+        lb = Label(holder, text=text, bg=BG, fg=DIM, font=F["tab"], cursor="hand2")
         lb.pack()
         ul = tk.Frame(holder, bg=BG, height=2)
         ul.pack(fill="x")
         lb.bind("<Button-1>", lambda e, k=key: select_tab(k, user=True))
         tab_btns[key] = (lb, ul)
-    tk.Frame(body, bg="#232a36", height=1).pack(fill="x", padx=8)
+    tk.Frame(body, bg=LINE, height=1).pack(fill="x", padx=8)
 
     pages = {k: tk.Frame(body, bg=BG) for k in ("items", "augs", "guide", "intel")}
 
     def make_rows(parent, n):
+        """5.0：一行一件（分数 · 名字 · 搜索代号），不加卡片底色；行与行之间 1px 细线，鼠标移上去整行变亮"""
         rows = []
         for _ in range(n):
-            fr = tk.Frame(parent, bg=CARD, cursor="arrow")
-            top = tk.Frame(fr, bg=CARD)
-            top.pack(fill="x")
-            sc = tk.Label(top, text="", bg=CARD_HI, fg=FG, font=F["score"], width=4)
-            sc.pack(side="left", padx=(0, 6), fill="y")
-            nm = tk.Label(top, text="", bg=CARD, fg=FG, font=F["name"], anchor="w")
+            fr = tk.Frame(parent, bg=BG, cursor="arrow")
+            top = tk.Frame(fr, bg=BG)
+            top.pack(fill="x", pady=(4, 4))
+            sc = Label(top, text="", bg=BG, fg=FG, font=F["score"], width=5, anchor="e")
+            sc.pack(side="left", padx=(0, 10))
+            nm = Label(top, text="", bg=BG, fg=FG, font=F["name"], anchor="w")
             nm.pack(side="left")
-            meta = tk.Label(top, text="", bg=CARD, fg=SUB, font=F["small"], anchor="e")
-            meta.pack(side="right", padx=6)
-            rs = tk.Label(fr, text="", bg=CARD, fg=SUB, font=F["small"], anchor="w", justify="left")
-            # 4.1：卡片只留一行（分数 + 名字），理由和数据都在鼠标移上去的说明里
+            meta = Label(top, text="", bg=BG, fg=DIM, font=F["code"], anchor="e")
+            meta.pack(side="right", padx=(6, 4))
+            tk.Frame(fr, bg=LINE, height=1).pack(fill="x", side="bottom")
+            rs = Label(fr, text="", bg=BG, fg=SUB, font=F["small"], anchor="w", justify="left")
             full = {"text": ""}
-            for w in (fr, nm, rs, meta, sc):
+            parts = (fr, top, nm, meta, sc)
+
+            def lit(on, parts=parts):
+                for w in parts:
+                    w.config(bg=RAISE if on else BG)
+            for w in (fr, nm, rs, meta, sc, top):
                 hover(w, lambda full=full: full["text"])
+                w.bind("<Enter>", lambda e, lit=lit: lit(True), add="+")
+                w.bind("<Leave>", lambda e, lit=lit: lit(False), add="+")
             rows.append({"fr": fr, "sc": sc, "nm": nm, "meta": meta, "rs": rs, "full": full})
         return rows
 
@@ -11658,10 +11768,10 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         return text if len(text) <= n else text[:n - 1] + "…"
 
     # 出装页：战术（最多 2 条）＋鞋子＋装备
-    shop_lbl = tk.Label(pages["items"], text="", bg="#2a2412", fg=GOLD, font=F["tip"], anchor="w", justify="left",
+    shop_lbl = Label(pages["items"], text="", bg=WARN_BG, fg=WARN, font=F["tip"], anchor="w", justify="left",
                         padx=6, pady=3)
     wraps.append(shop_lbl)
-    curve_cv = tk.Canvas(pages["items"], bg="#2a2412", highlightthickness=0, height=1)
+    curve_cv = tk.Canvas(pages["items"], bg=WARN_BG, highlightthickness=0, height=1)
     tips_box = tk.Frame(pages["items"], bg=BG)
     tips_box.pack(fill="x")
     # 3.10：选路线（每条路线的预估胜率；点一下就按那条推荐，再点一次取消）
@@ -11689,7 +11799,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             st["route_chips" + sk] = {}
             cells = [r["kind"] for r in rs] + (["_auto"] if rec.get("user_route") else [])
             for n, k in enumerate(cells):
-                b = tk.Label(route_box, text="", font=F["small"], padx=5, pady=2, cursor="hand2")
+                b = Label(route_box, text="", font=F["small"], padx=5, pady=2, cursor="hand2")
                 b.grid(row=n // 4, column=1 + n % 4, sticky="we", padx=1, pady=1)
                 st["route_chips" + sk][k] = b
                 if k != "_auto":
@@ -11701,7 +11811,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         for k, b in st["route_chips" + sk].items():
             b.unbind("<Button-1>")
             if k == "_auto":
-                b.config(text="✕", bg=CARD, fg=SUB)
+                b.config(text="✕", bg=RAISE, fg=SUB)
                 b.bind("<Button-1>", lambda e: engine.set_route(None))
                 continue
             r = cur.get(k)
@@ -11710,8 +11820,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             p = r.get("p")
             b.config(text=r["label"] + ("  {0}%".format(int(round(p * 100))) if p is not None else
                                         "  {0:+.1f}".format(r["d"])) + (" ★" if r.get("best") else ""),
-                     bg=GOLD if r.get("chosen") else CARD,
-                     fg=BG if r.get("chosen") else (GOLD if r.get("best") or r.get("current") else FG))
+                     bg=ACC_BG if r.get("chosen") else RAISE,
+                     fg=ACC if r.get("chosen") or r.get("best") or r.get("current") else SUB)
             b.bind("<Button-1>", lambda e, k=k, on=r.get("chosen"): engine.set_route(None if on else k))
         if place:
             place()
@@ -11719,49 +11829,49 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             route_box.pack(fill="x", pady=(2, 3), before=tips_box)
     tip_lbls = []
     for _ in range(2):
-        lb = tk.Label(tips_box, text="", bg=BG, fg=FG, font=F["tip"], anchor="w", justify="left")
+        lb = Label(tips_box, text="", bg=BG, fg=FG, font=F["tip"], anchor="w", justify="left")
         wraps.append(lb)
         tip_lbls.append(lb)
     item_rows = make_rows(pages["items"], 4)
 
     # 增幅页
-    confirm_box = tk.Frame(pages["augs"], bg="#2a2412")          # 3.0.8：「刚才选了哪张？」补点
-    confirm_lbl = tk.Label(confirm_box, text=tr("刚才选了哪张？"), bg="#2a2412", fg=GOLD,
+    confirm_box = tk.Frame(pages["augs"], bg=WARN_BG)          # 3.0.8：「刚才选了哪张？」补点
+    confirm_lbl = Label(confirm_box, text=tr("刚才选了哪张？"), bg=WARN_BG, fg=WARN,
                            font=F["small"], anchor="w", justify="left")
     confirm_lbl.pack(fill="x", padx=6, pady=(3, 1))
     wraps.append(confirm_lbl)
     confirm_btns = []
     for _ in range(3):
-        b = tk.Label(confirm_box, text="", bg="#3a3220", fg=FG, font=F["small"], padx=6, pady=2, cursor="hand2", anchor="w")
+        b = Label(confirm_box, text="", bg=RAISE, fg=FG, font=F["small"], padx=6, pady=2, cursor="hand2", anchor="w")
         confirm_btns.append(b)
-    confirm_skip = tk.Label(confirm_box, text="✕", bg="#2a2412", fg=SUB, font=F["small"], cursor="hand2",
+    confirm_skip = Label(confirm_box, text="✕", bg=WARN_BG, fg=SUB, font=F["small"], cursor="hand2",
                             anchor="e")
     confirm_skip.bind("<Button-1>", lambda e: (engine.confirm_pick(None), confirm_box.pack_forget()))
-    aug_head = tk.Label(pages["augs"], text="", bg=BG, fg=SUB, font=F["small"], anchor="w")
+    aug_head = Label(pages["augs"], text="", bg=BG, fg=SUB, font=F["small"], anchor="w")
     aug_head.pack(fill="x", pady=(0, 2))
     aug_route_holder = tk.Frame(pages["augs"], bg=BG)      # 4.1.2：增幅页也能选路线
     aug_route_holder.pack(fill="x")
     route_box2 = tk.Frame(aug_route_holder, bg=BG)
     aug_rows = make_rows(pages["augs"], 4)
-    reroll_lbl = tk.Label(pages["augs"], text="", bg=BG, fg=SUB, font=F["small"], anchor="w", justify="left")   # 3.1：要不要刷新
+    reroll_lbl = Label(pages["augs"], text="", bg=BG, fg=SUB, font=F["small"], anchor="w", justify="left")   # 3.1：要不要刷新
     wraps.append(reroll_lbl)
-    howto_lbl = tk.Label(pages["augs"], text="", bg="#1f2a1c", fg=GREEN, font=F["small"], anchor="w", justify="left",
+    howto_lbl = Label(pages["augs"], text="", bg=GOOD_BG, fg=GOOD, font=F["small"], anchor="w", justify="left",
                          padx=6, pady=3)
     wraps.append(howto_lbl)
-    mine_lbl = tk.Label(pages["augs"], text="", bg=BG, fg=DIM, font=F["small"], anchor="w", justify="left")
+    mine_lbl = Label(pages["augs"], text="", bg=BG, fg=DIM, font=F["small"], anchor="w", justify="left")
     wraps.append(mine_lbl)
-    enemy_lbl = tk.Label(pages["augs"], text="", bg=BG, fg=ORANGE, font=F["small"], anchor="w", justify="left")
+    enemy_lbl = Label(pages["augs"], text="", bg=BG, fg=ORANGE, font=F["small"], anchor="w", justify="left")
     wraps.append(enemy_lbl)
 
     # 玩法页
-    guide_lbl = tk.Label(pages["guide"], text="", bg=CARD, fg=FG, font=F["tip"], anchor="w", justify="left",
-                         padx=8, pady=6)
+    guide_lbl = Label(pages["guide"], text="", bg=BG, fg=FG, font=F["tip"], anchor="w", justify="left",
+                         padx=4, pady=6)
     guide_lbl.pack(fill="x")
     wraps.append(guide_lbl)
-    kit_lbl = tk.Label(pages["guide"], text="", bg=BG, fg=SUB, font=F["small"], anchor="w", justify="left", padx=8)
-    pos_lbl = tk.Label(pages["guide"], text="", bg=BG, fg=GREEN, font=F["small"], anchor="w", justify="left", padx=8)
-    neg_lbl = tk.Label(pages["guide"], text="", bg=BG, fg=ORANGE, font=F["small"], anchor="w", justify="left", padx=8)
-    intel_lbl = tk.Label(pages["intel"], text="", bg=BG, fg=FG, font=F["small"], anchor="w", justify="left",
+    kit_lbl = Label(pages["guide"], text="", bg=BG, fg=SUB, font=F["small"], anchor="w", justify="left", padx=8)
+    pos_lbl = Label(pages["guide"], text="", bg=BG, fg=GREEN, font=F["small"], anchor="w", justify="left", padx=8)
+    neg_lbl = Label(pages["guide"], text="", bg=BG, fg=ORANGE, font=F["small"], anchor="w", justify="left", padx=8)
+    intel_lbl = Label(pages["intel"], text="", bg=BG, fg=FG, font=F["small"], anchor="w", justify="left",
                          padx=8, pady=4)
     for w_ in (kit_lbl, pos_lbl, neg_lbl, intel_lbl):
         wraps.append(w_)
@@ -11791,7 +11901,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         intel_lbl.config(text="\n".join(lines))
         intel_lbl.pack(fill="x", pady=(0, 4))
 
-    footer = tk.Label(body, text="", bg=BG, fg=DIM, font=F["small"], anchor="w", padx=8, cursor="hand2")
+    footer = Label(body, text="", bg=BG, fg=DIM, font=F["small"], anchor="w", padx=8, cursor="hand2")
     footer.pack(fill="x", pady=(0, 4))
     footer.bind("<Button-1>", lambda e: switch_bracket())
 
@@ -11901,14 +12011,14 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         save_ui_cfg(c)
         status.config(text=tr("重新读取胜率…"))
 
-    menu = tk.Menu(root, tearoff=0, bg="#1b2130", fg=FG, activebackground="#2b3a57", activeforeground=FG,
+    menu = tk.Menu(root, tearoff=0, bg=RAISE, fg=FG, activebackground=ACC_BG, activeforeground=FG,
                    font=F["small"], bd=0)
-    sizes = tk.Menu(menu, tearoff=0, bg="#1b2130", fg=FG, activebackground="#2b3a57", font=F["small"])
+    sizes = tk.Menu(menu, tearoff=0, bg=RAISE, fg=FG, activebackground=ACC_BG, font=F["small"])
     for label, k in ((tr("小"), 0.85), (tr("中"), 1.0), (tr("大"), 1.2), (tr("特大"), 1.45)):
         sizes.add_radiobutton(label=label, variable=size_var, value=k, command=lambda k=k: set_scale(k))
     menu.add_cascade(label=tr("字号"), menu=sizes)
     if stats_obj is not None:
-        br = tk.Menu(menu, tearoff=0, bg="#1b2130", fg=FG, activebackground="#2b3a57", font=F["small"])
+        br = tk.Menu(menu, tearoff=0, bg=RAISE, fg=FG, activebackground=ACC_BG, font=F["small"])
         br.add_radiobutton(label=tr("全部分段"), variable=bracket_var, value="all", command=lambda: switch_bracket("all"))
         br.add_radiobutton(label=tr("高分段"), variable=bracket_var, value="high", command=lambda: switch_bracket("high"))
         menu.add_cascade(label=tr("胜率数据分段"), menu=br)
@@ -11935,11 +12045,11 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         with engine.lock:
             engine.manual_dirty = "route"           # 马上重算推荐
         engine.wake.set()
-    em = tk.Menu(menu, tearoff=0, bg=CARD, fg=FG, activebackground="#2b3a57", activeforeground=FG)
+    em = tk.Menu(menu, tearoff=0, bg=CARD, fg=FG, activebackground=ACC_BG, activeforeground=FG)
     for label, k in ((tr("1 倍（按数据校准，最准）"), 1.0), (tr("1.5 倍（加强，预设）"), 1.5), (tr("2 倍"), 2.0)):
         em.add_radiobutton(label=label, variable=exp_var, value=k, command=lambda k=k: set_expert(k))
     menu.add_cascade(label=tr("专家评分份量"), menu=em)
-    sm = tk.Menu(menu, tearoff=0, bg=CARD, fg=FG, activebackground="#2b3a57", activeforeground=FG)
+    sm = tk.Menu(menu, tearoff=0, bg=CARD, fg=FG, activebackground=ACC_BG, activeforeground=FG)
     snd_vars = {}
 
     def toggle_sound(kind):
@@ -11954,7 +12064,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         snd_vars[kind] = tk.BooleanVar(value=snd_cfg.get(kind, True))
         sm.add_checkbutton(label=label, variable=snd_vars[kind], command=lambda k=kind: toggle_sound(k))
     menu.add_cascade(label=tr("声音提示"), menu=sm)
-    am = tk.Menu(menu, tearoff=0, bg=CARD, fg=FG, activebackground="#2b3a57", activeforeground=FG)
+    am = tk.Menu(menu, tearoff=0, bg=CARD, fg=FG, activebackground=ACC_BG, activeforeground=FG)
     auto_cfg = dict({"accept": True, "spells": True, "itemset": True, "ime": True, "update": True},
                     **(load_ui_cfg().get("auto") or {}))
     auto_vars = {}
@@ -11995,7 +12105,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         st["status_hold"] = time.time() + 5
         engine.last_sig = None
         engine.wake.set()
-    hm = tk.Menu(menu, tearoff=0, bg="#1b2130", fg=FG, activebackground="#2b3a57", font=F["small"])
+    hm = tk.Menu(menu, tearoff=0, bg=RAISE, fg=FG, activebackground=ACC_BG, font=F["small"])
     hm.add_checkbutton(label=tr("按我的习惯调整推荐（只存本机）"), variable=habits_var, command=toggle_habits)
     hm.add_command(label=tr("从游戏客户端导入历史对局"),
                    command=lambda: (set_status(tr("读取客户端对局记录…")), engine.import_history_async(manual=True)))
@@ -12095,7 +12205,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         st["hold_until"] = time.time() + 3
 
         def lab(text, parent=None, **kw):
-            lb = tk.Label(parent or w, text=text, bg=BG, fg=kw.pop("fg", FG), font=F["small"], anchor="w", justify="left",
+            lb = Label(parent or w, text=text, bg=BG, fg=kw.pop("fg", FG), font=F["small"], anchor="w", justify="left",
                           wraplength=int(360 * dpi * st["k"]), **kw)
             lb.pack(fill="x", pady=(4, 0))
             return lb
@@ -12201,10 +12311,10 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             db.status = tr("正在导入…")
             threading.Thread(target=run, daemon=True).start()
         for text, fn in ((tr("导出分享包"), do_export), (tr("导入分享包…"), do_import)):
-            b = tk.Label(share_row, text=text, bg=CARD, fg=FG, font=F["small"], padx=10, pady=3, cursor="hand2")
+            b = Label(share_row, text=text, bg=CARD, fg=FG, font=F["small"], padx=10, pady=3, cursor="hand2")
             b.pack(side="left", padx=(0, 6))
             b.bind("<Button-1>", lambda e, fn=fn: fn())
-        tk.Label(w, text=tr("保存"), bg="#2b3a57", fg=FG, font=F["small"], padx=12, pady=4, cursor="hand2").pack(
+        Label(w, text=tr("保存"), bg=ACC_BG, fg=FG, font=F["small"], padx=12, pady=4, cursor="hand2").pack(
             anchor="e", pady=(8, 0))
         w.winfo_children()[-1].bind("<Button-1>", lambda e: save())
         refresh()
@@ -12222,7 +12332,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         save_ui_cfg(c)
         set_status("重新打开后生效" if lg == "zh" else "Restart to apply")
         st["status_hold"] = time.time() + 30
-    lm = tk.Menu(menu, tearoff=0, bg="#1b2130", fg=FG, activebackground="#2b3a57", font=F["small"])
+    lm = tk.Menu(menu, tearoff=0, bg=RAISE, fg=FG, activebackground=ACC_BG, font=F["small"])
     lm.add_radiobutton(label="中文", variable=lang_var, value="zh", command=lambda: switch_lang("zh"))
     lm.add_radiobutton(label="English", variable=lang_var, value="en", command=lambda: switch_lang("en"))
     menu.add_cascade(label="语言 / Language", menu=lm)
@@ -12283,11 +12393,12 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             star = "★ " if cand and i == 0 else ""
             if rows is aug_rows and "total" in d:          # 增幅卡片：大字母 S～D，一眼看出该选哪张
                 t = aug_tier(d["total"])
-                r["sc"].config(text=t + " " + fmt_total(d), fg=TIER_COLOR[t], width=6)
+                r["sc"].config(text=t + " " + fmt_total(d), fg=TIER_COLOR[t], width=7)
             else:
-                r["sc"].config(text=fmt_total(d), fg=score_color(d["score"]), width=4)
-            mark = "● " if d.get("mine") else ""
-            r["nm"].config(text=star + mark + d["name"], fg=GOLD if (cand and i == 0) or d.get("best") else FG)
+                r["sc"].config(text=fmt_total(d), fg=score_color(d["score"]), width=5)
+            top_pick = (cand and i == 0) or d.get("best")      # 5.0：推荐的那件 / 你的英雄用颜色和字重标出来
+            r["nm"].config(text=d["name"] + (tr("（你）") if d.get("mine") else ""),
+                           fg=ACC if top_pick else FG, font=F["key"] if top_pick or d.get("mine") else F["name"])
             meta = []
             if d.get("key"):                    # 4.1.1：商店搜索框打这几个英文字母
                 meta.append(d["key"])
@@ -12297,9 +12408,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             r["full"]["text"] = d["reason"] + (f"\n{d['stat_text']}" if d.get("stat_text") else "") + \
                 (f"\n\n{d['howto']}" if d.get("howto") else "")
             if before is not None:
-                r["fr"].pack(fill="x", pady=2, before=before)
+                r["fr"].pack(fill="x", before=before)
             else:
-                r["fr"].pack(fill="x", pady=2)
+                r["fr"].pack(fill="x")
 
     def show_select(sel):
         """选英雄阶段：你的英雄 + 备选席，按分数排"""

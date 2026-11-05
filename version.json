@@ -1,18 +1,18 @@
 {
- "version": "4.8.1",
- "date": "2026-11-02",
+ "version": "5.0.0",
+ "date": "2026-11-04",
  "notes": [
-  "阵亡 / 买装备时不再自动跳到出装页",
-  "加点 / 连招 / 打法一直显示在标题下面，说明移上去看",
-  "按 P 打开商店自动切中文，关掉商店切回英文"
+  "重新设计界面：一个强调色、去掉卡片套卡片、细线分区、整行高亮",
+  "分数 / 胜率用等宽数字字体，搜索代号用等宽字体",
+  "标题栏改成线条小图示，不再用表情符号当图示"
  ],
  "files": {
-  "haidou_helper.py": "7691d461b8197be71bdd7001f3c73b1cfd1a2ed342762e1f4243c931e35cf1a4",
-  "lang_en.py": "a705c48ff6c14cda4ca3723bcf9653293410201a078f31b6712b8b52f6eddf40",
-  "README.md": "df8ee8383f85a202e13757428ce4033a74245dce6b584a27cb7b32a2a4cf50d6",
+  "haidou_helper.py": "ba0e20928492b647f4a516f98be357f974a0ec1ccefb73710fa70765429f69d2",
+  "lang_en.py": "c4d06e435cff3c4e7ea93dcb3035141ce47f46576469f1c89b10883cf69b63ea",
+  "README.md": "d4612db7a202ad022b5cbcde9f668f06cb0eb072d03955c31560db6075dda095",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026110201
+ "build": 2026110401
 }
