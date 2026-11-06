@@ -1,18 +1,18 @@
 {
- "version": "5.1.0",
+ "version": "5.2.0",
  "date": "2026-11-05",
  "notes": [
+  "情报页估算每个人的隐藏分（段位 + 这局水平 + 最近海斗输赢）",
   "16.22：网上数据还是 16.21 时，按更新说明先修正被削 / 被加强的增幅和英雄",
-  "新增幅 RISE!、One Hit Wonder 加进专家评分",
-  "自建库新版本刚出时收快一点"
+  "新增幅 RISE!、One Hit Wonder 加进专家评分"
  ],
  "files": {
-  "haidou_helper.py": "925ff65f3fc01defadbb46816d7195775ea23cff3b10600b11313d2fd68ae8bd",
-  "lang_en.py": "5ad7d12f79cc23d31d25ebdeac090f9e652e93bfe71be9a3c28590e9d0d8849e",
-  "README.md": "4a329984e5edb90ce90bc39dbce796e4d7a26a41c60d3c82ecbd39b7388a496e",
+  "haidou_helper.py": "49e261ee48eb5859b6aba5cfe7adfe3118b3c211cf636154d32bdb17de49514e",
+  "lang_en.py": "c98afe18e87b0ce5abfc67387f243fc302b56d3ec9d2b23e8071af9bc0e4e128",
+  "README.md": "3c70cbdf82b780e43eae75e87f42cb0d296e946d6cb78b16707cd26b3e93f24b",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026110501
+ "build": 2026110502
 }

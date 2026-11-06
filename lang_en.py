@@ -1101,3 +1101,4 @@ EN.update({'{0} 削弱（网上数据还是 {1}，先扣 1%）': '{0} nerf (onli
            '{0} 新增幅（还没有数据）': 'New in {0} (no data yet)', '{0} 有改动（网上数据还是 {1}）': 'Changed in {0} (online data still {1})',
            '{0} 改动：{1}': '{0} change: {1}', '海斗额外技能急速 10 → 0': 'Mayhem bonus ability haste 10 → 0',
            'Q 系数 105% → 100%': 'Q ratio 105% → 100%', '大招伤害提高': 'R damage up', 'W 重做、大招后期冷却缩短': 'W reworked, R cooldown lower at later ranks'})
+EN.update({'隐藏分≈{0}（{1}）': 'MMR≈{0} ({1})', '（≈{0}）': ' (≈{0})'})

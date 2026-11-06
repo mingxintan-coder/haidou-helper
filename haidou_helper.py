@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.1.0"
-APP_BUILD = 2026110501         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.2.0"
+APP_BUILD = 2026110502         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5979,6 +5979,10 @@ class Engine:
                              "name": p.get("gameName") or p.get("summonerName") or ""})
                 out.append(info)
             self.mark_parties(out, me_gids=None)
+            try:
+                estimate_mmr(out)                     # 5.2.0：估每个人的隐藏分
+            except Exception:  # noqa
+                pass
             for info in out:
                 info["note"] = self.intel_note(info)
                 info.pop("gids", None)
@@ -6234,6 +6238,9 @@ class Engine:
             sc = [rank_score(i.get("rank")) for i in intel if i["ally"] == ally]
             sc = [x for x in sc if x is not None]
             txt = (tr("我方") if ally else tr("对面")) + " " + (score_tier_text(sum(sc) / len(sc)) if sc else tr("未定级"))
+            mm = [i["mmr"] for i in intel if i["ally"] == ally and i.get("mmr")]
+            if mm:
+                txt += tr("（≈{0}）").format(int(round(sum(mm) / len(mm), -1)))
             party = max((i.get("party", 0) for i in intel if i["ally"] == ally and not i.get("me")), default=0)
             if ally:
                 party = max([party] + [i.get("party", 0) for i in intel if i.get("me")])
@@ -9137,6 +9144,53 @@ def rank_score(r):
     return i * 4 + {"IV": 0, "III": 1, "II": 2, "I": 3}.get(r.get("div"), 0)
 
 
+def rank_mmr(r):
+    """排位段位 → 粗略的分数（类似 Elo：黑铁 IV ≈ 800，每小段 +70，每大段 +280；大师以上 2760 + 0.7×胜点）。
+       社区常见的对照量级，不是 Riot 公布的数字；没段位回传 None"""
+    sc = rank_score(r)
+    if sc is None:
+        return None
+    if sc >= 28:
+        return 2760 + 0.7 * min(1500, (r.get("lp") or 0))
+    return 800 + 70 * sc + 0.7 * min(100, (r.get("lp") or 0))
+
+
+def estimate_mmr(intel):
+    """5.2.0：估每个人的海斗隐藏分（Riot 不公开，只能估）。
+       1) 排位段位 → 分数（先验；排位分和海斗分本来就不一样 → 误差当 ±250）；
+          这季没打排位、有上季段位的 → 上季段位当先验（误差当 ±350）
+       2) 配对：同一局 10 个人的隐藏分差不多 → 有先验的人按误差加权平均 ＝「这局的水平」（每个人离它约 ±150）
+          每个人 ＝ 自己的先验和这局水平按误差加权；完全没有段位的人就用这局的水平
+       3) 最近海斗输赢：近 20 局赢得多 → 分数还在涨，每多赢 10% ≈ +40，最多 ±60
+       没验证过（没有真的隐藏分可以对答案），只当参考。写进 i["mmr"]；回传这局的水平"""
+    pri = []
+    for i in intel:
+        r = i.get("rank") or {}
+        m = rank_mmr(r)
+        if m is not None:
+            pri.append((i, m, 250.0))
+        elif r.get("prev") in TIER_ORDER:
+            pri.append((i, rank_mmr({"tier": r["prev"], "div": "II", "lp": 0}), 350.0))
+        else:
+            pri.append((i, None, None))
+    ws = [(m, 1 / sd ** 2) for _, m, sd in pri if m is not None]
+    lobby = sum(m * w for m, w in ws) / sum(w for _, w in ws) if ws else None
+    for i, m, sd in pri:
+        if lobby is None:
+            i["mmr"] = None
+            continue
+        if m is None:
+            est = lobby
+        else:
+            w_r, w_l = 1 / sd ** 2, 1 / 150.0 ** 2
+            est = (m * w_r + lobby * w_l) / (w_r + w_l)
+        n, w = i.get("may_n") or 0, i.get("may_w") or 0
+        if n:
+            est += max(-60.0, min(60.0, 400 * ((w + 5) / (n + 10.0) - 0.5)))
+        i["mmr"] = int(round(est / 10.0) * 10)
+    return lobby
+
+
 def score_tier_text(sc):
     if sc is None:
         return ""
@@ -11948,6 +12002,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 if i.get("me"):
                     head = tr("你（{0}）").format(head)
                 bits = [head, rank_text(i.get("rank")) or "?"]
+                if i.get("mmr"):
+                    bits.append(tr("隐藏分≈{0}（{1}）").format(i["mmr"], score_tier_text(max(0.0, (i["mmr"] - 800) / 70.0))))
                 if i.get("note"):
                     bits.append(i["note"])
                 if i.get("may_n") and tr("海斗高手") not in (i.get("note") or ""):
