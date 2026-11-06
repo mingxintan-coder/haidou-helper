@@ -1,18 +1,18 @@
 {
- "version": "5.0.0",
- "date": "2026-11-04",
+ "version": "5.1.0",
+ "date": "2026-11-05",
  "notes": [
-  "重新设计界面：一个强调色、去掉卡片套卡片、细线分区、整行高亮",
-  "分数 / 胜率用等宽数字字体，搜索代号用等宽字体",
-  "标题栏改成线条小图示，不再用表情符号当图示"
+  "16.22：网上数据还是 16.21 时，按更新说明先修正被削 / 被加强的增幅和英雄",
+  "新增幅 RISE!、One Hit Wonder 加进专家评分",
+  "自建库新版本刚出时收快一点"
  ],
  "files": {
-  "haidou_helper.py": "ba0e20928492b647f4a516f98be357f974a0ec1ccefb73710fa70765429f69d2",
-  "lang_en.py": "c4d06e435cff3c4e7ea93dcb3035141ce47f46576469f1c89b10883cf69b63ea",
-  "README.md": "d4612db7a202ad022b5cbcde9f668f06cb0eb072d03955c31560db6075dda095",
+  "haidou_helper.py": "925ff65f3fc01defadbb46816d7195775ea23cff3b10600b11313d2fd68ae8bd",
+  "lang_en.py": "5ad7d12f79cc23d31d25ebdeac090f9e652e93bfe71be9a3c28590e9d0d8849e",
+  "README.md": "4a329984e5edb90ce90bc39dbce796e4d7a26a41c60d3c82ecbd39b7388a496e",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026110401
+ "build": 2026110501
 }

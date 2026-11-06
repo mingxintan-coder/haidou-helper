@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.0.0"
-APP_BUILD = 2026110401         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.1.0"
+APP_BUILD = 2026110501         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -3854,7 +3854,13 @@ class Advisor:
             sa = self.side_adj(cid, side)
             if abs(sa) >= 0.005:
                 reasons.append((tr("蓝方") if side > 0 else tr("红方")) + " {0:+.1f}%".format(sa * 100))
-            p = base + you + 0.015 * len(fills) + sa
+            pc = None
+            pg = self.patch_gap()
+            if pg:                                   # 5.1.0：新版本改过的英雄（网上数据还是旧版本时）
+                pc = PATCH_CHAMP_CHANGES.get(pg[0], {}).get(c["id"])
+                if pc:
+                    reasons.append(tr("{0} 改动：{1}").format(pg[0], tr(pc[1])))
+            p = base + you + 0.015 * len(fills) + sa + (pc[0] if pc else 0.0)
             try:
                 cwp = self.comp_wp_vs_avg(list(team) + [cid])
             except Exception:  # noqa
@@ -3992,6 +3998,26 @@ class Advisor:
         return best
 
     # ---------- augments ----------
+    def patch_gap(self):
+        """(游戏版本, 网上数据版本)：网上数据比游戏旧时才有值，否则 None"""
+        gv = ".".join(str(getattr(self.gd, "version", "") or "").split(".")[:2])
+        dv = str(((getattr(self.stats, "version", None) or {}).get("version")) or "")
+        if re.match(r"^\d+\.\d+$", gv) and re.match(r"^\d+\.\d+$", dv) and ver_tuple(dv) < ver_tuple(gv):
+            return gv, dv
+        return None
+
+    def patch_aug_adj(self, aid):
+        """新版本刚出、网上数据还是旧版本：这张增幅本版改了 → (百分点, 说明)"""
+        pg = self.patch_gap()
+        if not pg:
+            return None
+        kind = PATCH_AUG_CHANGES.get(pg[0], {}).get(aid)
+        if not kind:
+            return None
+        txt = {"nerf": tr("{0} 削弱（网上数据还是 {1}，先扣 1%）"), "buff": tr("{0} 增强（网上数据还是 {1}，先加 0.5%）"),
+               "new": tr("{0} 新增幅（还没有数据）"), "adjust": tr("{0} 有改动（网上数据还是 {1}）")}[kind]
+        return PATCH_PCT.get(kind, 0.0), txt.format(pg[0], pg[1])
+
     def score_aug(self, a, prof, t, my_augs, me, cs=None, stage=1):
         tags = a["tags"]
         bv = norm({d: v for d, v in tags.items() if d in BUILD_DIMS})
@@ -4186,8 +4212,11 @@ class Advisor:
                 if main_k and main_k != ur["kind"] and main_k in ("atk", "ap") and ur["kind"] in ("atk", "ap", "tank"):
                     route_pct = -1.0
                     exp_f = (-0.12, tr("不是你选的路线（{0}）").format(ur["label"]))
-        total = de["d"] * 100 + adj + own_pct + exp_pct + route_pct
+        pa = self.patch_aug_adj(a.get("id"))       # 5.1.0：新版本改过的增幅（网上数据还是旧版本时）
+        total = de["d"] * 100 + adj + own_pct + exp_pct + route_pct + (pa[0] if pa else 0.0)
         rf = list(factors)
+        if pa:
+            rf.insert(0, (0.12 if pa[0] > 0 else (-0.12 if pa[0] < 0 else 0.05), pa[1]))
         if exp_f and (abs(exp_pct) >= 0.3 or not de["has"] or route_pct):
             rf.append(exp_f)
         if am_pick is not None and (am_pick >= 0.3 or am_pick < 0.03):
@@ -7655,7 +7684,23 @@ AM_ATTRIBUTION = "Data: arammayhem.com (CC BY 4.0)"
 # 这张表是「先验」：会用国服 16.20（5000 万局）的英雄 × 增幅数据检验，有用多少才给多少份量（见 ExpertModel）。
 # 
 # 
+# 5.1.0：新版本刚出、网上数据还是上个版本时，按官方更新说明先修正（网上出了新版本的数据就自动停用）。
+#   削弱 −1%、增强 +0.5%（猜的量级，没验证过 —— 只是让被削的不要因为旧数据还排在最前面）
+PATCH_AUG_CHANGES = {
+    "16.22": {3159: "new", 3060: "new",                         # RISE!、One Hit Wonder
+              2077: "buff", 2115: "buff", 1375: "buff", 2076: "buff",   # Ravenous Bind、Squishy Slappy Grab、灵魂吞噬者、Stay Resolute
+              3086: "nerf", 1001: "nerf", 3116: "nerf", 3081: "nerf", 3049: "nerf",   # BEES!!!、泰坦之决心、Take'em Down、命运之兵、Armored Impact
+              3071: "adjust", 3088: "adjust"},
+}
+PATCH_CHAMP_CHANGES = {      # 英雄：(胜率修正, 说明)
+    "16.22": {"Hecarim": (-0.01, "海斗额外技能急速 10 → 0"), "Yasuo": (-0.003, "Q 系数 105% → 100%"),
+              "Corki": (0.003, "大招伤害提高"), "Mel": (0.0, "W 重做、大招后期冷却缩短")},
+}
+PATCH_PCT = {"nerf": -1.0, "buff": 0.5}
+
+
 EXPERT_AUGS = {
+    3159: (1, "UX"), 3060: (0, "P"),        # 16.22 新：RISE!（大招击杀刷新，适合大招伤害高 / 能收人头的）、One Hit Wonder
     1001: (1, "K"), 1002: (-1, ""), 1004: (1, "Ss"), 1005: (1, "H"), 1006: (0, "DM"), 1007: (0, "A"),
     1011: (0, "U"), 1013: (0, "K"), 1015: (1, "H"), 1018: (1, "CK"), 1019: (1, "D"), 1020: (0, "K"),
     1022: (0, "A"), 1025: (-1, "K"), 1026: (-1, ""), 1027: (0, "D"), 1028: (1, "S"), 1029: (1, "SA"),
@@ -9643,8 +9688,10 @@ class RiotCollector:
                 def chalt():
                     return stop.is_set() or engine.connected or not self.enabled
                 try:
+                    ncur = self.current_patch_games()       # 5.1.0：只数当前版本的局（旧版本的不用了）
                     self._next_pass = time.time() + (
-                        self.CLIENT_PAUSE_FULL if self.total_games() >= self.CLIENT_TARGET else self.CLIENT_PAUSE)
+                        self.CLIENT_PAUSE_FULL if ncur >= self.CLIENT_TARGET else
+                        (self.CLIENT_PAUSE_NEW if ncur < self.NEW_PATCH_GAMES else self.CLIENT_PAUSE))
                     self.run_client(chalt)
                 except InterruptedError:
                     self.save_state()
@@ -9742,6 +9789,9 @@ class RiotCollector:
     CLIENT_PAUSE = 30         # 两轮之间隔 30 秒（一直快速收；对战中暂停）
     CLIENT_TARGET = 10000     # 收满这么多局后只看你自己的新对局（每 15 分钟一次）；2.17 从 5000 提高：回测一直显示样本不够
     CLIENT_PAUSE_FULL = 900
+    NEW_PATCH_GAMES = 1000    # 5.1.0：当前版本的局不到 1000 局 → 每轮多收（40 局）、间隔短（20 秒）
+    CLIENT_BATCH_NEW = 40
+    CLIENT_PAUSE_NEW = 20
 
     PHASE_EVERY = 8
     # 3.0.6：不再在「房间 / 排队」暂停 —— 你常常开着房间等朋友，收集几乎停摆（两天只多了几十局）；房间里收集不影响游戏
@@ -9859,14 +9909,15 @@ class RiotCollector:
             if me in self.cfront:
                 self.cfront.remove(me)
             self.cfront.insert(0, me)                # 每轮都先看你自己（打完新的一局马上收）
-        own_only = self.total_games() >= self.CLIENT_TARGET       # 收满了：只收你自己的新对局（名单留着不删）
+        ncur = self.current_patch_games()
+        own_only = ncur >= self.CLIENT_TARGET                    # 收满了（当前版本）：只收你自己的新对局（名单留着不删）
         cur_v = self.current_patch()
 
         def old_patch(v):                                        # 4.3.0：只收当前版本（旧版本的局不再用）
             return bool(cur_v) and ver_tuple(v) < ver_tuple(cur_v)
-        limit = self.CLIENT_BATCH
+        limit = self.CLIENT_BATCH_NEW if ncur < self.NEW_PATCH_GAMES else self.CLIENT_BATCH   # 新版本刚出：收快一点
         batch, looked = 0, 0
-        while self.cfront and batch < limit and looked < 60 and not halt():
+        while self.cfront and batch < limit and looked < max(60, 3 * limit) and not halt():
             with self.lock:
                 puuid = self.cfront.pop(0)
                 if puuid != me:
@@ -10799,6 +10850,10 @@ class RiotCollector:
             if best is None or abs(lift) > abs(best[0]):
                 best = (lift, x[0], o)
         return best
+
+    def current_patch_games(self):
+        cur = self.current_patch()
+        return sum(1 for rows in self.games().values() if rows and rows[0].get("v") == cur)
 
     def total_games(self):
         """大约几局（每局 10 行）。只在第一次数文件行数，之后跟着写入累加：窗口每 3 秒问一次也不卡"""

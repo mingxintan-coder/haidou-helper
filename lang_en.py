@@ -1096,3 +1096,8 @@ EN.update({'情报': 'Intel', '开局后显示每个人的段位、车队、最�
 EN.update({'加点 {0}': 'Skills {0}', '连招 {0}': 'Combo {0}', '打法：': 'Playstyle: ', '连招：{0}': 'Combo: {0}', '　{0}': '  {0}'})
 EN.update({'选单': 'Menu', '固定展开（不自动收起）': 'Pin open (don’t auto-collapse)', '识别增幅三选一（快捷键 {0}）': 'Read the augment choice (hotkey {0})',
            '识别增幅三选一': 'Read the augment choice', '升 {0}': 'Level {0}', '加点 ': 'Skills ', '连招 ': 'Combo ', '（你）': ' (you)'})
+EN.update({'{0} 削弱（网上数据还是 {1}，先扣 1%）': '{0} nerf (online data still {1}: −1% for now)',
+           '{0} 增强（网上数据还是 {1}，先加 0.5%）': '{0} buff (online data still {1}: +0.5% for now)',
+           '{0} 新增幅（还没有数据）': 'New in {0} (no data yet)', '{0} 有改动（网上数据还是 {1}）': 'Changed in {0} (online data still {1})',
+           '{0} 改动：{1}': '{0} change: {1}', '海斗额外技能急速 10 → 0': 'Mayhem bonus ability haste 10 → 0',
+           'Q 系数 105% → 100%': 'Q ratio 105% → 100%', '大招伤害提高': 'R damage up', 'W 重做、大招后期冷却缩短': 'W reworked, R cooldown lower at later ranks'})
