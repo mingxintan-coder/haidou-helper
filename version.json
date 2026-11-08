@@ -1,18 +1,18 @@
 {
- "version": "5.2.0",
- "date": "2026-11-05",
+ "version": "5.3.0",
+ "date": "2026-11-07",
  "notes": [
-  "情报页估算每个人的隐藏分（段位 + 这局水平 + 最近海斗输赢）",
-  "16.22：网上数据还是 16.21 时，按更新说明先修正被削 / 被加强的增幅和英雄",
-  "新增幅 RISE!、One Hit Wonder 加进专家评分"
+  "情报页排成表格：英雄 · 段位 · 隐藏分 · 车队 / 战绩，细节移上去看",
+  "不再自动切分页（选英雄、三选一、开局、赛后都停在你看的那页）",
+  "估算每个人的隐藏分"
  ],
  "files": {
-  "haidou_helper.py": "49e261ee48eb5859b6aba5cfe7adfe3118b3c211cf636154d32bdb17de49514e",
-  "lang_en.py": "c98afe18e87b0ce5abfc67387f243fc302b56d3ec9d2b23e8071af9bc0e4e128",
-  "README.md": "3c70cbdf82b780e43eae75e87f42cb0d296e946d6cb78b16707cd26b3e93f24b",
+  "haidou_helper.py": "2c05609a40b26c9de05d58e77ece6d0e78c1e30a9aeb18e4be9fb45044a6b5ab",
+  "lang_en.py": "cbb68d2da6aa017fe6824ea262ee729dcac9b8e4fbb47c3e02b95cc671151a40",
+  "README.md": "22a34800747fa29293e91de6710f09c8c2df07f7e9be7f8e5645cbc9e461df5f",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026110502
+ "build": 2026110701
 }

@@ -1102,3 +1102,5 @@ EN.update({'{0} 削弱（网上数据还是 {1}，先扣 1%）': '{0} nerf (onli
            '{0} 改动：{1}': '{0} change: {1}', '海斗额外技能急速 10 → 0': 'Mayhem bonus ability haste 10 → 0',
            'Q 系数 105% → 100%': 'Q ratio 105% → 100%', '大招伤害提高': 'R damage up', 'W 重做、大招后期冷却缩短': 'W reworked, R cooldown lower at later ranks'})
 EN.update({'隐藏分≈{0}（{1}）': 'MMR≈{0} ({1})', '（≈{0}）': ' (≈{0})'})
+EN.update({'队友': 'Allies', '敌方': 'Enemies', '平均隐藏分 {0}': 'avg MMR {0}', '上季 {0}': 'last season {0}', '{0}人车队': '{0}-stack',
+           '段位：{0}': 'Rank: {0}', '隐藏分≈{0}（约 {1}）': 'MMR≈{0} (about {1})', '近 20 局海斗 {0}/{1}': 'Last 20 Mayhem: {0}/{1}'})

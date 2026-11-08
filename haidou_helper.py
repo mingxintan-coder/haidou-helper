@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.2.0"
-APP_BUILD = 2026110502         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.3.0"
+APP_BUILD = 2026110701         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -11980,37 +11980,83 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     kit_lbl = Label(pages["guide"], text="", bg=BG, fg=SUB, font=F["small"], anchor="w", justify="left", padx=8)
     pos_lbl = Label(pages["guide"], text="", bg=BG, fg=GREEN, font=F["small"], anchor="w", justify="left", padx=8)
     neg_lbl = Label(pages["guide"], text="", bg=BG, fg=ORANGE, font=F["small"], anchor="w", justify="left", padx=8)
-    intel_lbl = Label(pages["intel"], text="", bg=BG, fg=FG, font=F["small"], anchor="w", justify="left",
-                         padx=8, pady=4)
-    for w_ in (kit_lbl, pos_lbl, neg_lbl, intel_lbl):
+    for w_ in (kit_lbl, pos_lbl, neg_lbl):
         wraps.append(w_)
+    intel_box = tk.Frame(pages["intel"], bg=BG)
+    intel_box.pack(fill="x")
+    st["intel_key"] = None
 
     def show_intel(intel):
-        """4.7.2「情报」页：这局每个人的段位、车队、海斗战绩（玩法页只放连招 / 打法）"""
-        if not intel:
-            intel_lbl.config(text=tr("开局后显示每个人的段位、车队、最近海斗战绩"))
-            intel_lbl.pack(fill="x", pady=(0, 4))
+        """5.3.0「情报」页排成表格：英雄 · 段位 · 隐藏分 · 车队 / 海斗战绩；敌方在上、队友在下；
+           每一区的标题写平均隐藏分；鼠标移到某一行看详细（上季段位、熟练度、连胜连败…）"""
+        key = repr([(i.get("champ"), i.get("ally"), i.get("mmr"), i.get("party"), i.get("note"),
+                     (i.get("rank") or {}).get("tier"), (i.get("rank") or {}).get("div")) for i in (intel or [])])
+        if key == st["intel_key"]:
             return
-        lines = []
+        st["intel_key"] = key
+        for w in intel_box.winfo_children():
+            w.destroy()
+        if not intel:
+            Label(intel_box, text=tr("开局后显示每个人的段位、车队、最近海斗战绩"), bg=BG, fg=DIM, font=F["small"],
+                  anchor="w", padx=4, pady=6).pack(fill="x")
+            return
         for ally in (False, True):
-            grp = [i for i in intel if i["ally"] == ally]
+            grp = sorted([i for i in intel if i["ally"] == ally], key=lambda i: (not i.get("me"), -(i.get("mmr") or 0)))
             if not grp:
                 continue
-            lines.append(tr("【敌方】") if not ally else tr("【队友】"))
-            for i in sorted(grp, key=lambda i: not i.get("me")):
-                head = engine.gd.champ_name(i["champ"]) if i.get("champ") else (i.get("name") or "?")
-                if i.get("me"):
-                    head = tr("你（{0}）").format(head)
-                bits = [head, rank_text(i.get("rank")) or "?"]
+            mm = [i["mmr"] for i in grp if i.get("mmr")]
+            head = tk.Frame(intel_box, bg=BG)
+            head.pack(fill="x", padx=4, pady=(8 if ally else 4, 2))
+            Label(head, text=tr("队友") if ally else tr("敌方"), bg=BG, fg=FG, font=F["key"]).pack(side="left")
+            if mm:
+                Label(head, text=tr("平均隐藏分 {0}").format(int(round(sum(mm) / len(mm), -1))), bg=BG, fg=DIM,
+                      font=F["small"]).pack(side="right")
+            tk.Frame(intel_box, bg=LINE, height=1).pack(fill="x", padx=4)
+            tbl = tk.Frame(intel_box, bg=BG)
+            tbl.pack(fill="x", padx=4)
+            tbl.columnconfigure(3, weight=1)
+            for r_, i in enumerate(grp):
+                name = engine.gd.champ_name(i["champ"]) if i.get("champ") else (i.get("name") or "?")
+                rk = i.get("rank") or {}
+                if rk.get("tier") in TIER_ORDER:
+                    rtxt, rcol = rank_text(rk), SUB
+                elif rk.get("prev") in TIER_ORDER:
+                    rtxt, rcol = tr("上季 {0}").format(tier_name(rk["prev"])), DIM
+                else:
+                    rtxt, rcol = "—", DIM
+                tags = []
+                if (i.get("party") or 0) >= 2:
+                    tags.append((tr("{0}人车队").format(i["party"]), WARN if not ally and i["party"] >= 3 else SUB))
+                if i.get("may_n"):
+                    good = i["may_n"] >= 8 and i["may_w"] / i["may_n"] >= 0.6
+                    tags.append(("{0}/{1}".format(i["may_w"], i["may_n"]), WARN if good and not ally else DIM))
+                cells = [
+                    Label(tbl, text=name, bg=BG, fg=ACC if i.get("me") else FG,
+                          font=F["key"] if i.get("me") else F["tip"], anchor="w"),
+                    Label(tbl, text=rtxt, bg=BG, fg=rcol, font=F["small"], anchor="w"),
+                    Label(tbl, text=str(i["mmr"]) if i.get("mmr") else "—", bg=BG, fg=FG if i.get("mmr") else DIM,
+                          font=F["num"], anchor="e", width=5),
+                ]
+                party = tags[:1] if (i.get("party") or 0) >= 2 else []
+                rec_ = tags[len(party):]
+                cells.append(Label(tbl, text=party[0][0] if party else "", bg=BG, fg=party[0][1] if party else DIM,
+                                   font=F["small"], anchor="e"))
+                cells.append(Label(tbl, text=rec_[0][0] if rec_ else "", bg=BG, fg=rec_[0][1] if rec_ else DIM,
+                                   font=F["small"], anchor="e"))
+                for c_, w in enumerate(cells):
+                    w.grid(row=r_, column=c_, sticky="e" if c_ >= 3 else "w", padx=(0, 8 if c_ < 4 else 0), pady=1)
+                tip = [name + ("（" + tr("你") + "）" if i.get("me") else "")]
+                tip.append(tr("段位：{0}").format(rank_text(rk) or tr("未定级")))
                 if i.get("mmr"):
-                    bits.append(tr("隐藏分≈{0}（{1}）").format(i["mmr"], score_tier_text(max(0.0, (i["mmr"] - 800) / 70.0))))
+                    tip.append(tr("隐藏分≈{0}（约 {1}）").format(i["mmr"], score_tier_text(max(0.0, (i["mmr"] - 800) / 70.0))))
+                if i.get("may_n"):
+                    tip.append(tr("近 20 局海斗 {0}/{1}").format(i["may_w"], i["may_n"]))
                 if i.get("note"):
-                    bits.append(i["note"])
-                if i.get("may_n") and tr("海斗高手") not in (i.get("note") or ""):
-                    bits.append(tr("海斗 {0}/{1}").format(i["may_w"], i["may_n"]))
-                lines.append("· " + " · ".join(bits))
-        intel_lbl.config(text="\n".join(lines))
-        intel_lbl.pack(fill="x", pady=(0, 4))
+                    tip.append(i["note"])
+                t_ = "\n".join(tip)
+                for w in cells:
+                    hover(w, lambda t_=t_: t_)
+        fit()
 
     footer = Label(body, text="", bg=BG, fg=DIM, font=F["small"], anchor="w", padx=8, cursor="hand2")
     footer.pack(fill="x", pady=(0, 4))
@@ -12564,9 +12610,6 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         rows = must + [c for c in cands if c not in must][:4 - len(must)]
         rows.sort(key=lambda c: -c["raw"])
         fill_rows(item_rows, rows)
-        if st["tab"] != "items" and not st.get("select_tab_done"):
-            st["select_tab_done"] = True                # 选英雄开始时切到出装页一次（推荐英雄在那页）
-            select_tab("items")
         mini.config(text=tip + mini_extra, fg=GOLD)
         st["hold_until"] = time.time() + 8
         set_expanded(True)
@@ -12736,9 +12779,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             confirm_box.pack(fill="x", pady=(0, 3), before=aug_route_holder)   # 4.1.5 修正：标题已经不显示，改放在路线按钮前
             if st.get("confirm_key") != tuple(cf):
                 st["confirm_key"] = tuple(cf)
-                if st["tab"] != "augs":
-                    select_tab("augs")
-                st["hold_until"] = max(st["hold_until"], time.time() + 20)
+                st["hold_until"] = max(st["hold_until"], time.time() + 20)      # 5.3.0：不自动切分页
                 set_expanded(True)
         else:
             confirm_box.pack_forget()
@@ -12809,12 +12850,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         # 自动选分页：出现新的三选一（或重骰）时切到增幅一次；你自己切走就不再拉回来
         cand_key = tuple(a["name"] for a in rec.get("augs", [])[:3]) if cand else \
             (("confirm",) + tuple(rec["confirm"]) if rec.get("confirm") else None)
-        if cand_key:
-            if cand_key != st.get("cand_jumped"):
-                st["cand_jumped"] = cand_key
-                if st["tab"] != "augs":
-                    st["tab_before_cand"] = st["tab"]
-                    select_tab("augs")
+        if cand_key:                               # 5.3.0：增幅三选一不再自动切到增幅页（单行 / 上面那行照样提示）
+            st["cand_jumped"] = cand_key
         elif st["tab_before_cand"]:
             if st["tab"] == "augs":                # 只有还停在增幅页时才切回原来那页
                 select_tab(st["tab_before_cand"])
@@ -12822,8 +12859,6 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             st["cand_jumped"] = None
         elif shop_text:
             pass                                   # 4.8.1：阵亡 / 买装备时不切分页（停在你看的那页）
-        elif not st["user_tab"]:
-            select_tab("guide" if rec.get("game_time", 999) < 90 else "items")
         if not shop_text:
             st["shop_tab_done"] = False
         # 单行模式
@@ -13004,8 +13039,6 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 shop_lbl.config(text="📋 " + payload["text"] + ("\n" + payload["detail"] if payload.get("detail") else ""))
                 shop_lbl.pack(fill="x", pady=(0, 3), before=tips_box)
                 draw_curve(payload.get("curve"), payload.get("moments"))
-                if st["tab"] != "items" and time.time() - st.get("user_tab_t", 0) > 60:
-                    select_tab("items")
                 mini.config(text="📋 " + payload["text"], fg=GOLD)
                 st["hold_until"] = time.time() + 20
                 set_expanded(True)
