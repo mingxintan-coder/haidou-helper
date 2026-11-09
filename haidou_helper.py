@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.5.0"
-APP_BUILD = 2026110802         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.5.1"
+APP_BUILD = 2026110803         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5289,9 +5289,16 @@ class ShopVision:
         self.size, self.size_t = None, 0.0
 
     def _size(self):
+        """萤幕大小：问系统（不截全萤幕）"""
         if not self.size or time.time() - self.size_t > 30:
-            from PIL import ImageGrab
-            self.size, self.size_t = ImageGrab.grab().size, time.time()
+            try:
+                import ctypes
+                u = ctypes.windll.user32
+                self.size = (u.GetSystemMetrics(0), u.GetSystemMetrics(1))
+            except Exception:  # noqa
+                from PIL import ImageGrab
+                self.size = ImageGrab.grab().size
+            self.size_t = time.time()
         return self.size
 
     def signature(self):
@@ -5308,6 +5315,11 @@ class ShopVision:
         if not tpls:
             return None
         return min(sum(abs(a - b) for a, b in zip(sig, t)) / float(len(sig)) for t in tpls)
+
+    def ready(self):
+        """这个画面比例有商店的样子可以比？"""
+        w, h = self._size()
+        return bool(self.tpl.get("{0:.2f}".format(w / float(h))))
 
     def is_open(self):
         """True / False；这个画面比例还没有样子可以比 → None"""
@@ -7296,6 +7308,7 @@ class Engine:
         sm = ShopImeState(self.SHOP_MAX)
         flips, backoff, last_check, alive_since = [], 0.0, 0.0, None
         last_typing, chat_t, last_look, learn_at, closed_n = 0.0, 0.0, 0.0, None, 0
+        open_n, last_click, last_combat = 0, 0.0, 0.0
         lang = None                                       # 我们最后切成的：zh / en
         while True:
             time.sleep(0.04)
@@ -7311,6 +7324,10 @@ class Engine:
                 combat = any([edge(vk) for vk in self.COMBAT_VK])
                 if typed:
                     last_typing = now
+                if combat:
+                    last_combat = now
+                if edge(0x01):                            # 左键：可能点了商店按钮 → 之后 2 秒内看一下画面
+                    last_click = now
                 ev = {"letter": typed or combat, "esc": edge(0x1B), "enter": edge(0x0D), "p": edge(self.SHOP_VK)}
                 if ev["enter"]:
                     chat_t = now
@@ -7320,7 +7337,8 @@ class Engine:
                 if act == "zh":
                     learn_at = now + 0.45                 # 按 P 开商店：0.45 秒后（商店画出来了）记下样子
                 seen = None
-                if vision is not None and now - last_look >= 0.3:
+                want = sm.shop or now - last_click < 2.0 or learn_at is not None
+                if vision is not None and want and now - last_look >= 0.3:   # 5.5.1：只在点过左键 / 商店开着时才看画面
                     last_look = now
                     try:
                         if learn_at and now >= learn_at:
@@ -7332,9 +7350,12 @@ class Engine:
                         vision = None                     # 截不了画面：之后只看按键
                 if seen is True:
                     closed_n = 0
-                    if not sm.shop:
-                        sm.shop, sm.shop_t, act = True, now, "zh"
-                elif seen is False and sm.shop and now - sm.shop_t > 0.8:
+                    open_n += 1
+                    if not sm.shop and open_n >= 2 and now - last_combat > 1.0:
+                        sm.shop, sm.shop_t, act = True, now, "zh"   # 连续两次看到商店、1 秒内没按技能 → 才切中文
+                elif seen is False:
+                    open_n = 0
+                if seen is False and sm.shop and now - sm.shop_t > 0.8:
                     closed_n += 1
                     if closed_n >= 2:                     # 连续两次没看到商店（0.6 秒）：关了
                         sm.shop, sm.p_close_at, act, closed_n = False, None, "en", 0
@@ -7353,9 +7374,8 @@ class Engine:
                     alive_since = now
                 if now - seen_t > 10 or now < backoff:
                     continue
-                if seen is None and vision is not None and not combat and now - last_check < 2.0:
-                    continue
-                if vision is None or seen is None:        # 看不了画面：5.4 的做法（阵亡 / 开局 / 刚复活 / 正在打字 → 不动）
+                usable = vision is not None and vision.ready()
+                if not usable:                            # 看不了画面：5.4 的做法（阵亡 / 开局 / 刚复活 / 正在打字 → 不动）
                     if dead or gt < self.IME_START or now - (alive_since or now) < self.IME_RESPAWN or \
                             now - last_typing < 3 or (not combat and now - last_typing < self.IME_IDLE):
                         continue
