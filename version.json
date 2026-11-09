@@ -1,18 +1,18 @@
 {
- "version": "5.3.0",
- "date": "2026-11-07",
+ "version": "5.4.0",
+ "date": "2026-11-08",
  "notes": [
-  "情报页排成表格：英雄 · 段位 · 隐藏分 · 车队 / 战绩，细节移上去看",
-  "不再自动切分页（选英雄、三选一、开局、赛后都停在你看的那页）",
+  "输入法：在商店打字时不再被切回英文；要放技能（QWERDF）才切回英文",
+  "情报页排成表格；不再自动切分页",
   "估算每个人的隐藏分"
  ],
  "files": {
-  "haidou_helper.py": "2c05609a40b26c9de05d58e77ece6d0e78c1e30a9aeb18e4be9fb45044a6b5ab",
+  "haidou_helper.py": "927318081604f596d6b4fb0d28eb0784b58a86d66b4bc290881d2cf644bc3145",
   "lang_en.py": "cbb68d2da6aa017fe6824ea262ee729dcac9b8e4fbb47c3e02b95cc671151a40",
-  "README.md": "22a34800747fa29293e91de6710f09c8c2df07f7e9be7f8e5645cbc9e461df5f",
+  "README.md": "114c188ce2a218f27424e80ce2b18a76ce0903a3e2b7c31cf8a54cdf50d30653",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026110701
+ "build": 2026110801
 }

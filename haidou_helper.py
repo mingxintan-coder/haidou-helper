@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.3.0"
-APP_BUILD = 2026110701         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.4.0"
+APP_BUILD = 2026110801         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -7200,17 +7200,23 @@ class Engine:
     SHOP_VK = 0x50            # P：打开 / 关掉商店（游戏默认键）
     SHOP_MAX = 90             # 商店开着超过 90 秒没动静：当成已经关了（用鼠标点 X 关的看不到）
 
+    COMBAT_VK = (0x51, 0x57, 0x45, 0x52, 0x44, 0x46)      # Q W E R D F
+    IME_IDLE = 15             # 5.4.0：商店没开、超过 15 秒没在打字 → 才切回英文
+
     def ime_guard(self):
-        """4.8.0：输入法跟着商店走 —— 按 P 打开商店 → 切成中文（可以直接打中文搜装备）；再按 P / Esc 关掉 → 切回英文。
-           只读键盘状态（GetAsyncKeyState，跟快捷键一样），不送按键、不动游戏。
-           聊天：按 Enter 打开聊天框时不管 P（打字里的 P 不算），Enter / Esc 结束。
-           在商店搜索框打字时打到 P：后面 0.6 秒内还有别的字母 → 是在打字，不算关商店。
-           其他时间（商店没开、没在聊天）每 2 秒检查一次，是中文就切回英文（被你马上切回中文两次 → 30 秒内不再动）"""
+        """输入法跟着商店和打字走（5.4.0 重写判断）：
+           · 按 P 打开商店 → 切成中文；按 P / Esc 关掉 → 切回英文（4.8.0）。
+           · 用鼠标点开商店看不到 → 改看「你在不在打字」：最近按过 QWERDF 以外的字母（打拼音一定会按到 a / i / o / u…）
+             ＝在商店搜装备 → 不动输入法。以前每 2 秒就切回英文，你一边打一边被切掉。
+           · 要放技能才切回英文：按了 Q W E R D F、而且 3 秒内没打别的字母 → 马上切回英文（这一下可能被吃掉，下一下就好）；
+             或者商店没开、超过 15 秒没打字 → 切回英文。阵亡、开局、刚复活照旧不动。
+           · 聊天框（Enter）超过 20 秒没动静就当已经关了（以前在商店按 Enter 选字会让它以为你在聊天，之后按 P 都不理）。
+           只读键盘状态（GetAsyncKeyState，跟快捷键一样），不送按键、不动游戏。"""
         if not sys.platform.startswith("win"):
             return
         import ctypes
         user32 = ctypes.windll.user32
-        letters = [v for v in range(0x41, 0x5B) if v != self.SHOP_VK]
+        typing_vk = [v for v in range(0x41, 0x5B) if v != self.SHOP_VK and v not in self.COMBAT_VK and v != 0x42]
         down = {}
 
         def edge(vk):
@@ -7220,36 +7226,46 @@ class Engine:
             down[vk] = pressed
             return hit
         sm = ShopImeState(self.SHOP_MAX)
-        shop = chat = False
         flips, backoff, last_check, alive_since = [], 0.0, 0.0, None
+        last_typing, chat_t = 0.0, 0.0
         while True:
             time.sleep(0.04)
             try:
                 if not getattr(self, "ime_fix", True) or not self.connected or not game_foreground():
-                    for vk in [self.SHOP_VK, 0x1B, 0x0D] + letters:
+                    for vk in [self.SHOP_VK, 0x1B, 0x0D, 0x42] + typing_vk + list(self.COMBAT_VK):
                         edge(vk)                           # 不在游戏里：只清掉按键状态
                     sm.reset()
                     continue
                 now = time.time()
-                ev = {"letter": any([edge(vk) for vk in letters]), "esc": edge(0x1B), "enter": edge(0x0D),
-                      "p": edge(self.SHOP_VK)}
+                typed = any([edge(vk) for vk in typing_vk])
+                combat = any([edge(vk) for vk in self.COMBAT_VK])
+                if typed:
+                    last_typing = now
+                ev = {"letter": typed or combat, "esc": edge(0x1B), "enter": edge(0x0D), "p": edge(self.SHOP_VK)}
+                if ev["enter"]:
+                    chat_t = now
+                if sm.chat and now - chat_t > 20:
+                    sm.chat = False                       # 聊天框没动静 20 秒：当已经关了
                 act = sm.step(ev, now)
                 if act == "zh":
                     game_ime_to_chinese()
                 elif act == "en":
                     game_ime_to_english()
-                shop, chat = sm.shop, sm.chat
-                if shop or chat or now - last_check < 2.0:
+                if sm.shop or sm.chat:
                     continue
-                last_check = now
                 dead, gt, seen = getattr(self, "_ime_me", (True, 0, 0))
                 if dead:
                     alive_since = None
                 elif alive_since is None:
                     alive_since = now
-                if now - seen > 10 or dead or now < backoff or gt < self.IME_START or \
-                        now - (alive_since or now) < self.IME_RESPAWN:
-                    continue                              # 读不到游戏 / 阵亡、开局、刚复活（可能用鼠标开商店在买）/ 你刚自己切回中文
+                protect = now - seen > 10 or dead or now < backoff or gt < self.IME_START or \
+                    now - (alive_since or now) < self.IME_RESPAWN
+                if protect or now - last_typing < 3:
+                    continue                              # 阵亡 / 开局 / 刚复活 / 你刚切回中文 / 正在打字
+                fight = combat                            # 要放技能了 → 马上切
+                if not fight and (now - last_check < 2.0 or now - last_typing < self.IME_IDLE):
+                    continue
+                last_check = now
                 if game_ime_to_english():
                     flips = [x for x in flips if now - x < 20] + [now]
                     if len(flips) >= 2:                   # 20 秒内被你切回中文又被切掉：你在打字，先别管
