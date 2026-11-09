@@ -1,18 +1,18 @@
 {
- "version": "5.4.0",
+ "version": "5.5.0",
  "date": "2026-11-08",
  "notes": [
-  "输入法：在商店打字时不再被切回英文；要放技能（QWERDF）才切回英文",
+  "看画面判断商店开没开（鼠标点开的也算）：商店开着中文、关着英文",
   "情报页排成表格；不再自动切分页",
   "估算每个人的隐藏分"
  ],
  "files": {
-  "haidou_helper.py": "927318081604f596d6b4fb0d28eb0784b58a86d66b4bc290881d2cf644bc3145",
+  "haidou_helper.py": "7a2039c78a944ea380f8457d9692d804f81bed394731f05242182e1c08230804",
   "lang_en.py": "cbb68d2da6aa017fe6824ea262ee729dcac9b8e4fbb47c3e02b95cc671151a40",
-  "README.md": "114c188ce2a218f27424e80ce2b18a76ce0903a3e2b7c31cf8a54cdf50d30653",
+  "README.md": "e1a988d087d910f3e1595604c4f89bd5348d027f418d6ef75fd1a9f8113e9d6b",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026110801
+ "build": 2026110802
 }

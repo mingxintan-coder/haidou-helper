@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.4.0"
-APP_BUILD = 2026110801         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.5.0"
+APP_BUILD = 2026110802         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5267,6 +5267,72 @@ def same_offer(a, b):
     return bool(a) and bool(b) and len(a) == len(b) and all(_same_name(x, y) for x, y in zip(a, b))
 
 
+class ShopVision:
+    """5.5.0：看画面判断商店开没开（用鼠标点开的也看得到）。
+       只看商店上下两条固定的框：最上面的搜索框、最下面的「出售 / 复原 / 金币」那一条（两条各缩成 48×4 灰阶）。
+       商店里的道具怎么换，这两条都一样；平常游戏画面跟它差很多（实测：商店 0～2、游戏画面 57～93）。
+       内建一份 16:10 画面的样子（你的 2048×1280 截图）；你按 P 开商店时也会记下当时的样子（别的解析度也能用），存在本机。"""
+    REG = ((.254, .005, .698, .042), (.252, .727, .718, .777))
+    SZ = (48, 4)
+    BUILTIN = {"1.60": bytes.fromhex("221d1c1e1d1d1d1c1d1e1e1e1d1e1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1f20411e2d2c2c2e302d352d3236381c16171717171717171717171717171717171717171718181818181818181818181920482a333235353533372a31353b1f1617171717171717171717171818181818181818181818181818181818181818191b1a1b1b1b1b1b1b1c1c191b1a191817171717171717171717171717171717171818181818191919191919191919191922272626262726252838353434363637221d1c1711121413121212121112121212121212121212111112121211131413252425363b2e22262b2724636259202b25245a3b483e141313121212111212121212121212111212121212121213141325242532332b2226282523575547202823284c393c3d141313131212121212121212121211111212121211121313141322272625252527252027272324242829211c191412121513131313121212111111111111121212121213111213121414")}
+    THRESH = 15.0
+
+    def __init__(self):
+        self.path = os.path.join(APP_DIR, "shop_sig.json")
+        self.tpl = {k: [list(v)] for k, v in self.BUILTIN.items()}
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                for k, lst in (json.load(f) or {}).items():
+                    self.tpl.setdefault(k, []).extend(bytes.fromhex(x) for x in lst[-6:])
+        except (OSError, ValueError):
+            pass
+        self.size, self.size_t = None, 0.0
+
+    def _size(self):
+        if not self.size or time.time() - self.size_t > 30:
+            from PIL import ImageGrab
+            self.size, self.size_t = ImageGrab.grab().size, time.time()
+        return self.size
+
+    def signature(self):
+        from PIL import ImageGrab
+        w, h = self._size()
+        out = []
+        for x0, y0, x1, y1 in self.REG:
+            im = ImageGrab.grab(bbox=(int(w * x0), int(h * y0), int(w * x1), int(h * y1)))
+            out += list(im.convert("L").resize(self.SZ).tobytes())
+        return out, "{0:.2f}".format(w / float(h))
+
+    def distance(self, sig, key):
+        tpls = self.tpl.get(key) or []
+        if not tpls:
+            return None
+        return min(sum(abs(a - b) for a, b in zip(sig, t)) / float(len(sig)) for t in tpls)
+
+    def is_open(self):
+        """True / False；这个画面比例还没有样子可以比 → None"""
+        sig, key = self.signature()
+        d = self.distance(sig, key)
+        return None if d is None else d < self.THRESH
+
+    def learn(self):
+        """你按 P 开了商店：记下现在的样子（太亮的不记 —— 多半不是商店）"""
+        sig, key = self.signature()
+        if sum(sig) / float(len(sig)) > 70:
+            return False
+        d = self.distance(sig, key)
+        if d is not None and d < 5:
+            return False
+        self.tpl.setdefault(key, []).append(list(sig))
+        try:
+            saved = {k: [bytes(t).hex() for t in v if bytes(t) != self.BUILTIN.get(k)][-6:] for k, v in self.tpl.items()}
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(saved, f)
+        except OSError:
+            pass
+        return True
+
+
 class ShopImeState:
     """4.8.0：商店开没开 / 在不在聊天的判断（只看按键）。step() 回传 "zh"（切中文）、"en"（切英文）或 None"""
     def __init__(self, shop_max=90):
@@ -7204,14 +7270,12 @@ class Engine:
     IME_IDLE = 15             # 5.4.0：商店没开、超过 15 秒没在打字 → 才切回英文
 
     def ime_guard(self):
-        """输入法跟着商店和打字走（5.4.0 重写判断）：
-           · 按 P 打开商店 → 切成中文；按 P / Esc 关掉 → 切回英文（4.8.0）。
-           · 用鼠标点开商店看不到 → 改看「你在不在打字」：最近按过 QWERDF 以外的字母（打拼音一定会按到 a / i / o / u…）
-             ＝在商店搜装备 → 不动输入法。以前每 2 秒就切回英文，你一边打一边被切掉。
-           · 要放技能才切回英文：按了 Q W E R D F、而且 3 秒内没打别的字母 → 马上切回英文（这一下可能被吃掉，下一下就好）；
-             或者商店没开、超过 15 秒没打字 → 切回英文。阵亡、开局、刚复活照旧不动。
-           · 聊天框（Enter）超过 20 秒没动静就当已经关了（以前在商店按 Enter 选字会让它以为你在聊天，之后按 P 都不理）。
-           只读键盘状态（GetAsyncKeyState，跟快捷键一样），不送按键、不动游戏。"""
+        """5.5.0：商店开着 → 中文；商店关着 → 英文。
+           · 看画面判断商店开没开（ShopVision：搜索框 / 底下那条，用鼠标点开的也看得到），每 0.3 秒看一次；
+           · 按 P / Esc 也照旧（按 P 开商店时顺便记下商店的样子）；
+           · 聊天框（按 Enter）开着时不动（20 秒没动静当已关）；你在 20 秒内自己切回中文两次 → 30 秒内不动。
+           看不了画面（没有截图权限、别的画面比例又还没按过 P）时，退回 5.4 的「看你在不在打字」。
+           只读键盘状态和截画面上两小条，不送按键、不动游戏。"""
         if not sys.platform.startswith("win"):
             return
         import ctypes
@@ -7225,16 +7289,22 @@ class Engine:
             hit = (pressed and not down.get(vk)) or bool(st_ & 0x0001 and not pressed)
             down[vk] = pressed
             return hit
+        try:
+            vision = ShopVision()
+        except Exception:  # noqa
+            vision = None
         sm = ShopImeState(self.SHOP_MAX)
         flips, backoff, last_check, alive_since = [], 0.0, 0.0, None
-        last_typing, chat_t = 0.0, 0.0
+        last_typing, chat_t, last_look, learn_at, closed_n = 0.0, 0.0, 0.0, None, 0
+        lang = None                                       # 我们最后切成的：zh / en
         while True:
             time.sleep(0.04)
             try:
                 if not getattr(self, "ime_fix", True) or not self.connected or not game_foreground():
                     for vk in [self.SHOP_VK, 0x1B, 0x0D, 0x42] + typing_vk + list(self.COMBAT_VK):
-                        edge(vk)                           # 不在游戏里：只清掉按键状态
+                        edge(vk)
                     sm.reset()
+                    lang = None
                     continue
                 now = time.time()
                 typed = any([edge(vk) for vk in typing_vk])
@@ -7245,30 +7315,57 @@ class Engine:
                 if ev["enter"]:
                     chat_t = now
                 if sm.chat and now - chat_t > 20:
-                    sm.chat = False                       # 聊天框没动静 20 秒：当已经关了
+                    sm.chat = False
                 act = sm.step(ev, now)
                 if act == "zh":
+                    learn_at = now + 0.45                 # 按 P 开商店：0.45 秒后（商店画出来了）记下样子
+                seen = None
+                if vision is not None and now - last_look >= 0.3:
+                    last_look = now
+                    try:
+                        if learn_at and now >= learn_at:
+                            learn_at = None
+                            if sm.shop and vision.learn():
+                                _perf_write(time.strftime("%H:%M:%S ") + "shop look learned")
+                        seen = vision.is_open()
+                    except Exception:  # noqa
+                        vision = None                     # 截不了画面：之后只看按键
+                if seen is True:
+                    closed_n = 0
+                    if not sm.shop:
+                        sm.shop, sm.shop_t, act = True, now, "zh"
+                elif seen is False and sm.shop and now - sm.shop_t > 0.8:
+                    closed_n += 1
+                    if closed_n >= 2:                     # 连续两次没看到商店（0.6 秒）：关了
+                        sm.shop, sm.p_close_at, act, closed_n = False, None, "en", 0
+                if act == "zh" and lang != "zh" and now >= backoff:
                     game_ime_to_chinese()
-                elif act == "en":
+                    lang = "zh"
+                elif act == "en" and lang != "en":
                     game_ime_to_english()
+                    lang = "en"
                 if sm.shop or sm.chat:
                     continue
-                dead, gt, seen = getattr(self, "_ime_me", (True, 0, 0))
+                dead, gt, seen_t = getattr(self, "_ime_me", (True, 0, 0))
                 if dead:
                     alive_since = None
                 elif alive_since is None:
                     alive_since = now
-                protect = now - seen > 10 or dead or now < backoff or gt < self.IME_START or \
-                    now - (alive_since or now) < self.IME_RESPAWN
-                if protect or now - last_typing < 3:
-                    continue                              # 阵亡 / 开局 / 刚复活 / 你刚切回中文 / 正在打字
-                fight = combat                            # 要放技能了 → 马上切
-                if not fight and (now - last_check < 2.0 or now - last_typing < self.IME_IDLE):
+                if now - seen_t > 10 or now < backoff:
+                    continue
+                if seen is None and vision is not None and not combat and now - last_check < 2.0:
+                    continue
+                if vision is None or seen is None:        # 看不了画面：5.4 的做法（阵亡 / 开局 / 刚复活 / 正在打字 → 不动）
+                    if dead or gt < self.IME_START or now - (alive_since or now) < self.IME_RESPAWN or \
+                            now - last_typing < 3 or (not combat and now - last_typing < self.IME_IDLE):
+                        continue
+                elif now - last_check < 2.0 and not combat:
                     continue
                 last_check = now
-                if game_ime_to_english():
+                if game_ime_to_english():                 # 商店没开 → 英文
+                    lang = "en"
                     flips = [x for x in flips if now - x < 20] + [now]
-                    if len(flips) >= 2:                   # 20 秒内被你切回中文又被切掉：你在打字，先别管
+                    if len(flips) >= 2:                   # 20 秒内你又自己切回中文：在聊天打中文，先别管
                         backoff, flips = now + self.IME_BACKOFF, []
             except Exception:  # noqa
                 time.sleep(1)
