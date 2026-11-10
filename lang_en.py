@@ -1105,3 +1105,6 @@ EN.update({'隐藏分≈{0}（{1}）': 'MMR≈{0} ({1})', '（≈{0}）': ' (≈
 EN.update({'队友': 'Allies', '敌方': 'Enemies', '平均隐藏分 {0}': 'avg MMR {0}', '上季 {0}': 'last season {0}', '{0}人车队': '{0}-stack',
            '段位：{0}': 'Rank: {0}', '隐藏分≈{0}（约 {1}）': 'MMR≈{0} (about {1})', '近 20 局海斗 {0}/{1}': 'Last 20 Mayhem: {0}/{1}'})
 EN.update({'你这个水平的局 {0:+.1f}%': 'at your skill level {0:+.1f}%'})
+EN.update({'先刷新': 'Reroll first', '换一张平均 {0:+.1f}%；不刷就选 {1}': 'a new card averages {0:+.1f}%; otherwise pick {1}', '选这张': 'Pick this',
+           '现在买（复活 {0:.0f} 秒）': 'Buy now (respawn {0:.0f}s)', '搜「{0}」': 'search "{0}"', '再买 {0}': 'then {0}',
+           '点一下复制装备名': 'Click to copy the item name', '下一件': 'Next item'})

@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.7.0"
-APP_BUILD = 2026111001         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.8.0"
+APP_BUILD = 2026111002         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -7380,9 +7380,18 @@ class Engine:
                         seen = vision.is_open()
                     except Exception:  # noqa
                         vision = None                     # 截不了画面：之后只看按键
+                if act == "en" and vision is not None and vision.ready():
+                    try:                                  # 5.8.0：按键以为商店关了（例：搜索时打到 p）→ 看画面确认，还开着就不切
+                        if vision.is_open():
+                            sm.shop, sm.shop_t, act = True, now, None
+                    except Exception:  # noqa
+                        pass
                 if seen is True:
                     closed_n = 0
                     open_n += 1
+                    sm.chat = False                       # 看得到商店：不是在聊天（商店里按 Enter 选字不算）
+                    if sm.shop:
+                        sm.shop_t = now                   # 商店还开着：不让 90 秒的保险把它当成已关
                     if not sm.shop and open_n >= 2 and now - last_combat > 1.0:
                         sm.shop, sm.shop_t, act = True, now, "zh"   # 连续两次看到商店、1 秒内没按技能 → 才切中文
                 elif seen is False:
@@ -11874,6 +11883,74 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             strip_line.pack(fill="x", after=play_strip)
             fit()
 
+    # ---------- 5.8.0「现在做什么」一行：哪一页、收没收起都看得到 ----------
+    #   三选一 → 选哪张（或先刷新哪张）；阵亡 / 钱够 → 买什么（点一下复制名字）；平时 → 下一件和搜索代号
+    now_box = tk.Frame(root, bg=BG, padx=10, pady=5)
+    now_verb = Label(now_box, text="", bg=BG, fg=DIM, font=F["small"], anchor="w")
+    now_verb.pack(fill="x")
+    now_what = Label(now_box, text="", bg=BG, fg=ACC, font=F["title"], anchor="w", justify="left")
+    now_what.pack(fill="x")
+    now_sub = Label(now_box, text="", bg=BG, fg=SUB, font=F["small"], anchor="w", justify="left")
+    wraps.extend([now_what, now_sub])
+    now_line_ = tk.Frame(root, bg=LINE, height=1)
+    st["now_copy"] = None
+    st["now_tip"] = ""
+    for w_ in (now_box, now_verb, now_what, now_sub):
+        w_.bind("<Button-1>", lambda e: st["now_copy"] and st["now_copy"]())
+        hover(w_, lambda: st.get("now_tip", ""))
+
+    def update_now(rec):
+        verb = what = sub = tip = ""
+        col, copy = ACC, None
+        augs = rec.get("augs") or []
+        shop = rec.get("shop") or {}
+        items = rec.get("items") or []
+        if rec.get("cand_mode") and augs:
+            rr = rec.get("aug_reroll")
+            if rr and rr.get("act") == "reroll":
+                verb, what, col = tr("先刷新"), rr["card"], WARN
+                sub = tr("换一张平均 {0:+.1f}%；不刷就选 {1}").format(rr["gain"], augs[0]["name"])
+            else:
+                verb, what = tr("选这张"), augs[0]["name"]
+                sub = "   ".join("{0} {1}".format(fmt_total(d), d["name"]) for d in augs[:3])
+            tip = "\n".join("{0}  {1}：{2}".format(fmt_total(d), d["name"], d.get("reason", "")) for d in augs[:3])
+        elif shop.get("buy") and shop.get("names"):
+            names, keys = list(shop["names"]), list(shop.get("keys") or [])
+            verb, what, col = tr("现在买（复活 {0:.0f} 秒）").format(shop.get("respawn", 0)), names[0], WARN
+            bits = []
+            if keys and keys[0]:
+                bits.append(tr("搜「{0}」").format(keys[0]))
+            if len(names) > 1:
+                bits.append(tr("再买 {0}").format(" → ".join(names[1:3])))
+            sub = "   ".join(bits)
+            tip = tr("点一下复制装备名")
+            copy = lambda n=names[0]: copy_item(n)
+        elif items and "total" in items[0] and rec.get("game_time") is not None:
+            d = items[0]
+            verb, what, col = tr("下一件"), d["name"], FG
+            sub = tr("搜「{0}」").format(d["key"]) if d.get("key") else ""
+            tip = (d.get("reason") or "") + "\n" + tr("点一下复制装备名")
+            copy = lambda n=d["name"]: copy_item(n)
+        if not what:
+            now_box.pack_forget()
+            now_line_.pack_forget()
+            return
+        now_verb.config(text=verb)
+        now_what.config(text=what, fg=col)
+        now_sub.config(text=sub)
+        if sub:
+            now_sub.pack(fill="x")
+        else:
+            now_sub.pack_forget()
+        st["now_copy"], st["now_tip"] = copy, tip.strip()
+        for w_ in (now_box, now_verb, now_what, now_sub):
+            w_.config(cursor="hand2" if copy else "arrow")
+        if not now_box.winfo_ismapped():
+            anchor = strip_line if strip_line.winfo_ismapped() else header
+            now_box.pack(fill="x", after=anchor)
+            now_line_.pack(fill="x", after=now_box)
+            fit()
+
     # ---------- 单行模式 ----------
     mini = Label(root, text=tr("等待对局…"), bg=BG, fg=FG, font=F["tip"], anchor="w", justify="left", padx=8, pady=5)
     wraps.append(mini)
@@ -11926,20 +12003,26 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     # 战况条：连招 / 战局 / 威胁 / 玩法（一直显示、即时更新）
     st["brief"] = load_ui_cfg().get("brief", True)
     brief_box = tk.Frame(body, bg=BG, padx=10, pady=2)
+    BRIEF_MAX = 4
+    st["brief_more"] = ""
+    hover(brief_box, lambda: st.get("brief_more", ""))
     brief_rows = []
     for _ in range(6):
         lb = Label(brief_box, text="", bg=CARD, fg=GOLD, font=F["small"], anchor="w")
         tx = Label(brief_box, text="", bg=CARD, fg=FG, font=F["tip"], anchor="w", justify="left")
         brief_rows.append((lb, tx))
         wraps.append(tx)
+        hover(tx, lambda: st.get("brief_more", ""))
 
     def show_brief(items):
         if not st["brief"] or not items:
             brief_box.pack_forget()
             return False
-        if len(items) > len(brief_rows):          # 4.2：放不下时，橙色（紧急）的一定留着，其余按原来的顺序补满
+        cap = min(len(brief_rows), BRIEF_MAX)     # 5.8.0：最多 4 行（以前 6 行一大片）；多的移上去看
+        st["brief_more"] = ""
+        if len(items) > cap:                      # 4.2：放不下时，橙色（紧急）的一定留着，其余按原来的顺序补满
             n_hot = sum(1 for x in items if x[2])
-            room = max(0, len(brief_rows) - n_hot)
+            room = max(0, cap - n_hot)
             keep = []
             for x in items:
                 if x[2]:
@@ -11947,7 +12030,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 elif room > 0:
                     keep.append(x)
                     room -= 1
-            items = keep[:len(brief_rows)]
+            rest = [x for x in items if x not in keep[:cap]]
+            items = keep[:cap]
+            st["brief_more"] = "\n".join(ICON_GLYPHS.sub("", x[1]) for x in rest)
         for i, (lb, tx) in enumerate(brief_rows):
             if i < len(items):
                 label, text, hot = items[i]
@@ -12924,6 +13009,11 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             update_strip(rec)
         except Exception:  # noqa
             pass
+        try:
+            update_now(rec)
+        except Exception:  # noqa
+            now_box.pack_forget()
+            now_line_.pack_forget()
         current["rec"] = rec
         st["select_tab_done"] = False             # 进了对局：下次选英雄再切一次出装页
         mine_names = rec.get("my_augs", [])
