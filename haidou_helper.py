@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.5.1"
-APP_BUILD = 2026110803         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.6.0"
+APP_BUILD = 2026110901         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -1969,12 +1969,14 @@ class Advisor:
     #   没数据：强度每级 +0.58%（z≈3.3）、需求吻合 +0.19%（z≈8.7）、技能特质 +0.26%（z≈12.7）、招牌组合 +0.18%（z≈1.8）
     #   有这个英雄的数据时（每格对半拆开，一半当数据、一半当考题）：技能特质 +0.01%（z≈0.4）、招牌组合 −0.70%（z≈−2.5）
     #   → 有实际数据时专家的特质 / 招牌组合都不再加分（以前的 +0.48% 是旧数据的结果，新数据反而显示会高估）
-    EXP_T_PCT = 0.58
-    EXP_REQ_PCT = 0.19
+    # 5.6.0 用 16.22（1979 万局、2.1 万格）再校准一次：强度 0.51（z≈2.8）、需求 0.16（z≈7）、特质 0.285（z≈13）、组合 0.21（z≈2）；
+    #   有实际数据时：特质 +0.10（z≈2.9）、需求 −0.10（z≈−2.5）—— 跟 16.21（+0.01 / +0.06）方向不一致 → 照旧都不加
+    EXP_T_PCT = 0.51
+    EXP_REQ_PCT = 0.16
     EXP_REQ_PCT_DATA = 0.0
     EXP_PRIOR_SD = 0.022
-    CHEM_TRAIT_PCT = 0.26
-    CHEM_PAIR_PCT = 0.18
+    CHEM_TRAIT_PCT = 0.285
+    CHEM_PAIR_PCT = 0.21
     CHEM_TRAIT_PCT_DATA = 0.0
     CHEM_PAIR_PCT_DATA = 0.0
     CHEM_DATA_K = 2000
@@ -2001,10 +2003,10 @@ class Advisor:
     #   相似英雄推算之后再加 0.2 倍；之后剩下的需求吻合 0.097、技能特质 0.29、招牌组合 0.01
     AFF_LAM = 1.0
     AFF_NEW_W = 0.375
-    AFF_PRIOR_W = 0.2
-    EXP_NEW_REQ = 0.097       # 有英雄玩法推算时（这张没数据）：需求吻合、技能特质、招牌组合剩下的份量
-    EXP_NEW_TRAIT = 0.29
-    EXP_NEW_PAIR = 0.01
+    AFF_PRIOR_W = 0.3
+    EXP_NEW_REQ = 0.075       # 有英雄玩法推算时（这张没数据）：需求吻合、技能特质、招牌组合剩下的份量
+    EXP_NEW_TRAIT = 0.32
+    EXP_NEW_PAIR = 0.005
     expert_boost = 1.5        # ⋯ →「专家评分份量」：1（数据校准）／ 1.5（加强，预设）／ 2
 
     REQ_LABEL = {"M": "近战类", "R": "远程类", "D": "位移类", "C": "控制类", "H": "治疗护盾类", "K": "坦克类", "A": "普攻类",
@@ -2292,7 +2294,7 @@ class Advisor:
     AH_K = 1000           # 3.8：往「相似英雄的效果」收缩的局数（回测：比往 0 收缩 300 局误差小 17%～33%）
     AH_SIM_N = 3000       # 算英雄相似度时只用样本 ≥ 这么多局的格子
     AH_NB = 15            # 取最像的 15 个英雄
-    AH_PRIOR_SD = 0.019   # 只有相似英雄推算（这个英雄完全没数据）时的误差（回测 RMSE 1.7%）
+    AH_PRIOR_SD = 0.020   # 只有相似英雄推算（这个英雄完全没数据）时的误差（回测 RMSE 1.7%）
 
     def _ah_vec(self, key):
         """这个英雄在国服数据里每张增幅的效果 {增幅: (胜率 − 英雄平均, 局数)}（缓存）"""
@@ -4002,6 +4004,9 @@ class Advisor:
         """(游戏版本, 网上数据版本)：网上数据比游戏旧时才有值，否则 None"""
         gv = ".".join(str(getattr(self.gd, "version", "") or "").split(".")[:2])
         dv = str(((getattr(self.stats, "version", None) or {}).get("version")) or "")
+        hv = str((getattr(self.gd, "aramhex", None) or {}).get("patch") or "")
+        if re.match(r"^\d+\.\d+$", hv) and re.match(r"^\d+\.\d+$", gv) and ver_tuple(hv) >= ver_tuple(gv):
+            return None                      # 5.6.0：国服已经有新版本的数据 → 不再手动修正（新数据里已经包含改动）
         if re.match(r"^\d+\.\d+$", gv) and re.match(r"^\d+\.\d+$", dv) and ver_tuple(dv) < ver_tuple(gv):
             return gv, dv
         return None
@@ -7840,7 +7845,7 @@ PATCH_PCT = {"nerf": -1.0, "buff": 0.5}
 
 
 EXPERT_AUGS = {
-    3159: (1, "UX"), 3060: (0, "P"),        # 16.22 新：RISE!（大招击杀刷新，适合大招伤害高 / 能收人头的）、One Hit Wonder
+    3159: (-1, "UX"), 3060: (-1, "P"),     # 5.6.0：16.22 实际数据 —— RISE! 平均 −5.6%、One Hit Wonder −2.6%        # 16.22 新：RISE!（大招击杀刷新，适合大招伤害高 / 能收人头的）、One Hit Wonder
     1001: (1, "K"), 1002: (-1, ""), 1004: (1, "Ss"), 1005: (1, "H"), 1006: (0, "DM"), 1007: (0, "A"),
     1011: (0, "U"), 1013: (0, "K"), 1015: (1, "H"), 1018: (1, "CK"), 1019: (1, "D"), 1020: (0, "K"),
     1022: (0, "A"), 1025: (-1, "K"), 1026: (-1, ""), 1027: (0, "D"), 1028: (1, "S"), 1029: (1, "SA"),
