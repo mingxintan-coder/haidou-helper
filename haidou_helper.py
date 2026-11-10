@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.6.0"
-APP_BUILD = 2026110901         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.7.0"
+APP_BUILD = 2026111001         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -3547,6 +3547,30 @@ class Advisor:
             own = 0.5 * ((avg["blueWinRate"] - avg["redWinRate"]) - league)
         return side * (league + own) / 2
 
+    def my_level(self):
+        """你最近的水平（估算隐藏分）；5 分钟内不重算"""
+        lv = getattr(self, "_lv", None)
+        if not lv or time.time() - lv[0] > 300:
+            lv = self._lv = (time.time(), recent_level())
+        return lv[1]
+
+    def band_shift(self, c):
+        """这个英雄在「你这个水平的局」比全体高 / 低多少（胜率）。
+           国服按玩家水平分三档；同一个英雄各档跟全体差 0.7%（娱乐）～1.6%（前 5%），最多差 4～5%
+           （每档每个英雄几万局以上，抽样误差只有 0.1% 左右，不是噪声）。你的水平用 band_weights 换成各档的份量"""
+        ah = getattr(self.gd, "aramhex", None) or {}
+        bh = ah.get("band_heroes") or {}
+        key = str((c or {}).get("key"))
+        allh = (ah.get("heroes") or {}).get(key)
+        w = band_weights(self.my_level()) if bh and allh and not ah.get("band") else {}
+        tot, acc = 0.0, 0.0
+        for b, x in w.items():
+            v = (bh.get(b) or {}).get(key)
+            if v and v.get("games", 0) >= 5000:
+                acc += x * (v["win_rate"] - allh["win_rate"])
+                tot += x
+        return acc if tot >= 0.99 else 0.0
+
     def champ_base_wr(self, cid):
         """4.1：英雄本身的胜率（当前版本）：国服 AramHex（所有英雄都有，几百万局）和 ARAMKit（下载过的）平均，
            各自按局数往 50% 收缩；都没有就用自建库。回传 (胜率, 局数)"""
@@ -3559,8 +3583,8 @@ class Advisor:
         cs = self.stats.champs.get(c.get("key")) if self.stats and c.get("key") else None
         if cs and cs.get("n") and cs.get("wr"):
             est.append((0.5 + (cs["wr"] - 0.5) * cs["n"] / (cs["n"] + 3000), cs["n"]))
-        if est:
-            return sum(x for x, _ in est) / len(est), sum(n for _, n in est)
+        if est:                                       # 5.7.0：再换成你这个水平的局（band_shift）
+            return sum(x for x, _ in est) / len(est) + self.band_shift(c), sum(n for _, n in est)
         db = getattr(self, "riotdb", None)
         x = db.champ(c.get("id", cid)) if db is not None else None
         return ((x["w"] + 0.5 * CHAMP_K) / (x["n"] + CHAMP_K), x["n"]) if x else (0.5, 0)
@@ -3856,6 +3880,9 @@ class Advisor:
             sa = self.side_adj(cid, side)
             if abs(sa) >= 0.005:
                 reasons.append((tr("蓝方") if side > 0 else tr("红方")) + " {0:+.1f}%".format(sa * 100))
+            bs = self.band_shift(c)
+            if abs(bs) >= 0.008:                     # 5.7.0：这个英雄在你这个水平的局明显更强 / 更弱
+                reasons.append(tr("你这个水平的局 {0:+.1f}%").format(bs * 100))
             pc = None
             pg = self.patch_gap()
             if pg:                                   # 5.1.0：新版本改过的英雄（网上数据还是旧版本时）
@@ -8460,7 +8487,32 @@ def load_aramhex(log=print, bracket="all"):
             log(tr('[数据] 下载失败 {0}: {1}').format("bands/high", e))
     if not ha:
         return None
-    return {"patch": str(meta.get("patch") or latest.get("patch") or ""),
+    band_heroes = {}
+    if latest.get("bands"):                  # 5.7.0：三个分段各自的英雄胜率（选英雄按你的水平用）
+        for b in ("casual", "mid", "high"):
+            try:
+                path = os.path.join(d, b + "_band_heroes.json")
+                e = files.get("bands/" + b + "/heroes.json")
+                hsha = e.get("sha256") if isinstance(e, dict) else None
+                if hsha and os.path.exists(path):
+                    with open(path, "rb") as f:
+                        stale = hashlib.sha256(f.read()).hexdigest() != hsha
+                else:
+                    stale = not os.path.exists(path) or time.time() - os.path.getmtime(path) > AH_REFRESH
+                if not STARTUP_OFFLINE["on"] and stale:
+                    url = AH_BASE + latest["path"].strip("/") + "/bands/" + b + "/heroes.json"
+                    req = urllib.request.Request(url, headers={"User-Agent": f"haidou-helper/{APP_VERSION}"})
+                    with urllib.request.urlopen(req, timeout=60) as r:
+                        raw = r.read()
+                    json.loads(raw.decode("utf-8"))
+                    with open(path + ".new", "wb") as f:
+                        f.write(raw)
+                    os.replace(path + ".new", path)
+                if os.path.exists(path):
+                    band_heroes[b] = read_json(path) or {}
+            except Exception as e_:  # noqa
+                log(tr('[数据] 下载失败 {0}: {1}').format("bands/" + b, e_))
+    return {"band_heroes": band_heroes, "patch": str(meta.get("patch") or latest.get("patch") or ""),
             "matches": ((meta.get("matches") or {}).get("valid") or latest.get("matches") or 0),
             "snapshot": meta.get("snapshot_at", ""), "heroes": heroes, "ha": ha, "band": band,
             "augs": out.get("augments.json") or {}, "prov": meta.get("provisional_augments") or {},
@@ -9327,6 +9379,44 @@ def estimate_mmr(intel):
             est += max(-60.0, min(60.0, 400 * ((w + 5) / (n + 10.0) - 0.5)))
         i["mmr"] = int(round(est / 10.0) * 10)
     return lobby
+
+
+def band_weights(level):
+    """5.7.0：估算的隐藏分 → 国服三个分段各占多少（娱乐 / 中分 / 前 5%）。
+       国服分段是按人数切的：娱乐约是后一半的人、前 5% 约是最上面一成。换到我们的分数：
+       ≤1450 全算娱乐，1450～1850 娱乐渐变到中分，1850～2150 中分，2150～2450 渐变到前 5%。
+       对照是估的（两边的分数不是同一把尺），所以边界做成渐变，不是一刀切"""
+    if level is None:
+        return {}
+    if level <= 1450:
+        return {"casual": 1.0}
+    if level < 1850:
+        x = (level - 1450) / 400.0
+        return {"casual": 1 - x, "mid": x}
+    if level <= 2150:
+        return {"mid": 1.0}
+    if level < 2450:
+        x = (level - 2150) / 300.0
+        return {"mid": 1 - x, "high": x}
+    return {"high": 1.0}
+
+
+def recent_level(n=20):
+    """你最近 n 局的平均水平（每局同场的人估出来的隐藏分；本机 ranks_log.jsonl）。不到 5 局回传 None"""
+    try:
+        with open(os.path.join(APP_DIR, "ranks_log.jsonl"), encoding="utf-8") as f:
+            rows = [json.loads(x) for x in f.read().splitlines()[-n:] if x.strip()]
+    except (OSError, ValueError):
+        return None
+    lv = []
+    for r in rows:
+        try:
+            lob = estimate_mmr([{"rank": v} for v in (r.get("p") or {}).values()])
+        except Exception:  # noqa
+            lob = None
+        if lob:
+            lv.append(lob)
+    return sum(lv) / len(lv) if len(lv) >= 5 else None
 
 
 def score_tier_text(sc):

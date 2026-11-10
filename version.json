@@ -1,18 +1,18 @@
 {
- "version": "5.6.0",
- "date": "2026-11-09",
+ "version": "5.7.0",
+ "date": "2026-11-10",
  "notes": [
-  "国服已有 16.22 数据：停用新版本手动修正（实测猜得不准）",
-  "新增幅 RISE!、One Hit Wonder 按实际数据改成负面",
-  "增幅权重用 16.22（1979 万局）重新校准"
+  "选英雄的预估胜率按你的水平算（国服三个分段的英雄胜率）",
+  "国服已有 16.22 数据：停用新版本手动修正",
+  "增幅权重用 16.22 重新校准"
  ],
  "files": {
-  "haidou_helper.py": "148463adae961786ed6f3a9475cb79dc4059dcb8cea8bfee8c87c90e5ca36572",
-  "lang_en.py": "cbb68d2da6aa017fe6824ea262ee729dcac9b8e4fbb47c3e02b95cc671151a40",
-  "README.md": "24896e8bf56657e25f0e536acd05111ea3c69bc1805b97d0169e0425cd95b14f",
+  "haidou_helper.py": "82d9043397212fbc3ebde883745d19e90092c3250d6dbfbc52e8946ce4eedcbe",
+  "lang_en.py": "5acdced3ba8a6347ffd4d6ac2d280d45940d56059399b36fd0ce9decdf80d287",
+  "README.md": "1743031f44983fd065719f0d358cd0ab32b40fe858ac1c0a81ff5b6f1c676ca3",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026110901
+ "build": 2026111001
 }
