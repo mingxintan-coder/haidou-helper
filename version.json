@@ -1,18 +1,18 @@
 {
- "version": "5.9.0",
+ "version": "5.10.0",
  "date": "2026-11-10",
  "notes": [
-  "情报页不再清空：对局结束、重开程序都留着上一局的玩家信息",
-  "标题下多一行「现在做什么」；战况条最多 4 行；输入法三个修正",
-  "选英雄的预估胜率按你的水平算"
+  "界面可选：标准 / A 一句话 / B 贴着游戏 / C 边条（⋯ → 界面）",
+  "情报页标出遇到过的玩家，加隐藏分走势图",
+  "赛后一句话复盘；选英雄时直接说换不换"
  ],
  "files": {
-  "haidou_helper.py": "c21f2276beeb9da0d1fd75987da1992fa5dff93bb61d9cb305aca38c5ffa9451",
-  "lang_en.py": "857669317759d9fff6a35a494997717a6165b4d651661ecb0906a62f385d4e1f",
-  "README.md": "591e0b898d305a7f8a45adbd9246d9e643fa8b15733ab193180c1abbe1c6df10",
+  "haidou_helper.py": "42e02e83087f8850b1259f415146f83b4776cf8509bbae90312c9101abd697e3",
+  "lang_en.py": "cb28389668e955f522ab029387ab361626109c3e7afc153b70bd48e8c195b721",
+  "README.md": "4b2bbaa532c3312d1323323d1c6655af3cada150119ae3394eaa1cc710640f1e",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026111003
+ "build": 2026111004
 }

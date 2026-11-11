@@ -1109,3 +1109,15 @@ EN.update({'先刷新': 'Reroll first', '换一张平均 {0:+.1f}%；不刷就�
            '现在买（复活 {0:.0f} 秒）': 'Buy now (respawn {0:.0f}s)', '搜「{0}」': 'search "{0}"', '再买 {0}': 'then {0}',
            '点一下复制装备名': 'Click to copy the item name', '下一件': 'Next item'})
 EN.update({'上一局': 'Previous game'})
+EN.update({'下局注意': 'Next game', '三选一有 {0}/{1} 次没选第一推荐': '{0}/{1} augment picks were not the top recommendation',
+ '阵亡 {0} 次': '{0} deaths', '，比这个英雄平均多 {0:.0f} 次': ', {0:.0f} more than this champion’s average',
+ '；最多的是{0}（{1} 次）': '; mostly {0} ({1}×)', '被围杀': 'collapsed on', '{0} 件装备没照推荐：{1}': '{0} items off the recommendation: {1}',
+ '这局': 'This game', '照推荐打的，没有明显问题': 'Played to the recommendations; nothing obvious to fix',
+ '最好的': 'Best pick', '预估胜率 {0:.0f}%': 'est. win rate {0:.0f}%', '换成': 'Swap to', '预估 {0:.0f}%，比{1}高 {2:.0f}%': 'est. {0:.0f}%, {2:.0f}% above {1}',
+ '不用换': 'Keep', '等待对局': 'Waiting for a game', '胜率': 'Win %', '现在买': 'Buy now', '选第 {0} 张': 'Pick card {0}', '增幅': 'Augment',
+ '升级': 'Level up', '加点': 'Skills', '连招': 'Combo', '出装': 'Build', '加点 / 连招': 'Skills / combo',
+ '标准（完整视窗）': 'Standard (full window)', 'A 一句话（只写现在做什么）': 'A One line (just what to do now)',
+ 'B 贴着游戏（横条，三选一对着三张卡）': 'B On the game (bar; verdicts under the three cards)', 'C 边条（一条窄条）': 'C Rail (narrow strip)',
+ '界面': 'Layout', '遇过{0}次': 'met {0}×', '以前遇到过 {0} 次；上次是{1}{2}': 'Met {0}× before; last time as {1}{2}', '对手': 'opponent', '，你们': ', you ',
+ '你的隐藏分走势': 'Your MMR trend', '最近 {0} 局 · 平均 {1}': 'last {0} games · avg {1}',
+ '灰点＝每一局同场玩家估出来的水平（单局波动大）；青线＝最近 5 局平均。只是估算。': 'Grey dots: lobby level per game (noisy). Cyan line: 5-game average. Estimates only.'})

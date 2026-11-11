@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.9.0"
-APP_BUILD = 2026111003         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.10.0"
+APP_BUILD = 2026111004         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -6093,6 +6093,26 @@ class Engine:
                 estimate_mmr(out)                     # 5.2.0：估每个人的隐藏分
             except Exception:  # noqa
                 pass
+            try:                                  # 5.10.0：以前遇到过的人（只存在本机 seen_players.json）
+                seen = read_json(SEEN_FILE) or {}
+                gid_now = gdat.get("gameId")
+                for info in out:
+                    pu = info.get("puuid")
+                    if not pu or info.get("me"):
+                        continue
+                    old = seen.get(pu) or {}
+                    if old.get("n") and (old.get("last") or {}).get("gid") != gid_now:
+                        info["seen"] = {"n": old["n"], "ally": (old.get("last") or {}).get("ally"),
+                                        "win": (old.get("last") or {}).get("win"), "t": (old.get("last") or {}).get("t")}
+                    if (old.get("last") or {}).get("gid") != gid_now:
+                        seen[pu] = {"n": (old.get("n") or 0) + 1, "name": info.get("name") or old.get("name") or "",
+                                    "last": {"t": time.time(), "ally": bool(info.get("ally")), "gid": gid_now, "win": None}}
+                if len(seen) > 6000:              # 只留最近遇到的 5000 人
+                    keep = sorted(seen.items(), key=lambda kv: -((kv[1].get("last") or {}).get("t") or 0))[:5000]
+                    seen = dict(keep)
+                write_json(SEEN_FILE, seen)
+            except Exception:  # noqa
+                pass
             for info in out:
                 info["note"] = self.intel_note(info)
                 info.pop("gids", None)
@@ -6852,6 +6872,16 @@ class Engine:
 
     def _finish_record(self, g, win, gid):
         g["win"] = win
+        try:                                           # 5.10.0：记下这局遇到的人是赢是输（我方的结果）
+            if win is not None and g.get("intel"):
+                seen = read_json(SEEN_FILE) or {}
+                for i in g["intel"]:
+                    e = seen.get(i.get("puuid") or "")
+                    if e and e.get("last") and e["last"].get("win") is None:
+                        e["last"]["win"] = bool(win)
+                write_json(SEEN_FILE, seen)
+        except Exception:  # noqa
+            pass
         try:
             g["moments"] = self.key_moments(g)
         except Exception:  # noqa
@@ -7138,6 +7168,35 @@ class Engine:
         return {"name": name, "champ": best["champ"], "champ_name": champ, "k": best.get("k", 0), "d": best.get("d", 0),
                 "a": best.get("a", 0), "build": build, "spike": spike, "lines": lines}
 
+    def review_one(self, g):
+        """5.10.0：赛后只说一件最要紧的事 → (动词, 一句话)。顺序：增幅没选推荐 > 阵亡太多 > 出装没照推荐 > 没什么问题"""
+        af = g.get("aug_follow") or []
+        miss = sum(1 for _, ok in af if not ok)
+        if af and miss:
+            return tr("下局注意"), tr("三选一有 {0}/{1} 次没选第一推荐").format(miss, len(af))
+        dv = g.get("death") or {}
+        d = dv.get("deaths", 0) or (g.get("kda") or [0, 0, 0])[1]
+        avg = None
+        try:
+            cs = self.advisor.stats.get(self.gd.champ(g["champ"])["key"]) if self.advisor.stats else None
+            avg = ((cs or {}).get("avg") or {}).get("deaths")
+            if avg:
+                avg = avg * g["len"] / 60.0 if avg < 3 else avg     # 有的资料是每分钟
+        except Exception:  # noqa
+            avg = None
+        if d >= 6 and (avg is None or d >= avg + 2):
+            cause = max((("first", tr("团战第一个倒下")), ("gank", tr("被围杀")), ("alone", tr("落单被抓"))),
+                        key=lambda x: dv.get(x[0], 0))
+            txt = tr("阵亡 {0} 次").format(d) + (tr("，比这个英雄平均多 {0:.0f} 次").format(d - avg) if avg else "")
+            if dv.get(cause[0], 0) >= 2:
+                txt += tr("；最多的是{0}（{1} 次）").format(cause[1], dv[cause[0]])
+            return tr("下局注意"), txt
+        f = [x for x in g.get("item_follow", []) if x[1] is not None]
+        off = [self.gd.item_name(i) for i, ok in f if ok is False]
+        if len(off) >= 2:
+            return tr("下局注意"), tr("{0} 件装备没照推荐：{1}").format(len(off), tr("、").join(off[:3]))
+        return (tr("这局"), tr("照推荐打的，没有明显问题"))
+
     def review(self, g):
         """赛后复盘的一段文字"""
         gd = self.gd
@@ -7210,7 +7269,11 @@ class Engine:
             detail = (detail + "\n" if detail else "") + pl
         for mv in g.get("mvp") or []:
             detail = (detail + "\n" if detail else "") + tr("值得学：") + mv["lines"][0]
-        return {"text": head + (" · " + " · ".join(parts) if parts else ""), "detail": detail,
+        try:
+            one = self.review_one(g)
+        except Exception:  # noqa
+            one = None
+        return {"one": one, "text": head + (" · " + " · ".join(parts) if parts else ""), "detail": detail,
                 "curve": g.get("curve") or [], "moments": [{k: m.get(k) for k in ("kind", "t", "from", "to")}
                                                            for m in g.get("moments") or []],
                 "items": [gd.item_name(i) for i in g.get("items", [])], "augs": g.get("augs", [])}
@@ -9426,6 +9489,27 @@ def recent_level(n=20):
         if lob:
             lv.append(lob)
     return sum(lv) / len(lv) if len(lv) >= 5 else None
+
+
+SEEN_FILE = os.path.join(APP_DIR, "seen_players.json")
+
+
+def level_history(n=30):
+    """5.10.0：最近 n 局每局估出来的水平（隐藏分走势用）→ [(时间, 分数)]"""
+    try:
+        with open(os.path.join(APP_DIR, "ranks_log.jsonl"), encoding="utf-8") as f:
+            rows = [json.loads(x) for x in f.read().splitlines()[-n:] if x.strip()]
+    except (OSError, ValueError):
+        return []
+    out = []
+    for r in rows:
+        try:
+            lob = estimate_mmr([{"rank": v} for v in (r.get("p") or {}).values()])
+        except Exception:  # noqa
+            lob = None
+        if lob:
+            out.append((r.get("ts") or 0, lob))
+    return out
 
 
 def score_tier_text(sc):
@@ -11899,13 +11983,17 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         w_.bind("<Button-1>", lambda e: st["now_copy"] and st["now_copy"]())
         hover(w_, lambda: st.get("now_tip", ""))
 
-    def update_now(rec):
-        verb = what = sub = tip = ""
+    def now_info(rec):
+        """现在做什么 → {"verb", "what", "sub", "tip", "col", "copy", "kind"}；没有就回传 None。主视窗和三种精简界面都用这个"""
+        rec = rec or {}
+        verb = what = sub = tip = kind = ""
         col, copy = ACC, None
         augs = rec.get("augs") or []
         shop = rec.get("shop") or {}
         items = rec.get("items") or []
+        rv = st.get("review")
         if rec.get("cand_mode") and augs:
+            kind = "aug"
             rr = rec.get("aug_reroll")
             if rr and rr.get("act") == "reroll":
                 verb, what, col = tr("先刷新"), rr["card"], WARN
@@ -11915,6 +12003,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 sub = "   ".join("{0} {1}".format(fmt_total(d), d["name"]) for d in augs[:3])
             tip = "\n".join("{0}  {1}：{2}".format(fmt_total(d), d["name"], d.get("reason", "")) for d in augs[:3])
         elif shop.get("buy") and shop.get("names"):
+            kind = "buy"
             names, keys = list(shop["names"]), list(shop.get("keys") or [])
             verb, what, col = tr("现在买（复活 {0:.0f} 秒）").format(shop.get("respawn", 0)), names[0], WARN
             bits = []
@@ -11925,31 +12014,323 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             sub = "   ".join(bits)
             tip = tr("点一下复制装备名")
             copy = lambda n=names[0]: copy_item(n)
+        elif rv and time.time() < rv[1] + 35 and (rv[0] or {}).get("one"):
+            kind = "review"                       # 5.10.0：赛后一句话（留 60 秒）
+            verb, what = rv[0]["one"]
+            col = FG
+            sub = rv[0].get("text", "")
+        elif items and "pct" in items[0]:         # 5.10.0：选英雄 → 换不换
+            kind = "champ"
+            mine = next((d for d in items if d.get("mine")), None)
+            best = items[0]
+            if mine is None:
+                verb, what = tr("最好的"), best["name"]
+                sub = tr("预估胜率 {0:.0f}%").format(best["pct"] * 100)
+            elif best is not mine and best["pct"] - mine["pct"] >= 0.01:
+                verb, what, col = tr("换成"), best["name"], WARN
+                sub = tr("预估 {0:.0f}%，比{1}高 {2:.0f}%").format(best["pct"] * 100, mine["name"],
+                                                               (best["pct"] - mine["pct"]) * 100)
+            else:
+                verb, what, col = tr("不用换"), mine["name"], FG
+                sub = tr("预估胜率 {0:.0f}%").format(mine["pct"] * 100)
+            tip = "\n".join("{0}  {1}：{2}".format(fmt_total(d), d["name"], d.get("reason", "")) for d in items[:4])
         elif items and "total" in items[0] and rec.get("game_time") is not None:
+            kind = "item"
             d = items[0]
             verb, what, col = tr("下一件"), d["name"], FG
             sub = tr("搜「{0}」").format(d["key"]) if d.get("key") else ""
             tip = (d.get("reason") or "") + "\n" + tr("点一下复制装备名")
             copy = lambda n=d["name"]: copy_item(n)
         if not what:
+            return None
+        return {"verb": verb, "what": what, "sub": sub, "tip": tip.strip(), "col": col, "copy": copy, "kind": kind}
+
+    def update_now(rec):
+        ni = now_info(rec)
+        try:
+            update_hud(rec, ni)
+        except Exception:  # noqa
+            log_crash("hud failed", sys.exc_info())
+        if not ni:
             now_box.pack_forget()
             now_line_.pack_forget()
             return
-        now_verb.config(text=verb)
-        now_what.config(text=what, fg=col)
-        now_sub.config(text=sub)
-        if sub:
+        now_verb.config(text=ni["verb"])
+        now_what.config(text=ni["what"], fg=ni["col"])
+        now_sub.config(text=ni["sub"])
+        if ni["sub"]:
             now_sub.pack(fill="x")
         else:
             now_sub.pack_forget()
-        st["now_copy"], st["now_tip"] = copy, tip.strip()
+        st["now_copy"], st["now_tip"] = ni["copy"], ni["tip"]
         for w_ in (now_box, now_verb, now_what, now_sub):
-            w_.config(cursor="hand2" if copy else "arrow")
+            w_.config(cursor="hand2" if ni["copy"] else "arrow")
         if not now_box.winfo_ismapped():
             anchor = strip_line if strip_line.winfo_ismapped() else header
             now_box.pack(fill="x", after=anchor)
             now_line_.pack(fill="x", after=now_box)
             fit()
+
+    # ---------- 5.10.0：三种精简界面（⋯ → 界面）----------
+    #   A 一句话：一个小框只写现在做什么；B 贴着游戏：一条横条，三选一时三格对着三张卡；C 边条：一条窄条，每格一个数字。
+    #   精简界面是另外一个小视窗：点一下打开 / 关掉完整视窗，右键是选单，可以拖动（位置记住）。
+    st["layout"] = load_ui_cfg().get("layout", "std")
+    hud = {"win": None, "key": None, "drag": None}
+
+    def hud_pos(kind):
+        pos = (load_ui_cfg().get("hud_pos") or {}).get(kind)
+        if pos:
+            return int(pos[0]), int(pos[1])
+        sw = root.winfo_screenwidth()
+        if kind == "b":
+            return int(sw * 0.27), int(sh * 0.74)
+        if kind == "c":
+            return sw - int(80 * dpi * st["k"]), int(sh * 0.18)
+        return sw - W() - 10, int(sh * 0.18)
+
+    def hud_toggle_main():
+        st["main_shown"] = not st.get("main_shown")
+        if st["main_shown"]:
+            root.deiconify()
+            root.attributes("-topmost", True)
+            st["pinned"] = True
+            set_expanded(True)
+        else:
+            st["pinned"] = False
+            root.withdraw()
+
+    def hud_build():
+        if hud["win"] is not None:
+            try:
+                hud["win"].destroy()
+            except tk.TclError:
+                pass
+        hud["win"], hud["key"] = None, None
+        st["main_shown"] = False
+        kind = st["layout"]
+        if kind == "std":
+            if root.state() == "withdrawn":
+                root.deiconify()
+            return
+        w = tk.Toplevel(root)
+        w.overrideredirect(True)
+        w.attributes("-topmost", True)
+        try:
+            w.attributes("-alpha", alpha)
+        except tk.TclError:
+            pass
+        w.configure(bg=LINE)
+        inner = tk.Frame(w, bg=BG)
+        inner.pack(fill="both", expand=True, padx=1, pady=1)
+        hud["win"], hud["inner"] = w, inner
+        x, y = hud_pos(kind)
+        w.geometry("+{0}+{1}".format(x, y))
+        root.withdraw()
+
+    def hud_bind(w):
+        def press(e):
+            hud["drag"] = (e.x_root, e.y_root, hud["win"].winfo_x(), hud["win"].winfo_y(), False)
+
+        def move(e):
+            d = hud["drag"]
+            if not d:
+                return
+            dx, dy = e.x_root - d[0], e.y_root - d[1]
+            if abs(dx) + abs(dy) > 4:
+                hud["drag"] = d[:4] + (True,)
+                hud["win"].geometry("+{0}+{1}".format(d[2] + dx, d[3] + dy))
+
+        def release(e):
+            d, hud["drag"] = hud["drag"], None
+            if d and d[4]:
+                c = load_ui_cfg()
+                hp = dict(c.get("hud_pos") or {})
+                hp[st["layout"]] = [hud["win"].winfo_x(), hud["win"].winfo_y()]
+                c["hud_pos"] = hp
+                save_ui_cfg(c)
+            elif d:
+                hud_toggle_main()
+        w.bind("<Button-1>", press)
+        w.bind("<B1-Motion>", move)
+        w.bind("<ButtonRelease-1>", release)
+        w.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
+
+    def hud_data(rec, ni):
+        rec = rec or {}
+        g = rec.get("guide") or {}
+        intel = (getattr(engine, "cur_game", None) or {}).get("intel") or st.get("intel_last") or []
+        em = [i["mmr"] for i in intel if not i.get("ally") and i.get("mmr")]
+        augs = rec.get("augs") or []
+        order = [x if isinstance(x, str) else (x[0] if x else "") for x in (getattr(engine, "manual", {}) or {}).get("cand") or []]
+        cols = None
+        if rec.get("cand_mode") and augs:
+            by = {d["name"]: d for d in augs}
+            if len(order) == 3 and all(n in by for n in order):
+                cols = [(n, by[n].get("total", 0.0), by[n] is augs[0]) for n in order]
+            else:
+                cols = [(d["name"], d.get("total", 0.0), d is augs[0]) for d in augs[:3]]
+        items = [d for d in (rec.get("items") or []) if "total" in d]
+        su = rec.get("skill_up")
+        sc_ = scanner
+        return {"ni": {k: v for k, v in (ni or {}).items() if k not in ("copy", "tip")},
+                "wp": round(rec["wp"], 2) if rec.get("wp") is not None else None,
+                "order": (g.get("skill_order") or "").replace(" ", ""), "combo": g.get("combo_keys") or "",
+                "up": su["key"] if su else "", "enemy": int(round(sum(em) / len(em), -1)) if em else None,
+                "cols": cols, "path": [(d["name"], d.get("key") or "") for d in items[:3]],
+                "card_x": list(getattr(sc_, "card_x", None) or []) if cols else []}
+
+    def update_hud(rec, ni):
+        kind = st["layout"]
+        if kind == "std" or hud["win"] is None:
+            return
+        if not st.get("main_shown") and root.state() != "withdrawn":
+            root.withdraw()                    # 精简界面：完整视窗收着，点精简视窗才打开
+        d = hud_data(rec, ni)
+        key = repr((kind, d, st["k"]))
+        if key == hud["key"]:
+            return
+        hud["key"] = key
+        old = hud["inner"]                     # 先把新的内容排好再换上去（不会闪一下空白）
+        inner = tk.Frame(hud["win"], bg=BG)
+        hud["inner"] = inner
+        old.pack_forget()
+        inner.pack(fill="both", expand=True, padx=1, pady=1)
+        hud["win"].after(1, old.destroy)
+        n = d["ni"]
+        k = dpi * st["k"]
+        made = [inner]
+
+        def L(parent, text, fg=FG, font="small", **kw):
+            lb = Label(parent, text=text, bg=kw.pop("bg", BG), fg=fg, font=F[font], **kw)
+            made.append(lb)
+            return lb
+        wp = "{0:.0f}%".format(d["wp"] * 100) if d.get("wp") is not None else "—"
+        if kind == "a":                                    # ---- A 一句话
+            box = tk.Frame(inner, bg=BG, padx=12, pady=8)
+            box.pack(fill="x")
+            made.append(box)
+            L(box, n.get("verb") or tr("等待对局"), DIM, anchor="w").pack(fill="x")
+            L(box, n.get("what") or "—", n.get("col", FG), "title", anchor="w", justify="left",
+              wraplength=W() - int(28 * dpi)).pack(fill="x")
+            if n.get("sub"):
+                L(box, n["sub"], SUB, anchor="w", justify="left", wraplength=W() - int(28 * dpi)).pack(fill="x")
+            if d["order"] or d["combo"] or d["up"]:
+                tk.Frame(inner, bg=LINE, height=1).pack(fill="x")
+                row = tk.Frame(inner, bg=BG, padx=12, pady=5)
+                row.pack(fill="x")
+                made.append(row)
+                if d["up"]:
+                    L(row, tr("升 {0}").format(d["up"]) + "   ", WARN, "key").pack(side="left")
+                if d["order"]:
+                    L(row, tr("加点 "), DIM).pack(side="left")
+                    L(row, d["order"] + "   ", FG, "key").pack(side="left")
+                if d["combo"]:
+                    L(row, tr("连招 "), DIM).pack(side="left")
+                    L(row, d["combo"], ACC, "key").pack(side="left")
+            hud["win"].geometry("{0}x{1}".format(W(), max(1, inner.winfo_reqheight() + 2)))
+            hud["win"].update_idletasks()
+            hud["win"].geometry("{0}x{1}".format(W(), inner.winfo_reqheight() + 2))
+        elif kind == "c":                                  # ---- C 边条
+            def cell(label, text, fg=FG, bg=BG, font="score"):
+                fr = tk.Frame(inner, bg=bg, padx=4, pady=6)
+                fr.pack(fill="x")
+                made.append(fr)
+                L(fr, label, DIM, bg=bg).pack()
+                L(fr, text, fg, font, bg=bg, wraplength=int(70 * k), justify="center").pack()
+                tk.Frame(inner, bg=LINE, height=1).pack(fill="x")
+            cell(tr("胜率"), wp)
+            nk = n.get("kind")
+            if nk == "buy":
+                code = (d["path"][0][1] if d["path"] and d["path"][0][0] == n.get("what") else "") or n.get("what", "")
+                cell(tr("现在买"), code, WARN, WARN_BG, "key")
+            elif d["path"]:
+                cell(tr("下一件"), d["path"][0][1] or d["path"][0][0], FG, BG, "key")
+            if d["cols"]:
+                best = next((i for i, c in enumerate(d["cols"]) if c[2]), 0)
+                txt = tr("先刷新") if n.get("verb") == tr("先刷新") else tr("选第 {0} 张").format(best + 1)
+                cell(tr("增幅"), txt, ACC, ACC_BG, "key")
+            elif nk in ("champ", "review"):
+                cell(n.get("verb", ""), n.get("what", ""), n.get("col", FG), BG, "key")
+            if d["up"]:
+                cell(tr("升级"), d["up"], WARN, BG, "key")
+            if d["order"]:
+                cell(tr("加点"), d["order"], FG, BG, "key")
+            if d["combo"]:
+                cell(tr("连招"), d["combo"], ACC, BG, "key")
+            if d["enemy"]:
+                cell(tr("对面"), "≈{0}".format(d["enemy"]), SUB, BG, "num")
+            hud["win"].update_idletasks()
+            hud["win"].geometry("{0}x{1}".format(int(76 * k), inner.winfo_reqheight() + 2))
+        else:                                              # ---- B 贴着游戏
+            x0, y0 = hud["win"].winfo_x(), hud["win"].winfo_y()
+            if d["cols"]:
+                cw = int(150 * k)
+                xs = d["card_x"] if len(d["card_x"]) == 3 else None
+                width = int(xs[2] - xs[0] + cw) if xs else cw * 3 + int(24 * k)
+                row = tk.Frame(inner, bg=BG, width=width, height=int(54 * k))
+                row.pack()
+                row.pack_propagate(False)
+                made.append(row)
+                for i, (name, tot, best) in enumerate(d["cols"]):
+                    bg = ACC_BG if best else BG
+                    fr = tk.Frame(row, bg=bg)
+                    cx = (xs[i] - xs[0] + cw / 2.0) if xs else (cw / 2.0 + i * (cw + 12 * k))
+                    fr.place(x=int(cx - cw / 2.0), y=0, width=cw, relheight=1)
+                    made.append(fr)
+                    L(fr, "{0:+.1f}%".format(tot), ACC if best else (BAD if tot < 0 else FG), "score", bg=bg).pack(pady=(4, 0))
+                    L(fr, tr("选这张") if best else name, FG if best else SUB, bg=bg).pack()
+                if xs:
+                    x0 = int(xs[0] - cw / 2.0)
+                hud["win"].geometry("{0}x{1}+{2}+{3}".format(width + 2, int(54 * k) + 2, x0, y0))
+            else:
+                row = tk.Frame(inner, bg=BG)
+                row.pack()
+                made.append(row)
+
+                def seg(label, parts):
+                    fr = tk.Frame(row, bg=BG, padx=10, pady=5)
+                    fr.pack(side="left")
+                    made.append(fr)
+                    L(fr, label, DIM, anchor="w").pack(fill="x")
+                    ln = tk.Frame(fr, bg=BG)
+                    ln.pack(fill="x")
+                    made.append(ln)
+                    for text, fg, font in parts:
+                        L(ln, text, fg, font).pack(side="left")
+                    tk.Frame(row, bg=LINE, width=1).pack(side="left", fill="y")
+                seg(tr("胜率"), [(wp, FG, "score")])
+                if n.get("kind") in ("buy", "champ", "review"):
+                    seg(n.get("verb", ""), [(n.get("what", ""), n.get("col", FG), "key"),
+                                            ("   " + n["sub"] if n.get("sub") else "", SUB, "small")])
+                elif d["path"]:
+                    parts = []
+                    for i, (nm_, code) in enumerate(d["path"]):
+                        parts.append((nm_, ACC if i == 0 else SUB, "key" if i == 0 else "small"))
+                        if i == 0 and code:
+                            parts.append(("  " + code, DIM, "code"))
+                        if i < len(d["path"]) - 1:
+                            parts.append(("  →  ", DIM, "small"))
+                    seg(tr("出装"), parts)
+                if d["order"] or d["combo"] or d["up"]:
+                    seg(tr("加点 / 连招"), [((tr("升 {0}").format(d["up"]) + "   ") if d["up"] else "", WARN, "key"),
+                                         (d["order"] + "   ", FG, "key"), (d["combo"], ACC, "key")])
+                hud["win"].update_idletasks()
+                hud["win"].geometry("{0}x{1}+{2}+{3}".format(inner.winfo_reqwidth() + 2, inner.winfo_reqheight() + 2,
+                                                             hud_pos("b")[0], y0))
+        for w in made:
+            hud_bind(w)
+
+    def set_layout(kind):
+        st["layout"] = kind
+        c = load_ui_cfg()
+        c["layout"] = kind
+        save_ui_cfg(c)
+        st["pinned"] = False
+        hud_build()
+        try:
+            update_hud(current["rec"], now_info(current["rec"]))
+        except Exception:  # noqa
+            log_crash("hud failed", sys.exc_info())
 
     # ---------- 单行模式 ----------
     mini = Label(root, text=tr("等待对局…"), bg=BG, fg=FG, font=F["tip"], anchor="w", justify="left", padx=8, pady=5)
@@ -12371,6 +12752,9 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 ]
                 party = tags[:1] if (i.get("party") or 0) >= 2 else []
                 rec_ = tags[len(party):]
+                sn = i.get("seen")
+                if sn and not party:                       # 5.10.0：以前遇到过
+                    party = [(tr("遇过{0}次").format(sn["n"]), ACC)]
                 cells.append(Label(tbl, text=party[0][0] if party else "", bg=BG, fg=party[0][1] if party else DIM,
                                    font=F["small"], anchor="e"))
                 cells.append(Label(tbl, text=rec_[0][0] if rec_ else "", bg=BG, fg=rec_[0][1] if rec_ else DIM,
@@ -12383,11 +12767,47 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                     tip.append(tr("隐藏分≈{0}（约 {1}）").format(i["mmr"], score_tier_text(max(0.0, (i["mmr"] - 800) / 70.0))))
                 if i.get("may_n"):
                     tip.append(tr("近 20 局海斗 {0}/{1}").format(i["may_w"], i["may_n"]))
+                sn = i.get("seen")
+                if sn:
+                    res = tr("赢了") if sn.get("win") else tr("输了") if sn.get("win") is False else ""
+                    tip.append(tr("以前遇到过 {0} 次；上次是{1}{2}").format(
+                        sn["n"], tr("队友") if sn.get("ally") else tr("对手"), (tr("，你们") + res) if res else ""))
                 if i.get("note"):
                     tip.append(i["note"])
                 t_ = "\n".join(tip)
                 for w in cells:
                     hover(w, lambda t_=t_: t_)
+        try:                                               # 5.10.0：隐藏分走势（最近 30 局，每局同场的人估出来的水平）
+            hist = level_history(30)
+            if len(hist) >= 4:
+                vals = [v for _, v in hist]
+                head = tk.Frame(intel_box, bg=BG)
+                head.pack(fill="x", padx=4, pady=(10, 2))
+                Label(head, text=tr("你的隐藏分走势"), bg=BG, fg=FG, font=F["key"]).pack(side="left")
+                Label(head, text=tr("最近 {0} 局 · 平均 {1}").format(len(vals), int(round(sum(vals) / len(vals), -1))),
+                      bg=BG, fg=DIM, font=F["small"]).pack(side="right")
+                tk.Frame(intel_box, bg=LINE, height=1).pack(fill="x", padx=4)
+                k_ = dpi * st["k"]
+                cw_, ch_ = W() - int(16 * k_), int(54 * k_)
+                cv = tk.Canvas(intel_box, bg=BG, highlightthickness=0, width=cw_, height=ch_)
+                cv.pack(padx=4, pady=(4, 2))
+                sm_ = [sum(vals[max(0, i - 4):i + 1]) / len(vals[max(0, i - 4):i + 1]) for i in range(len(vals))]   # 5 局平均
+                lo, hi = min(vals + sm_), max(vals + sm_)
+                span = max(100.0, hi - lo)
+                left, right, top, bot = int(4 * k_), cw_ - int(44 * k_), int(6 * k_), ch_ - int(6 * k_)
+
+                def xy(i, v):
+                    return left + (right - left) * i / max(1, len(vals) - 1), bot - (bot - top) * (v - lo) / span
+                for i, v in enumerate(vals):               # 每局一个点（单局估计波动大，所以点是淡的）
+                    x, y = xy(i, v)
+                    cv.create_oval(x - 1.5 * k_, y - 1.5 * k_, x + 1.5 * k_, y + 1.5 * k_, fill=DIM, outline="")
+                cv.create_line(*[c for i, v in enumerate(sm_) for c in xy(i, v)], fill=ACC, width=max(1, round(1.6 * k_)))
+                x, y = xy(len(sm_) - 1, sm_[-1])
+                cv.create_oval(x - 3 * k_, y - 3 * k_, x + 3 * k_, y + 3 * k_, fill=ACC, outline="")
+                cv.create_text(right + int(6 * k_), y, text=str(int(round(sm_[-1], -1))), fill=FG, font=F["num"], anchor="w")
+                hover(cv, lambda: tr("灰点＝每一局同场玩家估出来的水平（单局波动大）；青线＝最近 5 局平均。只是估算。"))
+        except Exception:  # noqa
+            pass
         fit()
 
     show_intel(None)                       # 开程序就把上一局的情报放回情报页
@@ -12508,6 +12928,12 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     for label, k in ((tr("小"), 0.85), (tr("中"), 1.0), (tr("大"), 1.2), (tr("特大"), 1.45)):
         sizes.add_radiobutton(label=label, variable=size_var, value=k, command=lambda k=k: set_scale(k))
     menu.add_cascade(label=tr("字号"), menu=sizes)
+    layout_var = tk.StringVar(value=st["layout"])
+    lay = tk.Menu(menu, tearoff=0, bg=RAISE, fg=FG, activebackground=ACC_BG, font=F["small"])
+    for label, kv in ((tr("标准（完整视窗）"), "std"), (tr("A 一句话（只写现在做什么）"), "a"),
+                      (tr("B 贴着游戏（横条，三选一对着三张卡）"), "b"), (tr("C 边条（一条窄条）"), "c")):
+        lay.add_radiobutton(label=label, variable=layout_var, value=kv, command=lambda kv=kv: set_layout(kv))
+    menu.add_cascade(label=tr("界面"), menu=lay)
     if stats_obj is not None:
         br = tk.Menu(menu, tearoff=0, bg=RAISE, fg=FG, activebackground=ACC_BG, font=F["small"])
         br.add_radiobutton(label=tr("全部分段"), variable=bracket_var, value="all", command=lambda: switch_bracket("all"))
@@ -13333,12 +13759,22 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         # 3.0.7：不是你按「—」最小化的，却被缩到工作列 / 藏起来（点游戏、游戏抢前景时 Windows 会这样做）：马上还原并回到最上层
         try:
             now = time.time()
-            if not st.get("minimized") and root.state() != "normal":
+            hidden_by_layout = st.get("layout", "std") != "std" and not st.get("main_shown")
+            if hud.get("win") is not None and now - st.get("hud_top_t", 0) > 2:
+                st["hud_top_t"] = now              # 精简视窗也要一直在最上层
+                try:
+                    hud["win"].attributes("-topmost", True)
+                    hud["win"].lift()
+                except tk.TclError:
+                    pass
+            if hidden_by_layout:
+                pass                               # 5.10.0：精简界面把完整视窗收着，不要把它还原
+            elif not st.get("minimized") and root.state() != "normal":
                 root.deiconify()
                 root.overrideredirect(True)
                 root.attributes("-topmost", True)
                 root.after(50, fit)
-            elif not st.get("minimized") and now - st.get("top_t", 0) > 2:
+            elif not hidden_by_layout and not st.get("minimized") and now - st.get("top_t", 0) > 2:
                 st["top_t"] = now
                 root.attributes("-topmost", True)       # 游戏抢回前景后，偶尔会盖住浮窗：每 2 秒重新放到最上层
         except tk.TclError:
@@ -13375,6 +13811,10 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                     set_status("")
             elif kind == "review":         # 赛后复盘
                 st["review"] = (payload, time.time() + 25)
+                try:
+                    update_now(current["rec"] or {})
+                except Exception:  # noqa
+                    pass
                 shop_lbl.config(text="📋 " + payload["text"] + ("\n" + payload["detail"] if payload.get("detail") else ""))
                 shop_lbl.pack(fill="x", pady=(0, 3), before=tips_box)
                 draw_curve(payload.get("curve"), payload.get("moments"))
@@ -13436,6 +13876,10 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     stop = threading.Event()
     engine._thread = threading.Thread(target=engine.run, args=(stop,), daemon=True, name="engine")
     engine._thread.start()
+    try:
+        hud_build()                        # 5.10.0：上次选的界面（⋯ → 界面）
+    except Exception:  # noqa
+        log_crash("hud build failed", sys.exc_info())
     start_scanner(engine, scanner, stop, scan_on)
     root.after(300, poll)
 
