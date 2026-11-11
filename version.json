@@ -1,18 +1,17 @@
 {
- "version": "5.10.0",
- "date": "2026-11-10",
+ "version": "5.11.0",
+ "date": "2026-11-11",
  "notes": [
-  "界面可选：标准 / A 一句话 / B 贴着游戏 / C 边条（⋯ → 界面）",
-  "情报页标出遇到过的玩家，加隐藏分走势图",
-  "赛后一句话复盘；选英雄时直接说换不换"
+  "三选一自动识别：开局和升到 7 / 11 / 15 级时自己找，不用再按识别",
+  "其他时间完全不识别，不占 CPU；可在 ⋯ 里关掉"
  ],
  "files": {
-  "haidou_helper.py": "42e02e83087f8850b1259f415146f83b4776cf8509bbae90312c9101abd697e3",
-  "lang_en.py": "cb28389668e955f522ab029387ab361626109c3e7afc153b70bd48e8c195b721",
-  "README.md": "4b2bbaa532c3312d1323323d1c6655af3cada150119ae3394eaa1cc710640f1e",
+  "haidou_helper.py": "9dc025ab74375f172c6ffc569e9d3fc0b4746584a0a8e72d58c7026b017c416c",
+  "lang_en.py": "19999411d2ca44b0bcb0a83f762f492532a4140ba9313aae7f6a90ec75f410d0",
+  "README.md": "d58cf7587650033da1de80d08d2dfeefd86e3d0cadb7fc4afdcabe92be79a5e8",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026111004
+ "build": 2026111101
 }

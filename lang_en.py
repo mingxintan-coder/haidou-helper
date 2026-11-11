@@ -1120,4 +1120,6 @@ EN.update({'下局注意': 'Next game', '三选一有 {0}/{1} 次没选第一推
  'B 贴着游戏（横条，三选一对着三张卡）': 'B On the game (bar; verdicts under the three cards)', 'C 边条（一条窄条）': 'C Rail (narrow strip)',
  '界面': 'Layout', '遇过{0}次': 'met {0}×', '以前遇到过 {0} 次；上次是{1}{2}': 'Met {0}× before; last time as {1}{2}', '对手': 'opponent', '，你们': ', you ',
  '你的隐藏分走势': 'Your MMR trend', '最近 {0} 局 · 平均 {1}': 'last {0} games · avg {1}',
- '灰点＝每一局同场玩家估出来的水平（单局波动大）；青线＝最近 5 局平均。只是估算。': 'Grey dots: lobby level per game (noisy). Cyan line: 5-game average. Estimates only.'})
+ '灰点＝每一局同场玩家估出来的水平（单局波动大）；青线＝最近 5 局平均。只是估算。': 'Grey dots: lobby level per game (noisy). Cyan line: 5-game average. Estimates only.',
+    "到 3 / 7 / 11 / 15 级自动识别三选一": "Auto-detect the augment pick at levels 3 / 7 / 11 / 15",
+})

@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.10.0"
-APP_BUILD = 2026111004         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.11.0"
+APP_BUILD = 2026111101         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5447,8 +5447,15 @@ def scanner_loop(engine, scanner, stop, enabled, interval=3.0, clicker=None, hot
     cur, changed_at = None, 0.0
     tries = 0
     pending_pick, first_miss_grab = None, 0.0
+    auto_seen, auto_start, auto_until = 0.0, 0.0, 0.0
     while not stop.is_set():
         try:
+            want = getattr(engine, "aug_want", 0.0)
+            if want > auto_seen:                       # 5.11：刚到 3 / 7 / 11 / 15 级 → 自动找三选一，最多找 75 秒
+                auto_seen = want
+                if getattr(engine, "auto_aug", True) and not active:
+                    auto_start, auto_until = time.time(), time.time() + 75
+            auto = time.time() < auto_until and not active and getattr(engine, "auto_aug", True)
             forced = scanner.force.is_set() or bool(hotkey and hotkey.hit.is_set())
             if forced:
                 scanner.force.clear()
@@ -5460,7 +5467,7 @@ def scanner_loop(engine, scanner, stop, enabled, interval=3.0, clicker=None, hot
                 if not scanner.available:            # 没装 OCR：说清楚原因，不要一直停在「识别中…」
                     tries, engine.scanning = 0, False
                     engine.q.put(("scan", tr("识别不可用：") + (scanner.error or "")))
-            run = scanner.available and (forced or active or tries > 0 or (enabled.is_set() and engine.connected))
+            run = scanner.available and (forced or active or tries > 0 or auto or (enabled.is_set() and engine.connected))
             if run:
                 scanner.mask = getattr(engine, "overlay_rect", None)
                 t_grab = time.time()
@@ -5471,6 +5478,7 @@ def scanner_loop(engine, scanner, stop, enabled, interval=3.0, clicker=None, hot
                     offers, img, lines, width = None, None, [], 0
                 if offers:
                     tries, misses, pending_pick = 0, 0, None
+                    auto_until = 0.0
                     if forced:        # 识别期间又按了几次：已经是最新结果，不再重跑
                         scanner.force.clear()
                         if hotkey:
@@ -5529,6 +5537,8 @@ def scanner_loop(engine, scanner, stop, enabled, interval=3.0, clicker=None, hot
             wait = 0.25
         elif active:
             wait = 1.2 if time.time() - changed_at < 10 else 2.0
+        elif time.time() < auto_until:                 # 自动找：前 20 秒每 1.5 秒，之后每 3 秒
+            wait = 1.5 if time.time() - auto_start < 20 else 3.0
         elif enabled.is_set():
             wait = interval
         else:
@@ -5536,6 +5546,8 @@ def scanner_loop(engine, scanner, stop, enabled, interval=3.0, clicker=None, hot
         end = time.time() + wait
         while time.time() < end and not stop.is_set():
             if scanner.force.is_set() or (hotkey and hotkey.hit.is_set()):
+                break
+            if getattr(engine, "aug_want", 0.0) > auto_seen:
                 break
             time.sleep(0.03)
 
@@ -5599,6 +5611,9 @@ class Engine:
         self.pending_data = None       # (gd, stats, 说明)：新版本数据，等不在对局中时换上
         self.updater = None
         self.scanning = False          # 正在识别三选一（界面这时刷新得快一点）
+        self.auto_aug = load_ui_cfg().get("auto_aug", True)   # 5.11：到 3 / 7 / 11 / 15 级自动识别三选一
+        self.aug_want = 0.0            # 该自动识别的时间点（识别线程看这个）
+        self._aug_stage = None
         self.habits = HabitStore()
         self.advisor.habits_store = self.habits
         self.riotdb = RiotCollector(gd)
@@ -7577,11 +7592,20 @@ class Engine:
             self.advisor._eaug_seen = {}
             self._dumped = False
             self._cs_last = self._cs_sig = None         # 选英雄结束了：不再每秒问客户端
+            self._aug_stage = None
         self.connected = True
         if state[2] is None:
             return ("status", tr("已连接，等待玩家数据…"))
         self.check_game_end(raw)
         me0 = state[2]
+        # 5.11：三选一只在开局（3 级）和升到 7 / 11 / 15 级时出现 → 只在这几个时刻自动识别，平时完全不跑
+        stg = sum(1 for x in (3, 7, 11, 15) if (me0.level or 0) >= x)
+        if self._aug_stage is None:                     # 这局第一次读到：开局才触发，中途打开助手不触发
+            if stg >= 1 and me0.game_time < 90 and mode_kind(state[0], state[1]) == "aram":
+                self.aug_want = time.time()
+        elif stg > self._aug_stage and mode_kind(state[0], state[1]) == "aram":
+            self.aug_want = time.time()
+        self._aug_stage = stg
         if getattr(self, "ime_fix", True):
             # 3.3.2：改成背景每 2 秒看一次（ime_guard）：活着、不在买装备时，输入法一直保持英文
             self._ime_me = (me0.is_dead, me0.game_time, time.time())
@@ -12949,6 +12973,14 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         if current.get("rec"):
             show(current["rec"], flash=False)
     menu.add_checkbutton(label=tr("显示战况条（连招 / 战局 / 威胁 / 玩法）"), variable=brief_var, command=toggle_brief)
+    auto_aug_var = tk.BooleanVar(value=getattr(engine, "auto_aug", True))
+
+    def toggle_auto_aug():
+        engine.auto_aug = bool(auto_aug_var.get())
+        c = load_ui_cfg()
+        c["auto_aug"] = engine.auto_aug
+        save_ui_cfg(c)
+    menu.add_checkbutton(label=tr("到 3 / 7 / 11 / 15 级自动识别三选一"), variable=auto_aug_var, command=toggle_auto_aug)
     # 4.0：专家评分份量（Claude 的理解 + 从国服数据学的英雄玩法）
     exp_var = tk.DoubleVar(value=float(load_ui_cfg().get("expert_boost", 1.5)))
     engine.advisor.expert_boost = exp_var.get()
