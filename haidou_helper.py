@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.8.0"
-APP_BUILD = 2026111002         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.9.0"
+APP_BUILD = 2026111003         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -12298,17 +12298,36 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     intel_box = tk.Frame(pages["intel"], bg=BG)
     intel_box.pack(fill="x")
     st["intel_key"] = None
+    INTEL_FILE = os.path.join(APP_DIR, "last_intel.json")
+    try:
+        _li = read_json(INTEL_FILE) or {}
+        st["intel_last"] = _li.get("intel") if isinstance(_li.get("intel"), list) and _li["intel"] else None
+    except Exception:  # noqa
+        st["intel_last"] = None
 
     def show_intel(intel):
         """5.3.0「情报」页排成表格：英雄 · 段位 · 隐藏分 · 车队 / 海斗战绩；敌方在上、队友在下；
            每一区的标题写平均隐藏分；鼠标移到某一行看详细（上季段位、熟练度、连胜连败…）"""
-        key = repr([(i.get("champ"), i.get("ally"), i.get("mmr"), i.get("party"), i.get("note"),
-                     (i.get("rank") or {}).get("tier"), (i.get("rank") or {}).get("div")) for i in (intel or [])])
+        # 5.9.0：对局结束后不清空 —— 一直留着上一局的，新一局的情报读到了才换；重开程序也还在（存在本机 last_intel.json）
+        stale = False
+        if intel:
+            if intel != st.get("intel_last"):
+                st["intel_last"] = intel
+                try:
+                    write_json(INTEL_FILE, {"t": time.time(), "intel": intel})
+                except Exception:  # noqa
+                    pass
+        elif st.get("intel_last"):
+            intel, stale = st["intel_last"], True
+        key = repr([stale] + [(i.get("champ"), i.get("ally"), i.get("mmr"), i.get("party"), i.get("note"),
+                               (i.get("rank") or {}).get("tier"), (i.get("rank") or {}).get("div")) for i in (intel or [])])
         if key == st["intel_key"]:
             return
         st["intel_key"] = key
         for w in intel_box.winfo_children():
             w.destroy()
+        if stale:
+            Label(intel_box, text=tr("上一局"), bg=BG, fg=DIM, font=F["small"], anchor="w", padx=4).pack(fill="x", pady=(4, 0))
         if not intel:
             Label(intel_box, text=tr("开局后显示每个人的段位、车队、最近海斗战绩"), bg=BG, fg=DIM, font=F["small"],
                   anchor="w", padx=4, pady=6).pack(fill="x")
@@ -12370,6 +12389,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 for w in cells:
                     hover(w, lambda t_=t_: t_)
         fit()
+
+    show_intel(None)                       # 开程序就把上一局的情报放回情报页
 
     footer = Label(body, text="", bg=BG, fg=DIM, font=F["small"], anchor="w", padx=8, cursor="hand2")
     footer.pack(fill="x", pady=(0, 4))

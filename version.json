@@ -1,18 +1,18 @@
 {
- "version": "5.8.0",
+ "version": "5.9.0",
  "date": "2026-11-10",
  "notes": [
-  "标题下多一行「现在做什么」：选哪张增幅 / 现在买什么 / 下一件，哪一页都看得到",
-  "战况条最多 4 行；输入法三个修正（搜索打到 p、商店开 90 秒、Enter 选字）",
+  "情报页不再清空：对局结束、重开程序都留着上一局的玩家信息",
+  "标题下多一行「现在做什么」；战况条最多 4 行；输入法三个修正",
   "选英雄的预估胜率按你的水平算"
  ],
  "files": {
-  "haidou_helper.py": "b089d32b78125c670ce2cbb419de34d795240effee2419a230bca06df16f142a",
-  "lang_en.py": "dc94469e09160070ef88364529bc3d707f8cd7bfd3bedaba8ad4bffcb8cffcac",
-  "README.md": "78d2f581abcfc2a41cb5558593b70eddfcf5c5351670274871c38c10a632b3a9",
+  "haidou_helper.py": "c21f2276beeb9da0d1fd75987da1992fa5dff93bb61d9cb305aca38c5ffa9451",
+  "lang_en.py": "857669317759d9fff6a35a494997717a6165b4d651661ecb0906a62f385d4e1f",
+  "README.md": "591e0b898d305a7f8a45adbd9246d9e643fa8b15733ab193180c1abbe1c6df10",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026111002
+ "build": 2026111003
 }
