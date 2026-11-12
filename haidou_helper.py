@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.11.0"
-APP_BUILD = 2026111101         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.11.1"
+APP_BUILD = 2026111102         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -12101,10 +12101,25 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     st["layout"] = load_ui_cfg().get("layout", "std")
     hud = {"win": None, "key": None, "drag": None}
 
+    def virtual_screen():
+        """5.11.1：整个桌面（含多个萤幕）的范围；拔掉第二个萤幕后，存着的位置可能已经在画面外"""
+        try:
+            import ctypes
+            gm = ctypes.windll.user32.GetSystemMetrics
+            x, y, w_, h_ = gm(76), gm(77), gm(78), gm(79)
+            if w_ > 0 and h_ > 0:
+                return x, y, x + w_, y + h_
+        except Exception:  # noqa
+            pass
+        return 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+
     def hud_pos(kind):
         pos = (load_ui_cfg().get("hud_pos") or {}).get(kind)
         if pos:
-            return int(pos[0]), int(pos[1])
+            x0, y0, x1, y1 = virtual_screen()
+            px, py = int(pos[0]), int(pos[1])
+            if x0 - 20 <= px <= x1 - 60 and y0 - 5 <= py <= y1 - 40:     # 至少有一块露在画面里
+                return px, py
         sw = root.winfo_screenwidth()
         if kind == "b":
             return int(sw * 0.27), int(sh * 0.74)

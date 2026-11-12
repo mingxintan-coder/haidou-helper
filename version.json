@@ -1,17 +1,16 @@
 {
- "version": "5.11.0",
+ "version": "5.11.1",
  "date": "2026-11-11",
  "notes": [
-  "三选一自动识别：开局和升到 7 / 11 / 15 级时自己找，不用再按识别",
-  "其他时间完全不识别，不占 CPU；可在 ⋯ 里关掉"
+  "修复：精简界面的位置在画面外时看不到助手（现在自动放回画面内）"
  ],
  "files": {
-  "haidou_helper.py": "9dc025ab74375f172c6ffc569e9d3fc0b4746584a0a8e72d58c7026b017c416c",
+  "haidou_helper.py": "184fbca134b9053c06b07900902ac330e3e595bfa71da7c6613c90b454286159",
   "lang_en.py": "19999411d2ca44b0bcb0a83f762f492532a4140ba9313aae7f6a90ec75f410d0",
-  "README.md": "d58cf7587650033da1de80d08d2dfeefd86e3d0cadb7fc4afdcabe92be79a5e8",
+  "README.md": "9df690a0914face0f9042e6e934177564f956d4ab4843c041c078dbb2c0e87fa",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026111101
+ "build": 2026111102
 }
