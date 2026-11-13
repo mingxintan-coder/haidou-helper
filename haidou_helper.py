@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.11.2"
-APP_BUILD = 2026111301         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.12.0"
+APP_BUILD = 2026111302         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -4827,6 +4827,7 @@ class Advisor:
             fa = self.all_index.get(a.get("name"))
             a["howto"] = aug_howto(fa) if fa else ""
         return {"items": items, "augs": augs, "tips": tips, "cand_mode": bool(cands), "auto_cand": auto, "shop": shop,
+                "power_diff": t.get("power_diff", 0),
                 "aug_reroll": getattr(self, "_reroll", None) if cands else None,
                 "brief": self.brief(me, allies, enemies, t, prof, guide, ealerts), "enemy_augs": ealerts,
                 "coach": self.coach(me, my_augs),
@@ -5611,6 +5612,7 @@ class Engine:
         self.pending_data = None       # (gd, stats, 说明)：新版本数据，等不在对局中时换上
         self.updater = None
         self.scanning = False          # 正在识别三选一（界面这时刷新得快一点）
+        self.live_now = load_ui_cfg().get("live_now", True)   # 5.12：实时决策
         self.auto_aug = load_ui_cfg().get("auto_aug", True)   # 5.11：到 3 / 7 / 11 / 15 级自动识别三选一
         self.aug_want = 0.0            # 该自动识别的时间点（识别线程看这个）
         self._aug_stage = None
@@ -6479,6 +6481,105 @@ class Engine:
             if per > 0.01:
                 text += tr(" 每座 +{0:.0f}%").format(per * 100)
         return (tr("推塔"), text, True)
+
+    def decide(self, state, rec):
+        """5.12：实时决策。把人数、血量、技能点、复活时间、经济排成一件「现在最该做的事」
+           → {"verb", "what", "sub", "tone", "short", "pri", "key"}；每次刷新都重算（约 1.5 秒一次）"""
+        me, allies, enemies, gold = state[2], state[3], state[4], state[5]
+        if me is None or not enemies or mode_kind(state[0], state[1]) != "aram":
+            return None
+        team = allies + [me]
+        dead_e = [p for p in enemies if p.is_dead]
+        dead_a = [p for p in team if p.is_dead]
+        a_alive, e_alive = len(team) - len(dead_a), len(enemies) - len(dead_e)
+        e_back = min((p.respawn for p in dead_e), default=0.0)
+        a_back = min((p.respawn for p in dead_a if p is not me), default=0.0)
+        diff = a_alive - e_alive
+        vs = tr("{0} 打 {1}").format(a_alive, e_alive)
+        s = me.stats or {}
+        hp = s["currentHealth"] / s["maxHealth"] if s.get("maxHealth") and s.get("currentHealth") is not None else None
+        out = []
+
+        def add(pri, key, verb, what, sub="", tone="", short=""):
+            out.append({"pri": pri, "key": key, "verb": verb, "what": what, "sub": sub, "tone": tone, "short": short or what})
+        if me.is_dead:
+            if a_alive == 0:
+                what = tr("复活后先守塔，等人齐再打")
+            elif a_alive - e_alive <= -2:
+                what = tr("复活后别单走，等队友一起")
+            elif e_alive <= 1 and a_alive >= 2:
+                what = tr("队友在推塔，复活后马上跟上")
+            else:
+                what = tr("复活后跟团，别一个人先到")
+            add(70, "dead", tr("阵亡 · {0:.0f} 秒后复活").format(me.respawn), what,
+                tr("场上 {0}").format(vs), "", tr("等复活"))
+        else:
+            su = rec.get("skill_up")
+            if su:
+                add(95, "skill", tr("有技能点没加"), tr("升 {0}{1}").format(su["key"], ("「" + su["name"] + "」") if su.get("name") else ""),
+                    tr("主 {0}").format(" > ".join(su.get("order") or [])), "warn", tr("升 {0}").format(su["key"]))
+            if diff <= -2:
+                add(90, "retreat", tr("人少（{0}）").format(vs), tr("退到塔下，别接团"),
+                    tr("队友 {0:.0f} 秒后复活").format(a_back) if a_back else "", "bad", tr("退"))
+            if hp is not None and hp < 0.3:
+                sv = self.advisor.stasis_key(me)
+                add(85, "lowhp", tr("残血 {0:.0f}%").format(hp * 100),
+                    tr("按 {0} {1}").format(*sv) if sv else tr("后撤，吃血包"),
+                    tr("对面还有 {0} 人活着").format(e_alive) if e_alive else tr("对面全死了，可以留在后面"), "bad",
+                    tr("按 {0}").format(sv[0]) if sv else tr("后撤"))
+            if diff >= 2 and e_back >= 6:
+                per = ""
+                pr = next((x for x in rec.get("brief") or [] if x[0] == tr("推塔")), None)
+                if pr and "+" in pr[1]:
+                    per = tr("每座塔") + " +" + pr[1].rsplit("+", 1)[1]
+                add(80, "push", tr("人多（{0}）· 还有 {1:.0f} 秒").format(vs, e_back),
+                    tr("对面团灭：全力推塔") if e_alive == 0 else tr("压上推塔，别追人"), per, "good", tr("推塔"))
+            if diff == -1:
+                add(60, "wait", tr("少一人（{0}）").format(vs), tr("别先手，等人齐"),
+                    tr("队友 {0:.0f} 秒后复活").format(a_back) if a_back else "", "warn", tr("等人"))
+            if diff == 1 and e_back >= 4:
+                add(55, "press", tr("多一人（{0}）").format(vs), tr("可以压，逼他们交技能"),
+                    tr("对面 {0:.0f} 秒后人齐").format(e_back), "good", tr("压"))
+            if allies and me.deaths >= 4 and me.deaths >= sum(p.deaths for p in allies) / len(allies) + 2:
+                add(50, "deaths", tr("你死了 {0} 次，比队友多").format(me.deaths), tr("别第一个上，跟在前排后面"), "", "warn", tr("靠后"))
+            pd = rec.get("power_diff") or 0
+            role = self.advisor.role_of(me)
+            style = {"tank": tr("找机会先手开团"), "fighter": tr("侧翼进场，切后排"), "adc": tr("躲前排后输出"),
+                     "mage": tr("远距消耗，别被先手"), "assassin": tr("等控制交完再切"), "support": tr("保护主 C，留技能反开")}[role]
+            nxt = ""
+            it = next((d for d in rec.get("items") or [] if "total" in d), None)
+            if it:
+                price = 0
+                try:
+                    price = int(self.advisor.gd.item_price(it.get("id")) or 0) if it.get("id") else 0
+                except Exception:  # noqa
+                    price = 0
+                nxt = tr("下一件 {0}").format(it["name"])
+                if price and gold >= price:
+                    nxt += tr("（钱够了，阵亡时买）")
+                elif price:
+                    nxt += tr("（还差 {0} 金）").format(price - gold)
+            if pd > 1500:
+                add(10, "lead", tr("领先 {0:.1f}k · {1}").format(pd / 1000, vs), tr("抱团推进，逼他们接团"), nxt, "", tr("推进"))
+            elif pd < -1500:
+                add(10, "behind", tr("落后 {0:.1f}k · {1}").format(-pd / 1000, vs), tr("塔下守，清兵等装备"), nxt, "", tr("守"))
+            else:
+                add(10, "even", tr("均势 · {0}").format(vs), style, nxt, "",
+                    {"tank": tr("开团"), "fighter": tr("切后排"), "adc": tr("站后排"), "mage": tr("消耗"),
+                     "assassin": tr("等技能"), "support": tr("保 C")}[role])
+        if not out:
+            return None
+        best = max(out, key=lambda d: d["pri"])
+        now, hold = time.time(), getattr(self, "_now_hold", None)
+        if hold and hold[0]["key"] != best["key"] and best["pri"] < hold[0]["pri"] and now - hold[1] < 3 \
+                and not (me.is_dead or hold[0]["key"] == "dead"):
+            same = next((d for d in out if d["key"] == hold[0]["key"]), None)
+            return same or hold[0]                     # 刚出现的高优先提示至少留 3 秒，不要一闪就没
+        if not hold or hold[0]["key"] != best["key"]:
+            self._now_hold = (best, now)
+        else:
+            self._now_hold = (best, hold[1])
+        return best
 
     def death_row(self, state):
         """你死得比队友多很多时，战况条加一行「少死」（每死一次约少多少胜率，用胜率模型算）"""
@@ -7700,6 +7801,11 @@ class Engine:
                 rec["brief"].insert((1 if wp else 0) + (1 if pr else 0) + (1 if dr else 0), cr)
         except Exception:  # noqa
             pass
+        try:
+            rec["now"] = self.decide(state, rec) if getattr(self, "live_now", True) else None
+        except Exception:  # noqa
+            rec["now"] = None
+            log_crash("decide failed", sys.exc_info())
         g = self.cur_game
         if g and g.get("wp"):                          # 悬浮窗的迷你胜率曲线：最近 6 分钟
             t_now = g["wp"][-1][0]
@@ -12010,7 +12116,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     def now_info(rec):
         """现在做什么 → {"verb", "what", "sub", "tip", "col", "copy", "kind"}；没有就回传 None。主视窗和三种精简界面都用这个"""
         rec = rec or {}
-        verb = what = sub = tip = kind = ""
+        verb = what = sub = tip = kind = short = ""
         col, copy = ACC, None
         augs = rec.get("augs") or []
         shop = rec.get("shop") or {}
@@ -12038,6 +12144,17 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             sub = "   ".join(bits)
             tip = tr("点一下复制装备名")
             copy = lambda n=names[0]: copy_item(n)
+        elif rec.get("now"):                      # 5.12：实时决策（人数 / 血量 / 技能点 / 复活 / 经济）
+            kind = "now"
+            nw = rec["now"]
+            verb, what, sub = nw["verb"], nw["what"], nw["sub"]
+            col = {"bad": BAD, "good": GOOD, "warn": WARN}.get(nw["tone"], FG)
+            short = nw["short"]
+            nx = next((d for d in items if "total" in d), None)
+            tip = tr("每 1~2 秒按场上情况重算：技能点 > 人少要退 > 残血 > 人多推塔 > 平时打法")
+            if nx:
+                tip += "\n" + tr("点一下复制下一件装备名")
+                copy = lambda n=nx["name"]: copy_item(n)
         elif rv and time.time() < rv[1] + 35 and (rv[0] or {}).get("one"):
             kind = "review"                       # 5.10.0：赛后一句话（留 60 秒）
             verb, what = rv[0]["one"]
@@ -12067,7 +12184,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             copy = lambda n=d["name"]: copy_item(n)
         if not what:
             return None
-        return {"verb": verb, "what": what, "sub": sub, "tip": tip.strip(), "col": col, "copy": copy, "kind": kind}
+        return {"verb": verb, "what": what, "sub": sub, "tip": tip.strip(), "col": col, "copy": copy, "kind": kind,
+                "short": short}
 
     def update_now(rec):
         ni = now_info(rec)
@@ -12289,6 +12407,10 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 tk.Frame(inner, bg=LINE, height=1).pack(fill="x")
             cell(tr("胜率"), wp)
             nk = n.get("kind")
+            if nk == "now":
+                c_ = n.get("col", FG)
+                cell(tr("现在"), n.get("short") or n.get("what", ""), c_,
+                     WARN_BG if c_ in (BAD, WARN) else GOOD_BG if c_ == GOOD else BG, "key")
             if nk == "buy":
                 code = (d["path"][0][1] if d["path"] and d["path"][0][0] == n.get("what") else "") or n.get("what", "")
                 cell(tr("现在买"), code, WARN, WARN_BG, "key")
@@ -12348,6 +12470,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                         L(ln, text, fg, font).pack(side="left")
                     tk.Frame(row, bg=LINE, width=1).pack(side="left", fill="y")
                 seg(tr("胜率"), [(wp, FG, "score")])
+                if n.get("kind") == "now":
+                    seg(n.get("verb", ""), [(n.get("what", ""), n.get("col", FG), "key")])
                 if n.get("kind") in ("buy", "champ", "review"):
                     seg(n.get("verb", ""), [(n.get("what", ""), n.get("col", FG), "key"),
                                             ("   " + n["sub"] if n.get("sub") else "", SUB, "small")])
@@ -12998,6 +13122,14 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         if current.get("rec"):
             show(current["rec"], flash=False)
     menu.add_checkbutton(label=tr("显示战况条（连招 / 战局 / 威胁 / 玩法）"), variable=brief_var, command=toggle_brief)
+    live_now_var = tk.BooleanVar(value=getattr(engine, "live_now", True))
+
+    def toggle_live_now():
+        engine.live_now = bool(live_now_var.get())
+        c = load_ui_cfg()
+        c["live_now"] = engine.live_now
+        save_ui_cfg(c)
+    menu.add_checkbutton(label=tr("实时决策（随时显示现在该做什么）"), variable=live_now_var, command=toggle_live_now)
     auto_aug_var = tk.BooleanVar(value=getattr(engine, "auto_aug", True))
 
     def toggle_auto_aug():

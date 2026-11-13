@@ -1,17 +1,17 @@
 {
- "version": "5.11.2",
- "date": "2026-11-12",
+ "version": "5.12.0",
+ "date": "2026-11-13",
  "notes": [
-  "再双击一次，已经开着的助手会自己跳出来（回到标准界面）",
-  "精简界面位置不在任何开着的萤幕上时放回默认位置"
+  "实时决策：对局里随时显示现在最该做的一件事（加点 / 退 / 推塔 / 等人 / 打法）",
+  "三种精简界面都会显示；可在 ⋯ 里关掉"
  ],
  "files": {
-  "haidou_helper.py": "1096c493a9db8ab30a746d41037aa542dc7bb9c53da444965c60e880226795c4",
-  "lang_en.py": "81759873cd73b29d08aa4ec871eb5dbfd127dbdcb8f73216d490149b4782ca14",
-  "README.md": "8b815c80e60bc3495f9feab34e6683712b3c5980f7053070546548fb01dfa3e0",
+  "haidou_helper.py": "bc4229e8e5f33f96fbcc5996c599a121b717ec0f94a7bd60e59eb115d6788119",
+  "lang_en.py": "cc1ca3d8c5a31c8cc037763c066f2326fd9428afb85d8240ec518245c483c642",
+  "README.md": "3d7e557ff38658de0956130144fdda2b7d46239ac658dc6f217469df95f4f20a",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026111301
+ "build": 2026111302
 }
