@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.11.1"
-APP_BUILD = 2026111102         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.11.2"
+APP_BUILD = 2026111301         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -12118,7 +12118,17 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         if pos:
             x0, y0, x1, y1 = virtual_screen()
             px, py = int(pos[0]), int(pos[1])
-            if x0 - 20 <= px <= x1 - 60 and y0 - 5 <= py <= y1 - 40:     # 至少有一块露在画面里
+            ok = x0 - 20 <= px <= x1 - 60 and y0 - 5 <= py <= y1 - 40     # 至少有一块露在画面里
+            try:                      # 再问 Windows：这个点现在真的落在某个开着的萤幕上吗（拔掉 / 关掉的萤幕不算）
+                import ctypes
+                from ctypes import wintypes
+                mfp = ctypes.windll.user32.MonitorFromPoint
+                mfp.argtypes = [wintypes.POINT, wintypes.DWORD]
+                mfp.restype = ctypes.c_void_p
+                ok = ok and bool(mfp(wintypes.POINT(px + 30, py + 20), 0))
+            except Exception:  # noqa
+                pass
+            if ok:
                 return px, py
         sw = root.winfo_screenwidth()
         if kind == "b":
@@ -13798,7 +13808,31 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         finally:
             os._exit(0)
 
+    def show_me():
+        """5.11.2：再双击一次 → 回到标准界面，完整视窗放回主萤幕里"""
+        set_layout("std")
+        try:
+            root.deiconify()
+            root.geometry("+60+120")
+            root.attributes("-topmost", True)
+            root.lift()
+            st["pinned"] = True
+            set_expanded(True)
+            st["x"], st["y"] = 60, 120
+        except tk.TclError:
+            pass
+
     def poll_once():
+        try:
+            ev = globals().get("_SHOW_EVENT")
+            if ev:
+                import ctypes
+                k32_ = ctypes.windll.kernel32
+                k32_.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+                if k32_.WaitForSingleObject(ev, 0) == 0:
+                    show_me()
+        except Exception:  # noqa
+            log_crash("show me failed", sys.exc_info())
         try:
             auto_update_tick()
         except Exception:  # noqa
@@ -14077,13 +14111,24 @@ def main():
             k32 = ctypes.windll.kernel32
             k32.CreateMutexW.restype = ctypes.c_void_p
             globals()["_SINGLE_MUTEX"] = k32.CreateMutexW(None, False, "HaidouHelperSingleInstance")
-            if k32.GetLastError() == 183:          # ERROR_ALREADY_EXISTS
-                try:
+            already = k32.GetLastError() == 183    # ERROR_ALREADY_EXISTS
+            k32.CreateEventW.restype = ctypes.c_void_p
+            k32.CreateEventW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_wchar_p]
+            k32.SetEvent.argtypes = [ctypes.c_void_p]
+            globals()["_SHOW_EVENT"] = k32.CreateEventW(None, False, False, "HaidouHelperShowMe")
+            if already:
+                # 5.11.2：再双击一次不再只弹说明：叫已经开着的那份自己跳出来（回到标准界面、放回画面里）
+                k32.SetEvent(globals()["_SHOW_EVENT"])
+                k32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+                time.sleep(2.5)
+                if k32.WaitForSingleObject(globals()["_SHOW_EVENT"], 0) != 0:   # 已经被开着的那份收走了：它会自己跳出来
+                    return
+                try:                      # 没人收（开着的是旧版本）：说明一下
                     import tkinter as tk
                     import tkinter.messagebox as mb
                     r = tk.Tk()
                     r.withdraw()
-                    mb.showinfo(tr("海斗助手"), tr("海斗助手已经开着了（看看悬浮窗或工作列）。\n要重开请先关掉旧的。"))
+                    mb.showinfo(tr("海斗助手"), tr("海斗助手已经开着了，但看不到窗口（旧版本）。\n请在任务管理器里结束 pythonw.exe（或 python.exe），再双击打开一次。"))
                     r.destroy()
                 except Exception:  # noqa
                     pass
