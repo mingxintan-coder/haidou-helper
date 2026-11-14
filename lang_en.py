@@ -1183,4 +1183,5 @@ EN.update({'下局注意': 'Next game', '三选一有 {0}/{1} 次没选第一推
     '站后排': 'Backline',
     '等技能': 'Wait CDs',
     '保 C': 'Peel',
+    '每 1~2 秒按场上情况重算。紧急的事（加点、人数、残血、推塔）马上显示；\n不紧急的提示每 8 秒轮流一条。': 'Recomputed every 1-2 s. Urgent things (skill point, numbers, low HP, pushing) show immediately;\nnon-urgent tips rotate every 8 s.',
 })

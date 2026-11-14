@@ -1,17 +1,17 @@
 {
- "version": "5.12.0",
- "date": "2026-11-13",
+ "version": "5.13.0",
+ "date": "2026-11-14",
  "notes": [
-  "实时决策：对局里随时显示现在最该做的一件事（加点 / 退 / 推塔 / 等人 / 打法）",
-  "三种精简界面都会显示；可在 ⋯ 里关掉"
+  "实时决策细分：13 种 → 134 种（按谁死了、还剩几秒、你的定位、钱和等级给不同的话）",
+  "紧急的事马上显示；不紧急的提示每 8 秒轮流一条"
  ],
  "files": {
-  "haidou_helper.py": "bc4229e8e5f33f96fbcc5996c599a121b717ec0f94a7bd60e59eb115d6788119",
-  "lang_en.py": "cc1ca3d8c5a31c8cc037763c066f2326fd9428afb85d8240ec518245c483c642",
-  "README.md": "3d7e557ff38658de0956130144fdda2b7d46239ac658dc6f217469df95f4f20a",
+  "haidou_helper.py": "a875a73ab49def05f2f1b42cca5d0ce06528143732b89b273cbd95a353de66fe",
+  "lang_en.py": "0713fb8062ccd0e9d70f438abc88b6612982d070da1df3c02304f37c43286a4a",
+  "README.md": "92426793f71a1e61441a00f6e52e5377e6c5899ac21c93dae90c16711a181c0b",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026111302
+ "build": 2026111401
 }

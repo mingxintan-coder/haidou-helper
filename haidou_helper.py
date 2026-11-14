@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.12.0"
-APP_BUILD = 2026111302         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.13.0"
+APP_BUILD = 2026111401         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -6482,103 +6482,453 @@ class Engine:
                 text += tr(" 每座 +{0:.0f}%").format(per * 100)
         return (tr("推塔"), text, True)
 
-    def decide(self, state, rec):
-        """5.12：实时决策。把人数、血量、技能点、复活时间、经济排成一件「现在最该做的事」
-           → {"verb", "what", "sub", "tone", "short", "pri", "key"}；每次刷新都重算（约 1.5 秒一次）"""
+    def decide(self, state, rec, raw=None):
+        """5.13：实时决策（细分版，约 140 种）。每次刷新（约 1.5 秒）把场上情况拆成：
+           人数 / 谁死了 / 复活时间 / 血量蓝量 / 技能点和大招 / 刚发生的击杀和拆塔 / 连杀赏金 / 经济和等级 / 建筑 / 胜率 / 时间段 / 你的定位
+           → 紧急的（优先 ≥50）取最高的一条；不紧急的（背景提示）每 8 秒轮流显示一条。
+           回传 {"verb", "what", "sub", "tone", "short", "pri", "key"}"""
         me, allies, enemies, gold = state[2], state[3], state[4], state[5]
         if me is None or not enemies or mode_kind(state[0], state[1]) != "aram":
             return None
+        en_ = LANG == "en"
+
+        def Z(zh, en):
+            return en if en_ else zh
+        adv = self.advisor
+        cn = adv.gd.champ_name
         team = allies + [me]
+
+        def role(p):
+            try:
+                return adv.role_of(p)
+            except Exception:  # noqa
+                return "fighter"
+
+        def pw(p):
+            try:
+                return adv.power(p)
+            except Exception:  # noqa
+                return 0.0
+        my_role = role(me)
+        squishy = my_role in ("adc", "mage", "support")
         dead_e = [p for p in enemies if p.is_dead]
         dead_a = [p for p in team if p.is_dead]
-        a_alive, e_alive = len(team) - len(dead_a), len(enemies) - len(dead_e)
+        A, E = len(team) - len(dead_a), len(enemies) - len(dead_e)
+        diff = A - E
         e_back = min((p.respawn for p in dead_e), default=0.0)
         a_back = min((p.respawn for p in dead_a if p is not me), default=0.0)
-        diff = a_alive - e_alive
-        vs = tr("{0} 打 {1}").format(a_alive, e_alive)
+        vs = Z("{0} 打 {1}", "{0}v{1}").format(A, E)
+        t = float(me.game_time or 0)
+        minute = t / 60
+        late = minute >= 15 or me.level >= 16
         s = me.stats or {}
         hp = s["currentHealth"] / s["maxHealth"] if s.get("maxHealth") and s.get("currentHealth") is not None else None
+        mana = None
+        if str(s.get("resourceType") or "").upper() == "MANA" and (s.get("resourceMax") or 0) > 200:
+            mana = (s.get("resourceValue") or 0) / s["resourceMax"]
+        front = ("tank", "fighter")
+        a_has_front = any(role(p) in front for p in team)
+        a_front_alive = any(not p.is_dead and role(p) in front for p in team)
+        e_has_front = any(role(p) in front for p in enemies)
+        e_front_alive = any(not p.is_dead and role(p) in front for p in enemies)
+        e_sup = [p for p in enemies if role(p) == "support"]
+        e_sin = [p for p in enemies if role(p) == "assassin" and not p.is_dead]
+
+        def carry_of(ps):
+            c = [p for p in ps if role(p) != "tank"] or list(ps)
+            return max(c, key=pw) if c else None
+        e_carry, a_carry = carry_of(enemies), carry_of(team)
+        # ---- 事件：连杀、刚拿的人头、最近死了几次、拆塔
+        evs = ((raw or {}).get("events") or {}).get("Events") or []
+
+        def who(name):
+            n = str(name or "").strip().lower()
+            if not n:
+                return None
+            for p in team + enemies:
+                ids = getattr(p, "ids", ())
+                if n in ids or n.split("#")[0] in ids:
+                    return p
+            return None
+        streak, my_recent, my_deaths_3m = {}, 0, 0
+        my_t = "1" if str(me.team).upper() in ("ORDER", "100") else "2"
+        my_lost = enemy_lost = 0
+        my_fell = enemy_fell = False
+        for ev in evs:
+            name = ev.get("EventName")
+            et = float(ev.get("EventTime") or 0)
+            if name == "ChampionKill":
+                k, v = who(ev.get("KillerName")), who(ev.get("VictimName"))
+                if k is not None:
+                    streak[id(k)] = streak.get(id(k), 0) + 1
+                if v is not None:
+                    streak[id(v)] = 0
+                if k is me and 0 <= t - et <= 8:
+                    my_recent += 1
+                if v is me and 0 <= t - et <= 180:
+                    my_deaths_3m += 1
+            elif name in ("TurretKilled", "InhibKilled"):
+                mt = re.search(r"_T([12])", str(ev.get("TurretKilled") or ev.get("InhibKilled") or ""))
+                if mt:
+                    mine = mt.group(1) == my_t
+                    if mine:
+                        my_lost += 1
+                    else:
+                        enemy_lost += 1
+                    if 0 <= t - et <= 10:
+                        if mine:
+                            my_fell = True
+                        else:
+                            enemy_fell = True
+        my_streak = streak.get(id(me), 0)
+        alive_e = [p for p in enemies if not p.is_dead]
+        fed = max(alive_e, key=lambda p: (streak.get(id(p), 0), p.kills - p.deaths), default=None)
+        if fed is not None and not (streak.get(id(fed), 0) >= 4 or fed.kills - fed.deaths >= 6):
+            fed = None
+        # ---- 经济、等级
+        nxt, price, it_name = "", 0, ""
+        it = next((d for d in rec.get("items") or [] if "total" in d), None)
+        if it:
+            it_name = it["name"]
+            try:
+                price = int(adv.gd.item_price(it.get("id")) or 0) if it.get("id") else 0
+            except Exception:  # noqa
+                price = 0
+            nxt = Z("下一件 {0}", "Next: {0}").format(it_name)
+            if price and gold >= price:
+                nxt += Z("（钱够了，阵亡时买）", " (affordable, buy on death)")
+            elif price:
+                nxt += Z("（还差 {0:.0f} 金）", " ({0:.0f} gold short)").format(price - gold)
+        e_lv = sum(p.level for p in enemies) / len(enemies)
+        lv_d = me.level - e_lv
+        pd = rec.get("power_diff") or 0
+        wp = rec.get("wp")
         out = []
 
         def add(pri, key, verb, what, sub="", tone="", short=""):
             out.append({"pri": pri, "key": key, "verb": verb, "what": what, "sub": sub, "tone": tone, "short": short or what})
+
+        def by_role(pri, key, verb, table, sub="", tone="", short=""):
+            zh, en = table.get(my_role) or table["fighter"]
+            add(pri, key + "_" + my_role, verb, Z(zh, en), sub, tone, short)
+        name_of = lambda p: cn(p.cid) if p is not None else ""   # noqa
         if me.is_dead:
-            if a_alive == 0:
-                what = tr("复活后先守塔，等人齐再打")
-            elif a_alive - e_alive <= -2:
-                what = tr("复活后别单走，等队友一起")
-            elif e_alive <= 1 and a_alive >= 2:
-                what = tr("队友在推塔，复活后马上跟上")
+            r = me.respawn
+            head = Z("阵亡 · {0:.0f} 秒后复活", "Dead · respawn in {0:.0f}s").format(r)
+            field = Z("场上 {0}", "On the map: {0}").format(vs) + ("   " + nxt if nxt else "")
+            sh = Z("等复活", "Respawning")
+            if A == 0 and (late or r >= 35):
+                add(70, "d_wipe_late", head, Z("团灭而且复活久：可能丢水晶，复活后直接守基地", "Wiped with long timers: defend the base on respawn"), field, "bad", sh)
+            elif A == 0:
+                add(70, "d_wipe", head, Z("团灭：复活后先守塔，等人齐再打", "Team wiped: hold the tower, fight when grouped"), field, "bad", sh)
+            elif my_lost >= 3 and E >= A:
+                add(70, "d_base", head, Z("家里水晶破了：复活后先清超级兵，再找队友", "Inhibitor down: clear super minions first, then regroup"), field, "warn", sh)
+            elif r <= 5:
+                add(70, "d_soon", head, Z("马上复活：先看小地图找队友，别直线冲", "Respawning: check the minimap, do not run straight in"), field, "", sh)
+            elif E <= 1 and A >= 2:
+                add(70, "d_push", head, Z("队友在推塔：复活后马上跟上", "Team is pushing: rejoin right after respawn"), field, "good", sh)
+            elif A - E <= -2:
+                add(70, "d_wait", head, Z("场上人少：复活后别单走，等队友一起", "Outnumbered: wait for teammates after respawn"), field, "warn", sh)
+            elif my_deaths_3m >= 3:
+                add(70, "d_tilt", head, Z("3 分钟死了 {0} 次：下一波站最后，等队友先交技能", "{0} deaths in 3 min: stand last next fight, let teammates go first").format(my_deaths_3m), field, "warn", sh)
+            elif len(dead_a) == 1 and not dead_e:
+                by_role(70, "d_first", head, {
+                    "tank": ("你先死了：开团前先看队友跟不跟得上", "You died first: check teammates can follow before engaging"),
+                    "fighter": ("进场太早：等前排先吃技能再进", "Went in too early: let the frontline soak spells first"),
+                    "adc": ("你先被秒：站位再靠后一个身位", "Picked first: stand one step further back"),
+                    "mage": ("被先手了：技能放完就退，别站着等冷却", "Got engaged on: cast and back off, do not wait in range"),
+                    "assassin": ("切早了：等对面控制交掉再进", "Dove too early: wait for their CC first"),
+                    "support": ("你先死没人保主 C：站主 C 旁边，别走前面", "Stay next to the carry, not in front")}, field, "warn", sh)
+            elif dead_e and len(dead_e) >= len(dead_a):
+                add(70, "d_trade", head, Z("换到人了，不亏：复活后跟团继续", "Traded evenly: regroup and keep going"), field, "", sh)
             else:
-                what = tr("复活后跟团，别一个人先到")
-            add(70, "dead", tr("阵亡 · {0:.0f} 秒后复活").format(me.respawn), what,
-                tr("场上 {0}").format(vs), "", tr("等复活"))
+                add(70, "d_default", head, Z("复活后跟团，别一个人先到", "After respawn: regroup, do not arrive alone"), field, "", sh)
         else:
+            stasis = adv.stasis_key(me)
+            # ---- 技能点 / 大招
             su = rec.get("skill_up")
             if su:
-                add(95, "skill", tr("有技能点没加"), tr("升 {0}{1}").format(su["key"], ("「" + su["name"] + "」") if su.get("name") else ""),
-                    tr("主 {0}").format(" > ".join(su.get("order") or [])), "warn", tr("升 {0}").format(su["key"]))
+                nm_ = ("「" + su["name"] + "」") if su.get("name") else ""
+                sub_ = Z("主 {0}", "Max {0}").format(" > ".join(su.get("order") or []))
+                if su["key"] == "R":
+                    add(100, "skill_r", Z("大招可以升了", "Ultimate available"), Z("马上升 R{0}", "Level R{0} now").format(nm_), sub_, "warn", Z("升 R", "Level R"))
+                else:
+                    add(95, "skill", Z("有技能点没加", "Unspent skill point"), Z("升 {0}{1}", "Level {0}{1}").format(su["key"], nm_), sub_, "warn",
+                        Z("升 {0}", "Level {0}").format(su["key"]))
+            # ---- 血量
+            if hp is not None and hp < 0.15:
+                v = Z("快死了（{0:.0f}%）", "Nearly dead ({0:.0f}%)").format(hp * 100)
+                if stasis:
+                    add(93, "h15_stasis", v, Z("按 {0} {1}", "Press {0} {1}").format(*stasis), Z("金身后往队友方向走", "Walk toward teammates after stasis"), "bad",
+                        Z("按 {0}", "Press {0}").format(stasis[0]))
+                elif E == 0:
+                    add(93, "h15_safe", v, Z("对面全死了：留在后面吃血包", "Enemies all dead: stay back, grab a health pack"), "", "warn", Z("吃血包", "Heal"))
+                elif price and gold >= price:
+                    add(93, "h15_rich", v, Z("钱够买 {0}：技能全交完再死，别白给", "{0} is affordable: unload everything before dying").format(it_name),
+                        Z("对面还有 {0} 人", "{0} enemies alive").format(E), "bad", Z("交技能", "Unload"))
+                else:
+                    add(93, "h15", v, Z("退到最后面，别吃任何技能", "Go to the very back, dodge everything"), Z("对面还有 {0} 人", "{0} enemies alive").format(E), "bad", Z("后撤", "Back"))
+            elif hp is not None and hp < 0.3:
+                v = Z("残血 {0:.0f}%", "Low HP {0:.0f}%").format(hp * 100)
+                if stasis:
+                    add(85, "h30_stasis", v, Z("被集火就按 {0} {1}", "If focused press {0} {1}").format(*stasis), "", "bad", Z("按 {0}", "Press {0}").format(stasis[0]))
+                elif e_sin and squishy:
+                    add(85, "h30_assassin", v, Z("对面刺客{0}还活着：贴着队友走", "Enemy assassin {0} is alive: hug your teammates").format(name_of(e_sin[0])), "", "bad", Z("贴队友", "Hug team"))
+                else:
+                    by_role(85, "h30", v, {
+                        "tank": ("别再顶了：退半步，让队友接伤害", "Stop tanking: step back, let others take damage"),
+                        "fighter": ("残血别追：退出去等技能", "Do not chase: back off and wait for cooldowns"),
+                        "adc": ("退到射程边缘，只点最近的人", "Max range, only hit the closest target"),
+                        "mage": ("技能放完就走，别站桩", "Cast and leave, do not stand still"),
+                        "assassin": ("残血别进：等收割的机会", "Do not dive: wait to clean up"),
+                        "support": ("保命技能留给自己，退到塔后", "Keep your peel for yourself, go behind the tower")},
+                        Z("对面还有 {0} 人活着", "{0} enemies alive").format(E), "bad", Z("后撤", "Back"))
+            elif hp is not None and hp < 0.5 and diff == -1:
+                add(75, "h50_down", Z("半血又少一人（{0}）", "Half HP and one down ({0})").format(vs), Z("退到塔后，等人齐", "Behind the tower, wait for the team"), "", "warn", Z("退", "Back"))
+            if mana is not None and mana < 0.15 and (hp is None or hp >= 0.3):
+                add(78, "mana", Z("没蓝了（{0:.0f}%）", "Out of mana ({0:.0f}%)").format(mana * 100), Z("别进场：平 A 清兵等回蓝", "Stay out: auto the wave and regen"),
+                    Z("蓝不够放一套就别先手", "Do not engage without a full combo"), "warn", Z("回蓝", "Regen"))
+            # ---- 人数
             if diff <= -2:
-                add(90, "retreat", tr("人少（{0}）").format(vs), tr("退到塔下，别接团"),
-                    tr("队友 {0:.0f} 秒后复活").format(a_back) if a_back else "", "bad", tr("退"))
-            if hp is not None and hp < 0.3:
-                sv = self.advisor.stasis_key(me)
-                add(85, "lowhp", tr("残血 {0:.0f}%").format(hp * 100),
-                    tr("按 {0} {1}").format(*sv) if sv else tr("后撤，吃血包"),
-                    tr("对面还有 {0} 人活着").format(e_alive) if e_alive else tr("对面全死了，可以留在后面"), "bad",
-                    tr("按 {0}").format(sv[0]) if sv else tr("后撤"))
-            if diff >= 2 and e_back >= 6:
+                v = Z("人少（{0}）", "Outnumbered ({0})").format(vs)
+                sub_ = Z("队友 {0:.0f} 秒后复活", "Ally respawns in {0:.0f}s").format(a_back) if a_back else ""
+                if A == 1:
+                    add(90, "r_alone", Z("只剩你一个（{0}）", "You are alone ({0})").format(vs), Z("别守塔了：退到泉水边清兵，活着最重要", "Give the tower: clear waves near the fountain, stay alive"), sub_, "bad", Z("退", "Back"))
+                elif my_lost >= 3:
+                    add(90, "r_base", v, Z("守基地：在门牙塔下清兵，别出门", "Defend the base: clear under nexus towers, do not step out"), sub_, "bad", Z("守家", "Defend"))
+                elif a_back and a_back <= 6:
+                    add(90, "r_soon", v, Z("拖住别打：{0:.0f} 秒后队友就到", "Stall, do not fight: allies arrive in {0:.0f}s").format(a_back), "", "bad", Z("拖", "Stall"))
+                elif late:
+                    add(90, "r_late", v, Z("这波不能再死人：放塔保命", "No more deaths this wave: give the tower"), sub_, "bad", Z("放塔", "Give"))
+                else:
+                    add(90, "r_def", v, Z("退到塔下，别接团", "Back to tower, do not fight"), sub_, "bad", Z("退", "Back"))
+            elif diff == -1:
+                v = Z("少一人（{0}）", "One down ({0})").format(vs)
+                sub_ = Z("队友 {0:.0f} 秒后复活", "Ally respawns in {0:.0f}s").format(a_back) if a_back else ""
+                if e_carry is not None and e_carry.is_dead:
+                    add(72, "m1_carry", v, Z("但对面核心{0}死了：可以打", "But their carry {0} is dead: you can fight").format(name_of(e_carry)),
+                        Z("{0:.0f} 秒内", "within {0:.0f}s").format(e_carry.respawn), "good", Z("可打", "Fight"))
+                elif a_has_front and not a_front_alive:
+                    add(72, "m1_nofront", v, Z("前排没了：别接团，退后消耗", "No frontline: do not fight, poke from range"), sub_, "warn", Z("消耗", "Poke"))
+                elif a_carry is not None and a_carry is not me and a_carry.is_dead:
+                    add(72, "m1_nocarry", v, Z("我方主力{0}死了：拖时间，别接团", "Our carry {0} is dead: stall, do not fight").format(name_of(a_carry)), sub_, "warn", Z("拖", "Stall"))
+                elif a_back and a_back <= 6:
+                    add(72, "m1_soon", v, Z("等 {0:.0f} 秒，队友到了再打", "Wait {0:.0f}s for your ally, then fight").format(a_back), "", "warn", Z("等人", "Wait"))
+                else:
+                    add(72, "m1_def", v, Z("别先手，等人齐", "Do not engage, wait for the team"), sub_, "warn", Z("等人", "Wait"))
+            elif diff == 1:
+                v = Z("多一人（{0}）", "One up ({0})").format(vs)
+                sub_ = Z("对面 {0:.0f} 秒后人齐", "Enemy back in {0:.0f}s").format(e_back) if e_back else ""
+                if e_back and e_back < 4:
+                    add(70, "p1_soon", v, Z("对面 {0:.0f} 秒后人齐：别深追", "Enemy is back in {0:.0f}s: do not chase deep").format(e_back), "", "warn", Z("别追", "Hold"))
+                elif e_has_front and not e_front_alive:
+                    add(70, "p1_nofront", v, Z("对面前排死了：直接冲后排", "Their frontline is dead: run at the backline"), sub_, "good", Z("冲", "Go"))
+                elif e_carry is not None and e_carry.is_dead:
+                    add(70, "p1_carry", v, Z("对面核心{0}死了：现在开团", "Their carry {0} is dead: fight now").format(name_of(e_carry)), sub_, "good", Z("开团", "Fight"))
+                elif e_sup and all(p.is_dead for p in e_sup):
+                    add(70, "p1_nosup", v, Z("对面辅助死了：没人保后排，集火", "Their support is dead: focus the unprotected backline"), sub_, "good", Z("集火", "Focus"))
+                else:
+                    by_role(70, "p1", v, {
+                        "tank": ("你先手，队友会跟", "You engage, the team follows"),
+                        "fighter": ("找落单的打", "Jump the isolated one"),
+                        "adc": ("往前压一步输出", "Step up and deal damage"),
+                        "mage": ("技能压血线，逼他们退", "Poke them down, force them back"),
+                        "assassin": ("找残血的切", "Dive the low-HP target"),
+                        "support": ("跟前排往前，控到谁打谁", "Move up with the frontline, CC then focus")}, sub_, "good", Z("压", "Press"))
+            elif diff >= 2:
+                v = Z("人多（{0}）· 还有 {1:.0f} 秒", "Numbers up ({0}) · {1:.0f}s left").format(vs, e_back)
                 per = ""
-                pr = next((x for x in rec.get("brief") or [] if x[0] == tr("推塔")), None)
-                if pr and "+" in pr[1]:
-                    per = tr("每座塔") + " +" + pr[1].rsplit("+", 1)[1]
-                add(80, "push", tr("人多（{0}）· 还有 {1:.0f} 秒").format(vs, e_back),
-                    tr("对面团灭：全力推塔") if e_alive == 0 else tr("压上推塔，别追人"), per, "good", tr("推塔"))
-            if diff == -1:
-                add(60, "wait", tr("少一人（{0}）").format(vs), tr("别先手，等人齐"),
-                    tr("队友 {0:.0f} 秒后复活").format(a_back) if a_back else "", "warn", tr("等人"))
-            if diff == 1 and e_back >= 4:
-                add(55, "press", tr("多一人（{0}）").format(vs), tr("可以压，逼他们交技能"),
-                    tr("对面 {0:.0f} 秒后人齐").format(e_back), "good", tr("压"))
+                prow = next((x for x in rec.get("brief") or [] if x[0] == tr("推塔")), None)
+                if prow and "+" in prow[1]:
+                    per = Z("每座塔", "per tower") + " +" + prow[1].rsplit("+", 1)[1]
+                if dead_e and e_back <= 5:
+                    add(88, "p_out", Z("对面 {0:.0f} 秒后复活", "Enemy respawns in {0:.0f}s").format(e_back), Z("从塔下退出来，别被反打", "Step out of tower range before they return"), "", "warn", Z("退出", "Exit"))
+                elif E == 0 and enemy_lost >= 5:
+                    add(80, "p_end", v, Z("对面团灭：直接点基地，结束比赛", "Enemy aced: hit the nexus and end it"), "", "good", Z("点基地", "End"))
+                elif E == 0 and (late or e_back >= 30):
+                    add(80, "p_ace_long", v, Z("对面团灭而且复活久：一波推到底", "Enemy aced with long timers: push all the way"), per, "good", Z("推到底", "Push all"))
+                elif E == 0:
+                    add(80, "p_ace", v, Z("对面团灭：全力推塔", "Enemy aced: push towers"), per, "good", Z("推塔", "Push"))
+                elif e_back < 10:
+                    add(80, "p_short", v, Z("时间只够拆一座：拆完就退", "Time for one tower only: take it and leave"), per, "good", Z("拆一座", "One tower"))
+                elif hp is not None and hp < 0.5:
+                    add(80, "p_hurt", v, Z("半血别抗塔：让满血队友先进塔", "Half HP: let a full-HP teammate tank the tower"), per, "good", Z("点塔", "Hit tower"))
+                elif my_role == "tank":
+                    add(80, "p_tank", v, Z("你抗塔，队友点塔", "You tank the tower, the team hits it"), per, "good", Z("抗塔", "Tank it"))
+                else:
+                    add(80, "p_def", v, Z("压上点塔，别追人", "Push the tower, do not chase"), per, "good", Z("推塔", "Push"))
+            else:                                      # 人数相同，但有人死了
+                if dead_a and a_has_front and not a_front_alive:
+                    add(68, "x_nofront", Z("我方前排死了（{0}）", "Our frontline is dead ({0})").format(vs), Z("别接团：退后等前排复活", "Do not fight: back off until the frontline respawns"),
+                        Z("队友 {0:.0f} 秒后复活", "Ally respawns in {0:.0f}s").format(a_back) if a_back else "", "warn", Z("等前排", "Wait"))
+                elif dead_e and e_has_front and not e_front_alive:
+                    add(67, "x_enofront", Z("对面没前排了（{0}）", "They have no frontline ({0})").format(vs), Z("谁冲上来就集火谁", "Focus whoever walks up"),
+                        Z("对面 {0:.0f} 秒后人齐", "Enemy back in {0:.0f}s").format(e_back) if e_back else "", "good", Z("集火", "Focus"))
+            # ---- 建筑刚变化
+            if my_fell:
+                add(83, "t_myfell", Z("我方塔掉了", "Our tower fell"), Z("退到下一座塔，别在废墟上打", "Fall back to the next tower"), "", "bad", Z("退塔", "Fall back"))
+            if enemy_fell and diff < 2:
+                if diff >= 1:
+                    add(74, "t_fell_go", Z("拆掉一座塔", "Tower destroyed"), Z("还多一人：继续压下一座", "Still one up: pressure the next one"), "", "good", Z("继续", "Go on"))
+                else:
+                    add(74, "t_fell_stop", Z("拆掉一座塔", "Tower destroyed"), Z("别贪：退回来吃血包，等下一波", "Do not get greedy: reset and take a health pack"), "", "", Z("收", "Reset"))
+            # ---- 刚拿到人头
+            if my_recent >= 2:
+                add(66, "k_multi", Z("连杀！", "Multi kill!"), Z("继续压：对面少人，别回头", "Keep pushing: they are down players"), Z("场上 {0}", "On the map: {0}").format(vs), "good", Z("压", "Press"))
+            elif my_recent == 1 and diff <= 0:
+                add(66, "k_one", Z("拿到人头", "Kill secured"), Z("看人数再追：现在 {0}", "Check numbers before chasing: now {0}").format(vs), "", "", Z("别追", "Hold"))
+            # ---- 对面强势期 / 新增幅
+            sp = next((x for x in rec.get("brief") or [] if x[0] == tr("强势期") and len(x) > 2 and x[2]), None)
+            if sp:
+                add(38, "e_spike", Z("对面强势期", "Enemy power spike"), sp[1], "", "warn", Z("避战", "Avoid"))
+            first = adv.__dict__.get("_eaug_seen") or {}
+            fresh = [x for x in rec.get("enemy_augs") or [] if time.time() - first.get(x.get("key"), 0) < 20]
+            if fresh:
+                x = fresh[0]
+                add(63, "e_aug", Z("对面新增幅", "New enemy augment"), "{0}「{1}」".format(x.get("who", ""), x.get("aug", "")), x.get("fix") or "", "warn", Z("注意", "Note"))
+            # ---- 大招升级（6 / 11 / 16 级之后 20 秒）
+            try:
+                r_lv = int((((raw or {}).get("activePlayer") or {}).get("abilities") or {}).get("R", {}).get("abilityLevel") or 0)
+            except Exception:  # noqa
+                r_lv = 0
+            seen = getattr(self, "_ult_seen", None)
+            if seen is None or seen[0] > r_lv:
+                self._ult_seen = seen = (r_lv, 0.0)
+            elif r_lv > seen[0]:
+                self._ult_seen = seen = (r_lv, time.time())
+            if r_lv and time.time() - seen[1] < 20:
+                txt = {1: Z("有大招了：下一波团可以主动打", "Ultimate unlocked: you can start the next fight"),
+                       2: Z("大招 2 级：冷却更短，有就用", "Ult rank 2: shorter cooldown, use it freely"),
+                       3: Z("大招满级：找机会用它定胜负", "Ult maxed: use it to decide the fight")}.get(min(r_lv, 3))
+                add(62, "ult_{0}".format(min(r_lv, 3)), Z("大招 {0} 级", "Ult rank {0}").format(r_lv), txt, "", "good", Z("用大招", "Use R"))
+            # ---- 连杀赏金
+            if my_streak >= 5:
+                add(47, "b_me5", Z("你 {0} 连杀，赏金很高", "You are on a {0}-kill streak").format(my_streak), Z("别单走别先手：死一次送对面一大笔", "Do not walk alone or engage: your death pays them a lot"), "", "warn", Z("别送", "Stay alive"))
+            elif my_streak >= 3:
+                add(46, "b_me3", Z("你 {0} 连杀，有赏金", "You have a bounty ({0} kills)").format(my_streak), Z("站位收一点，别被换掉", "Play a step safer, do not get traded"), "", "warn", Z("稳", "Safe"))
+            if fed is not None:
+                v = Z("{0}很肥（{1}/{2}）", "{0} is fed ({1}/{2})").format(name_of(fed), fed.kills, fed.deaths)
+                if my_role in ("tank", "support"):
+                    add(45, "f_cc", v, Z("把控制留给{0}", "Save your CC for {0}").format(name_of(fed)), "", "warn", Z("留控", "Save CC"))
+                elif squishy:
+                    add(45, "f_far", v, Z("离{0}远一点，等他交完位移再输出", "Stay away from {0}; hit after the dash is used").format(name_of(fed)), "", "warn", Z("远离", "Away"))
+                else:
+                    add(45, "f_group", v, Z("别单挑{0}，等队友一起", "Do not duel {0}; wait for teammates").format(name_of(fed)), "", "warn", Z("别单挑", "No duel"))
+            # ---- 死得比队友多
             if allies and me.deaths >= 4 and me.deaths >= sum(p.deaths for p in allies) / len(allies) + 2:
-                add(50, "deaths", tr("你死了 {0} 次，比队友多").format(me.deaths), tr("别第一个上，跟在前排后面"), "", "warn", tr("靠后"))
-            pd = rec.get("power_diff") or 0
-            role = self.advisor.role_of(me)
-            style = {"tank": tr("找机会先手开团"), "fighter": tr("侧翼进场，切后排"), "adc": tr("躲前排后输出"),
-                     "mage": tr("远距消耗，别被先手"), "assassin": tr("等控制交完再切"), "support": tr("保护主 C，留技能反开")}[role]
-            nxt = ""
-            it = next((d for d in rec.get("items") or [] if "total" in d), None)
-            if it:
-                price = 0
-                try:
-                    price = int(self.advisor.gd.item_price(it.get("id")) or 0) if it.get("id") else 0
-                except Exception:  # noqa
-                    price = 0
-                nxt = tr("下一件 {0}").format(it["name"])
-                if price and gold >= price:
-                    nxt += tr("（钱够了，阵亡时买）")
-                elif price:
-                    nxt += tr("（还差 {0} 金）").format(price - gold)
-            if pd > 1500:
-                add(10, "lead", tr("领先 {0:.1f}k · {1}").format(pd / 1000, vs), tr("抱团推进，逼他们接团"), nxt, "", tr("推进"))
+                by_role(44, "x_deaths", Z("你死了 {0} 次，比队友多", "You died {0} times, more than teammates").format(me.deaths), {
+                    "tank": ("等队友技能好了再开，别空开", "Engage only when teammates are ready"),
+                    "fighter": ("别第一个上，等前排先进", "Do not go first; let the frontline enter"),
+                    "adc": ("站位太前：贴着队友后面打", "Too far forward: fight from behind teammates"),
+                    "mage": ("被抓太多：技能放完马上后撤", "Caught too often: back off right after casting"),
+                    "assassin": ("进场太早：只收残血", "Diving too early: only clean up"),
+                    "support": ("别走最前面探草", "Do not face-check bushes")}, "", "warn", Z("靠后", "Stay back"))
+            # ---- 钱压着没花
+            if price and gold >= price + 2500:
+                add(43, "g_huge", Z("身上 {0:.0f} 金没花（够两件）", "{0:.0f} unspent gold (two items)").format(gold), Z("这波放心往前打：阵亡了反而更强", "Fight forward: dying means a big buy"), nxt, "warn", Z("敢打", "Fight"))
+            elif price and gold >= price + 800 and hp is not None and hp < 0.5:
+                add(42, "g_hurt", Z("半血 + {0:.0f} 金", "Half HP + {0:.0f} gold").format(gold), Z("不用回血：技能打完，阵亡就买 {0}", "No need to heal: unload, then buy {0} on death").format(it_name), "", "warn", Z("敢打", "Fight"))
+            elif price and gold >= price + 800:
+                add(41, "g_rich", Z("存了 {0:.0f} 金，够买 {1}", "{0:.0f} gold, enough for {1}").format(gold, it_name), Z("可以打凶一点，阵亡时买", "Play more aggressively; buy on death"), "", "", Z("敢打", "Fight"))
+            # ======== 背景提示（不紧急，每 8 秒轮流一条） ========
+            if minute < 1.25:
+                by_role(40, "o", Z("开局", "Opening"), {
+                    "tank": ("站最前挡技能，别第一波就开团", "Stand in front and block; do not engage on wave one"),
+                    "fighter": ("先清兵，别第一个进", "Clear the wave first; do not go in first"),
+                    "adc": ("站兵线后补刀，躲钩子", "Farm behind minions, dodge hooks"),
+                    "mage": ("用技能清兵压血", "Use spells to clear and poke"),
+                    "assassin": ("先别进场，丢雪球前看人数", "Stay out; count heads before snowballing in"),
+                    "support": ("跟着主 C，控制留着反开", "Stay with the carry, hold CC to counter-engage")}, nxt, "", Z("开局", "Open"))
+            if wp is not None and wp < 0.25:
+                if late:
+                    add(36, "w_low_late", Z("胜率 {0:.0f}%", "Win chance {0:.0f}%").format(wp * 100), Z("只能赌一波：抱团等对面失误，别分开", "One fight left: stay grouped and wait for a mistake"), "", "warn", Z("抱团", "Group"))
+                else:
+                    add(36, "w_low", Z("胜率 {0:.0f}%", "Win chance {0:.0f}%").format(wp * 100), Z("拖后期：守塔清兵，只接人多的团", "Stall: clear waves under tower, only take numbers-up fights"), "", "warn", Z("拖", "Stall"))
+            elif wp is not None and wp > 0.8:
+                if enemy_lost >= 3:
+                    add(36, "w_end", Z("胜率 {0:.0f}%", "Win chance {0:.0f}%").format(wp * 100), Z("可以结束了：跟超级兵一起推", "Time to end: push with the super minions"), "", "good", Z("结束", "End"))
+                else:
+                    add(36, "w_high", Z("胜率 {0:.0f}%", "Win chance {0:.0f}%").format(wp * 100), Z("优势很大：抱团别单走，别送赏金", "Big lead: stay grouped, do not give bounties"), "", "good", Z("抱团", "Group"))
+            if enemy_lost >= 5:
+                add(34, "s_enexus", Z("对面只剩基地", "Only their nexus is left"), Z("赢一波团就直接点水晶", "Win one fight and hit the nexus"), "", "good", Z("点基地", "End"))
+            elif enemy_lost >= 3:
+                add(34, "s_einhib", Z("对面水晶破了", "Their inhibitor is down"), Z("跟着超级兵一起推，别提前进", "Push with super minions; do not go in early"), "", "good", Z("跟兵", "With wave"))
+            if my_lost >= 5:
+                add(35, "s_mynexus", Z("我方只剩基地", "Only our nexus is left"), Z("不能再输团：全员守家，别出高地", "No more lost fights: everyone defends"), "", "bad", Z("守家", "Defend"))
+            elif my_lost >= 3:
+                add(35, "s_myinhib", Z("我方水晶被破", "Our inhibitor is down"), Z("先清超级兵，再打团", "Clear super minions before fighting"), "", "warn", Z("清兵", "Clear"))
+            if lv_d <= -2:
+                add(33, "l_behind", Z("等级落后 {0:.0f} 级", "{0:.0f} levels behind").format(-lv_d), Z("别先手：站在经验范围里蹭等级", "Do not engage: soak XP in range"), "", "warn", Z("蹭经验", "Soak XP"))
+            elif lv_d >= 2:
+                add(33, "l_ahead", Z("等级领先 {0:.0f} 级", "{0:.0f} levels ahead").format(lv_d), Z("主动找架打：等级优势会被追上", "Force fights: the level lead will fade"), "", "good", Z("找架打", "Fight"))
+            if minute >= 6 and a_carry is me and len(team) > 1:
+                second = max((pw(p) for p in team if p is not me), default=0)
+                if second and pw(me) >= second * 1.25:
+                    add(32, "x_carry", Z("你是全队最肥的", "You are your team's carry"), Z("别先死：等前排开了再进", "Do not die first: enter after the frontline"), "", "", Z("别先死", "Stay alive"))
+            if e_sin and squishy:
+                add(31, "x_assassin", Z("对面有刺客{0}", "Enemy assassin: {0}").format(name_of(e_sin[0])), Z("站队友中间，位移和闪现留给他", "Stand between teammates; save dash and Flash for them"), "", "warn", Z("防切", "Anti-dive"))
+            alive_sup = [p for p in e_sup if not p.is_dead]
+            if alive_sup and my_role in ("assassin", "fighter", "mage"):
+                add(30, "x_sup", Z("对面有辅助{0}", "Enemy support: {0}").format(name_of(alive_sup[0])), Z("能碰到就先杀{0}，后排就没人保", "Kill {0} first when reachable; the backline loses its peel").format(name_of(alive_sup[0])), "", "", Z("先杀辅助", "Kill sup"))
+            # ---- 平时打法：时间段 × 局势 × 定位
+            if minute < 5:
+                by_role(10, "ph_early", Z("前期 · {0}", "Early · {0}").format(vs), {
+                    "tank": ("顶在兵线前面，等队友技能好了再开", "Hold the front; engage when teammates are ready"),
+                    "fighter": ("换血别换命，等 6 级", "Trade HP, not lives; wait for level 6"),
+                    "adc": ("补刀攒钱，别吃消耗", "Farm gold, avoid poke"),
+                    "mage": ("技能清兵加消耗，留一点蓝", "Clear and poke with spells, keep some mana"),
+                    "assassin": ("别硬切，攒大招", "No forced dives; wait for your ult"),
+                    "support": ("帮主 C 挡技能，攒控制", "Body-block for the carry, hold CC")}, nxt, "", Z("发育", "Farm"))
+            elif late:
+                by_role(10, "ph_late", Z("后期 · {0}", "Late · {0}").format(vs), {
+                    "tank": ("一波团定胜负：等队友技能齐了再开", "One fight decides: engage only when everyone is ready"),
+                    "fighter": ("盯住对面主 C，进场就要换掉", "Mark their carry; trade for them when you go in"),
+                    "adc": ("你死团就输：站最后面输出", "If you die the fight is lost: deal damage from the very back"),
+                    "mage": ("技能留给团战，别拿来清兵", "Save spells for the fight, not the wave"),
+                    "assassin": ("只切主 C，切不到就不进", "Only dive the carry; if you cannot, stay out"),
+                    "support": ("保命技能全留给主 C", "Save every defensive spell for the carry")}, nxt, "", Z("等团", "Hold"))
+            elif pd > 1500:
+                by_role(10, "ph_lead", Z("领先 {0:.1f}k · {1}", "Ahead {0:.1f}k · {1}").format(pd / 1000, vs), {
+                    "tank": ("带头压塔，逼他们出来接", "Lead the siege, force them to come out"),
+                    "fighter": ("卡住侧面，谁来守塔就打谁", "Hold the flank, punish whoever defends"),
+                    "adc": ("跟着前排点塔，别单走", "Hit towers behind the frontline, never alone"),
+                    "mage": ("用技能清兵压线，推塔", "Shove waves with spells, take towers"),
+                    "assassin": ("蹲落单的，别正面进", "Hunt stragglers, do not enter from the front"),
+                    "support": ("跟团推进，先探草丛", "Push with the team, check bushes first")}, nxt, "", Z("推进", "Push"))
             elif pd < -1500:
-                add(10, "behind", tr("落后 {0:.1f}k · {1}").format(-pd / 1000, vs), tr("塔下守，清兵等装备"), nxt, "", tr("守"))
+                by_role(10, "ph_behind", Z("落后 {0:.1f}k · {1}", "Behind {0:.1f}k · {1}").format(-pd / 1000, vs), {
+                    "tank": ("守塔下，只反手开团", "Hold under tower, only counter-engage"),
+                    "fighter": ("别先进，等他们越塔再打", "Do not go first; fight when they dive"),
+                    "adc": ("塔下清兵，等装备", "Clear under tower, wait for items"),
+                    "mage": ("远程清兵守塔，别被开到", "Wave-clear from range, do not get engaged on"),
+                    "assassin": ("只抓落单，不打正面", "Only pick stragglers, no front-to-back fights"),
+                    "support": ("贴着主 C，控制留给冲进来的人", "Stay on the carry, CC whoever dives")}, nxt, "", Z("守", "Hold"))
             else:
-                add(10, "even", tr("均势 · {0}").format(vs), style, nxt, "",
-                    {"tank": tr("开团"), "fighter": tr("切后排"), "adc": tr("站后排"), "mage": tr("消耗"),
-                     "assassin": tr("等技能"), "support": tr("保 C")}[role])
+                by_role(10, "ph_even", Z("均势 · {0}", "Even · {0}").format(vs), {
+                    "tank": ("找机会先手开团", "Look for an engage"),
+                    "fighter": ("侧翼进场，切后排", "Flank and dive the backline"),
+                    "adc": ("躲前排后输出", "Deal damage from behind the frontline"),
+                    "mage": ("远距消耗，别被先手", "Poke from range, do not get engaged on"),
+                    "assassin": ("等控制交完再切", "Dive after their CC is used"),
+                    "support": ("保护主 C，留技能反开", "Protect the carry, hold spells to counter-engage")}, nxt, "",
+                    {"tank": Z("开团", "Engage"), "fighter": Z("切后排", "Dive"), "adc": Z("站后排", "Backline"), "mage": Z("消耗", "Poke"),
+                     "assassin": Z("等技能", "Wait CDs"), "support": Z("保 C", "Peel")}.get(my_role, ""))
         if not out:
             return None
-        best = max(out, key=lambda d: d["pri"])
+        urgent = [d for d in out if d["pri"] >= 50]
         now, hold = time.time(), getattr(self, "_now_hold", None)
-        if hold and hold[0]["key"] != best["key"] and best["pri"] < hold[0]["pri"] and now - hold[1] < 3 \
-                and not (me.is_dead or hold[0]["key"] == "dead"):
-            same = next((d for d in out if d["key"] == hold[0]["key"]), None)
-            return same or hold[0]                     # 刚出现的高优先提示至少留 3 秒，不要一闪就没
-        if not hold or hold[0]["key"] != best["key"]:
-            self._now_hold = (best, now)
-        else:
-            self._now_hold = (best, hold[1])
+        if not urgent:
+            pool = sorted(out, key=lambda d: -d["pri"])
+            best = pool[int(now / 8) % len(pool)]      # 背景提示轮流显示
+            if hold and now - hold[1] < 3 and hold[0]["pri"] >= 50 and hold[0]["key"] != "dead" and not me.is_dead:
+                return hold[0]                         # 刚才的紧急提示至少留 3 秒
+            self._now_hold = (best, hold[1] if hold and hold[0]["key"] == best["key"] else now)
+            return best
+        best = max(urgent, key=lambda d: d["pri"])
+        if hold and hold[0]["key"] != best["key"] and best["pri"] < hold[0]["pri"] and now - hold[1] < 3 and hold[0]["pri"] >= 50 \
+                and not me.is_dead and not hold[0]["key"].startswith("d_"):
+            return next((d for d in out if d["key"] == hold[0]["key"]), hold[0])
+        self._now_hold = (best, hold[1] if hold and hold[0]["key"] == best["key"] else now)
         return best
 
     def death_row(self, state):
@@ -7802,7 +8152,7 @@ class Engine:
         except Exception:  # noqa
             pass
         try:
-            rec["now"] = self.decide(state, rec) if getattr(self, "live_now", True) else None
+            rec["now"] = self.decide(state, rec, raw) if getattr(self, "live_now", True) else None
         except Exception:  # noqa
             rec["now"] = None
             log_crash("decide failed", sys.exc_info())
@@ -12151,7 +12501,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             col = {"bad": BAD, "good": GOOD, "warn": WARN}.get(nw["tone"], FG)
             short = nw["short"]
             nx = next((d for d in items if "total" in d), None)
-            tip = tr("每 1~2 秒按场上情况重算：技能点 > 人少要退 > 残血 > 人多推塔 > 平时打法")
+            tip = tr("每 1~2 秒按场上情况重算。紧急的事（加点、人数、残血、推塔）马上显示；\n不紧急的提示每 8 秒轮流一条。")
             if nx:
                 tip += "\n" + tr("点一下复制下一件装备名")
                 copy = lambda n=nx["name"]: copy_item(n)
