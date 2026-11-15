@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.13.0"
-APP_BUILD = 2026111401         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.14.0"
+APP_BUILD = 2026111402         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5588,6 +5588,167 @@ MOMENT_LESSON = {
 }
 
 
+# ---- 5.14：每个英雄的关键技能和威胁类型（实时决策用）。写法：英雄 id（小写） 类型:按键 …
+KEY_SKILLS_RAW = """
+aatrox sust:R cc:Q|ahri cc:E burst:R|akali dive:R stealth:W|akshan reset:E stealth:W|alistar eng:W peel:Q|ambessa dive:R sust:W
+amumu eng:R cc:Q|anivia zone:W aoe:R|annie burst:R cc:Q|aphelios hyper:Q aoe:R|ashe cc:R poke:W|aurelionsol hyper:Q aoe:R
+aurora burst:Q zone:R|azir zone:R hyper:W|bard save:R cc:Q|belveth hyper:E reset:R|blitzcrank hook:Q|brand aoe:R burst:Q
+braum block:E peel:R|briar dive:R sust:W|caitlyn poke:Q zone:W|camille dive:R cc:E|cassiopeia hyper:E cc:R|chogath exec:R cc:Q
+corki poke:R burst:Q|darius exec:R hook:E|diana eng:R dive:E|draven hyper:Q glob:R|drmundo sust:R|ekko dive:E aoe:R
+elise cc:E burst:Q|evelynn stealth:R exec:R|ezreal poke:Q glob:R|fiddlesticks eng:R cc:Q|fiora sust:R block:W|fizz dive:Q burst:R
+galio eng:E cc:W|gangplank glob:R burst:E|garen exec:R sust:W|gnar eng:R|gragas eng:E peel:R|graves burst:R
+gwen sust:Q block:W|hecarim eng:R dive:E|heimerdinger zone:Q cc:E|hwei poke:Q aoe:R|illaoi zone:R hook:E|irelia dive:Q cc:E
+ivern peel:E cc:Q|janna peel:R heal:E|jarvaniv eng:Q zone:R|jax dive:Q block:E|jayce poke:Q|jhin poke:W glob:R
+jinx hyper:Q glob:R|ksante peel:W cc:R|kaisa hyper:E dive:R|kalista hyper:E peel:R|karma poke:Q heal:E|karthus aoe:E glob:R
+kassadin dive:R hyper:R|katarina reset:R dive:E|kayle hyper:E save:R|kayn dive:R sust:Q|kennen eng:R aoe:R|khazix dive:E stealth:R
+kindred save:R hyper:Q|kled eng:R dive:Q|kogmaw hyper:W poke:R|leblanc dive:W burst:Q|leesin dive:Q peel:R|leona eng:E cc:R
+lillia cc:R aoe:Q|lissandra eng:E cc:R|lucian burst:Q|lulu heal:E save:R|lux cc:Q glob:R|malphite eng:R
+malzahar cc:R aoe:E|maokai eng:W zone:E|masteryi reset:Q dive:R|mel poke:Q block:W|milio heal:W peel:R|missfortune aoe:R poke:E
+mordekaiser sust:W cc:R|morgana cc:Q block:E aoe:R|naafiri dive:W|nami heal:W cc:Q eng:R|nasus hyper:Q sust:R|nautilus hook:Q cc:R
+neeko eng:R cc:E|nidalee poke:Q heal:E|nilah dive:E sust:R|nocturne dive:R block:W|nunu eng:W aoe:R|olaf sust:R dive:Q
+orianna eng:R poke:Q|ornn eng:R cc:E|pantheon dive:W block:E|poppy peel:W cc:E|pyke hook:Q exec:R stealth:W|qiyana dive:E eng:R
+quinn dive:E|rakan eng:W peel:E|rammus eng:Q cc:E|reksai dive:E exec:R|rell eng:W cc:R|renata save:W eng:R
+renekton dive:E cc:W|rengar dive:R stealth:R|riven dive:E exec:R|rumble aoe:R zone:R|ryze hyper:Q cc:W|samira reset:R block:W
+sejuani eng:R cc:Q|senna heal:Q glob:R|seraphine heal:W eng:R|sett eng:R cc:E|shaco stealth:Q zone:W|shen peel:R cc:E
+shyvana aoe:E dive:R|singed zone:Q cc:E|sion eng:R cc:Q|sivir hyper:W block:E|skarner eng:R|smolder hyper:Q poke:W
+sona heal:W eng:R|soraka heal:W save:R|swain sust:R hook:E|sylas sust:W dive:E|syndra burst:R cc:E|tahmkench peel:R cc:Q
+taliyah zone:R poke:Q|talon dive:Q stealth:R|taric save:R heal:Q cc:E|teemo zone:R poke:Q|thresh hook:Q peel:W|tristana hyper:E reset:W
+trundle sust:R zone:E|tryndamere sust:R dive:E|twistedfate cc:W poke:Q|twitch stealth:Q hyper:R|udyr sust:W|urgot exec:R
+varus poke:Q cc:R|vayne hyper:W stealth:R|veigar burst:R zone:E|velkoz poke:W burst:R|vex burst:R cc:W|vi dive:R cc:Q
+viego reset:R dive:W|viktor zone:W poke:E|vladimir sust:Q aoe:R|volibear dive:R sust:W|warwick cc:R sust:Q|monkeyking eng:R stealth:W
+xayah hyper:E|xerath poke:Q glob:R|xinzhao dive:E block:R|yasuo block:W dive:R|yone dive:E eng:R|yorick zone:W
+yunara hyper:Q|yuumi heal:E|zac eng:E|zed dive:R|zeri hyper:R|ziggs poke:Q glob:R
+zilean save:R cc:Q|zoe poke:Q cc:E|zyra zone:W cc:R
+"""
+KEY_SKILLS = {}
+for _ln in KEY_SKILLS_RAW.replace("\n", "|").split("|"):
+    _p = _ln.split()
+    if len(_p) >= 2:
+        KEY_SKILLS[_p[0]] = [tuple(x.split(":")) for x in _p[1:]]
+# 类型的重要程度（同时有几个可说时先说哪个）
+TRAIT_RANK = ["heal", "eng", "hook", "hyper", "save", "dive", "burst", "aoe", "exec", "cc", "reset", "peel", "block", "poke", "sust", "zone", "glob", "stealth"]
+TRAIT_NOUN = {"hook": ("钩子", "hook"), "eng": ("开团", "engage"), "dive": ("突进", "dive"), "poke": ("消耗", "poke"), "heal": ("治疗", "healing"),
+              "hyper": ("持续输出", "carry"), "burst": ("爆发", "burst"), "aoe": ("范围伤害", "AoE"), "sust": ("回血", "sustain"),
+              "reset": ("刷新", "resets"), "zone": ("封路", "zoning"), "save": ("保命技", "save"), "glob": ("远程大招", "snipe ult"),
+              "cc": ("控制", "CC"), "exec": ("斩杀", "execute"), "stealth": ("隐身", "stealth"), "block": ("挡技能", "block"), "peel": ("反开", "peel")}
+# 对面这个英雄活着时怎么打：（你是后排 / 你是前排），每个是（中文, 英文）；{n} 英雄名，{k} 按键
+TR_ENEMY = {
+    "hook": (("站小兵后面：{n}的 {k} 钩到谁谁死", "Stand behind minions: {n}'s {k} hook means death"),
+             ("挡在后排前面，替他们吃{n}的 {k} 钩子", "Body-block {n}'s {k} hook for your backline")),
+    "eng": (("别和队友站一起：{n}的 {k} 会开到一群", "Do not clump: {n}'s {k} engages on groups"),
+            ("{n} {k} 开进来时，回头保后排", "When {n} engages with {k}, turn and peel for the backline")),
+    "dive": (("{n}会切你：位移和闪现留给他的 {k}", "{n} will dive you: save dash and Flash for their {k}"),
+             ("{n}进场切后排时，回头控住他", "When {n} dives the backline, turn and lock them down")),
+    "poke": (("横向走位躲{n}的 {k}：被磨到半血就别接团", "Sidestep {n}'s {k}; do not fight after being poked to half"),
+             ("别站着被{n}的 {k} 白打：要么开团要么退出射程", "Do not sit in {n}'s {k} range: engage or back out")),
+    "heal": (("先杀{n}，否则打多少奶多少", "Kill {n} first or every bit of damage gets healed"),
+             ("开团先找{n}：{k} 会把伤害奶回来", "Engage onto {n}: their {k} heals everything back")),
+    "hyper": (("{n}拖到后期没人打得过：现在就逼团", "{n} outscales everyone: force fights now"),
+              ("团战第一个冲{n}，别让他站着输出", "Go for {n} first; do not let them free-hit")),
+    "burst": (("{n}一套 {k} 能秒你：等他技能放空再往前", "{n}'s {k} combo one-shots you: step up after it is used"),
+              ("替后排吃掉{n}的 {k}，再反打", "Soak {n}'s {k} for the backline, then fight back")),
+    "aoe": (("分散站：{n}的 {k} 打一片", "Spread out: {n}'s {k} hits everyone"),
+            ("别把{n}的 {k} 带进自己人堆里", "Do not drag {n}'s {k} into your own team")),
+    "sust": (("别和{n}拼消耗：风筝他，等他 {k} 结束", "Do not trade with {n}: kite until {k} ends"),
+             ("集火要一次打死{n}，不然他 {k} 吸回来", "Burst {n} down in one go or {k} heals it back")),
+    "reset": (("别残血留在场上：{n}拿到人头会刷新连杀", "Do not stay low: {n} resets on kills"),
+              ("{n}进场就控住，别让他拿第一个人头", "CC {n} on entry; deny the first kill")),
+    "zone": (("别被{n}的 {k} 把你和队友隔开", "Do not let {n}'s {k} split you from the team"),
+             ("{n}放 {k} 后别硬穿，绕开或等它消失", "Do not walk through {n}'s {k}; go around or wait")),
+    "save": (("{n}有 {k} 保命：先打别人，或骗出来再集火", "{n} has {k} to save people: bait it out before focusing"),
+             ("别把大招交在被{n} {k} 保住的人身上", "Do not ult the target {n} just saved with {k}")),
+    "glob": (("残血别慢慢走：{n}的 {k} 远程收人头", "Do not walk slowly when low: {n}'s {k} snipes"),
+             ("残血队友会被{n}的 {k} 收掉：帮忙挡一下", "{n}'s {k} snipes low allies: body-block it")),
+    "cc": (("躲{n}的 {k}：中了就是被集火", "Dodge {n}'s {k}: getting hit means getting focused"),
+           ("替后排挡{n}的 {k}", "Block {n}'s {k} for the backline")),
+    "exec": (("血量低于一半就退：{n}的 {k} 是斩杀", "Back off under half HP: {n}'s {k} executes"),
+             ("半血以下别顶在前面：{n} {k} 斩杀", "Do not frontline under half HP: {n}'s {k} executes")),
+    "stealth": (("{n}会隐身摸过来：别离队友太远", "{n} sneaks up invisible: stay near teammates"),
+                ("{n}现身时马上控，他很脆", "CC {n} the moment they appear; they are squishy")),
+    "block": (("关键技能别对着{n}的 {k} 放：先骗出来", "Do not throw key spells into {n}'s {k}: bait it first"),
+              ("先用小技能骗{n}的 {k}，再交大招", "Bait {n}'s {k} with a small spell, then ult")),
+    "peel": (("{n}会保后排：别正面冲他身边的人", "{n} peels: do not run straight at whoever they guard"),
+             ("开团避开{n}：他的 {k} 会把你们推开", "Engage away from {n}: their {k} pushes you off")),
+}
+# 对面这个英雄死了的那段时间
+TR_EDEAD = {
+    "hook": ("没有钩子了：可以走出兵线往前压", "No hook: step out past the minions and press"),
+    "eng": ("对面没人开团：往前站，压他们血线", "They cannot engage: step up and poke them down"),
+    "dive": ("没人切后排了：后排放心往前输出", "No diver: backline can step up freely"),
+    "poke": ("消耗手没了：现在是开团的时候", "Their poke is gone: this is the time to engage"),
+    "heal": ("没治疗了：现在打掉的血回不来，开团", "No healing: damage sticks now, engage"),
+    "hyper": ("对面主要输出没了：逼他们接团", "Their main damage is dead: force the fight"),
+    "burst": ("对面爆发没了：这段时间不会被秒，往前打", "Their burst is down: you will not get one-shot, step up"),
+    "aoe": ("对面团战伤害没了：可以抱团打", "Their teamfight damage is dead: group up and fight"),
+    "sust": ("最难杀的不在：集火其他人", "The unkillable one is dead: focus the rest"),
+    "reset": ("收割手不在：残血也可以留场", "Their cleaner is dead: staying low is safe for now"),
+    "zone": ("没人封路了：直接冲进去", "No zoning: run straight in"),
+    "save": ("保命技没了：集火他们的主 C", "No save: focus their carry"),
+    "glob": ("不用怕远程大招：残血可以慢慢回", "No long-range ult: safe to walk back low"),
+    "cc": ("关键控制没了：可以放心进场", "Key CC is down: safe to go in"),
+    "exec": ("斩杀没了：半血也能继续打", "No execute: keep fighting at half HP"),
+    "stealth": ("隐身的死了：可以分散站位", "The stealth champ is dead: spread out freely"),
+    "block": ("没人挡技能了：关键技能随便放", "Nobody blocks spells now: throw key spells freely"),
+    "peel": ("没人保后排：直接冲他们的主 C", "No peel: run at their carry"),
+}
+# 你自己这个英雄：（平时 / 人多时 / 人少时）
+TR_SELF = {
+    "hook": (("钩后排：{k} 钩到脆皮就是一个人头", "Hook the backline: {k} on a squishy is a kill"), ("{k} 钩到谁打谁", "{k}: whoever gets hooked dies"),
+             ("别乱钩：{k} 留给冲进来的人", "Hold {k} for whoever dives in")),
+    "eng": (("等队友跟得上再 {k} 开团", "Engage with {k} only when the team can follow"), ("现在就 {k} 开团", "Engage with {k} now"),
+            ("别开：{k} 留着反手", "Do not engage: keep {k} to counter")),
+    "dive": (("等对面控制交完再 {k} 进场", "Go in with {k} after their CC is used"), ("{k} 切他们后排", "Dive their backline with {k}"),
+             ("别进：只收冲过头的人", "Stay out: only punish overextenders")),
+    "poke": (("{k} 先把人磨到半血，再让队友开", "Poke them to half with {k}, then let the team engage"), ("{k} 压血线，逼他们放塔", "Pressure with {k}, force them off the tower"),
+             ("远距离 {k} 清兵守塔", "Wave-clear with {k} from range")),
+    "heal": (("{k} 留给被集火的人，别满血时乱放", "Save {k} for the focused ally"), ("跟着前排往前奶", "Move up and heal the frontline"),
+             ("奶住被开到的队友，一起后撤", "Heal whoever got engaged on and retreat together")),
+    "hyper": (("你是后期核心：活着输出比什么都重要", "You are the late-game carry: staying alive matters most"), ("往前站一步输出", "Step up and deal damage"),
+              ("只打进塔的人", "Only hit whoever dives the tower")),
+    "burst": (("{k} 留给他们的后排，别丢在坦克身上", "Save {k} for their backline, not the tank"), ("找脆皮一套秒掉", "One-shot a squishy"),
+              ("一套打在冲进来的人身上", "Unload on whoever dives in")),
+    "aoe": (("{k} 等他们挤在一起再放", "Hold {k} until they clump"), ("他们守塔会站一起：{k} 砸进去", "They clump under tower: drop {k} on them"),
+            ("{k} 留着打越塔的人", "Keep {k} for tower divers")),
+    "sust": (("开 {k} 后站着打：你越打越肉", "After {k}, stand and fight: you outlast them"), ("顶在最前面换血", "Frontline and trade"),
+             ("别顶：{k} 留着逃命", "Do not frontline: keep {k} to escape")),
+    "reset": (("等残血出现再进：拿到第一个人头就能连杀", "Enter when someone is low: the first kill starts the chain"), ("找残血收割", "Clean up the low ones"),
+              ("别进：没有人头可以刷", "Stay out: no kills to reset on")),
+    "zone": (("{k} 封住退路，或隔开他们的前后排", "Use {k} to cut the retreat or split their team"), ("{k} 封退路，别让他们跑", "Block the retreat with {k}"),
+             ("{k} 封住路口拖时间", "Stall by blocking the path with {k}")),
+    "save": (("{k} 留给主 C，别给快死的坦克", "Save {k} for the carry, not a dying tank"), ("大胆打：{k} 能保一个人", "Fight boldly: {k} saves one person"),
+             ("{k} 保住被开的人然后撤", "Save the engaged ally with {k}, then retreat")),
+    "glob": (("{k} 收残血或者远程先手", "Use {k} to snipe or start fights from range"), ("{k} 开团或追残血", "{k} to engage or finish runners"),
+             ("{k} 清兵守塔", "Wave-clear with {k}")),
+    "cc": (("{k} 控到谁就集火谁：优先后排", "Whoever {k} hits gets focused: aim for the backline"), ("{k} 控到就打", "Land {k} and go"),
+           ("{k} 留给冲进来的人", "Hold {k} for whoever dives in")),
+    "exec": (("{k} 留着斩杀，别先手交", "Keep {k} to execute; do not open with it"), ("打残一个就 {k} 收", "Get one low, then finish with {k}"),
+             ("{k} 斩冲过头的人", "Execute overextenders with {k}")),
+    "stealth": (("隐身绕后，等团战开了再出现", "Flank invisible; appear after the fight starts"), ("绕后切后排", "Flank and dive the backline"),
+                ("隐身别露头，等机会", "Stay hidden and wait")),
+    "block": (("{k} 留着挡关键技能，别乱放", "Keep {k} for the key spell"), ("{k} 挡掉反开的技能", "Block the counter-engage with {k}"),
+              ("{k} 挡他们开团的技能", "Block their engage with {k}")),
+    "peel": (("站在主 C 旁边：谁冲进来就 {k} 弄走", "Stand by the carry: {k} whoever dives"), ("跟团往前，留 {k} 反开", "Move up with the team, keep {k} to counter"),
+             ("{k} 推开冲进来的人，一起撤", "Push divers off with {k} and retreat together")),
+}
+TR_ALLY = {
+    "eng": ("{n} {k} 开团后马上跟，别等", "Follow up instantly when {n} engages with {k}"),
+    "hook": ("{n} {k} 钩到人就集火", "Focus whoever {n} hooks with {k}"),
+    "heal": ("残血往{n}身边靠", "When low, move toward {n}"),
+    "hyper": ("保护{n}：他活着团战才打得赢", "Protect {n}: fights are won while they live"),
+    "save": ("{n}有 {k} 能保人：可以打得深一点", "{n} can save with {k}: you can fight deeper"),
+    "aoe": ("{n}放 {k} 时把你的范围技能叠上去", "Layer your AoE on {n}'s {k}"),
+    "cc": ("{n} {k} 控到谁，你就打谁", "Hit whoever {n} catches with {k}"),
+}
+TR_ADEAD = {
+    "eng": ("我方开团手不在：别先手，等他回来", "Our engage is dead: do not start fights"),
+    "heal": ("治疗不在：别换血，退后等", "Our healer is dead: do not trade, back off"),
+    "hyper": ("主要输出不在：拖时间，别接团", "Our main damage is dead: stall, do not fight"),
+    "save": ("保命技不在：站位收一点", "Our save is dead: play a step safer"),
+    "peel": ("没人保后排了：后排往后站", "No peel: backline stand further back"),
+    "hook": ("钩子不在：别指望先手，守着打", "Our hook is dead: play defensively"),
+}
+
+
 class Engine:
     def __init__(self, gd, source, interval=1.5, stats=None):
         self.gd, self.source, self.interval = gd, source, interval
@@ -6612,6 +6773,21 @@ class Engine:
             zh, en = table.get(my_role) or table["fighter"]
             add(pri, key + "_" + my_role, verb, Z(zh, en), sub, tone, short)
         name_of = lambda p: cn(p.cid) if p is not None else ""   # noqa
+        # ---- 5.14：英雄的关键技能
+        now_t = time.time()
+        side = 0 if (squishy or my_role == "assassin") else 1     # 0 = 你是后排 / 脆皮，1 = 你是前排
+        rank = lambda tk: TRAIT_RANK.index(tk[0])                 # noqa
+        cidl = lambda p: str(p.cid).lower()                       # noqa
+
+        def traits(p):
+            return sorted(KEY_SKILLS.get(cidl(p), []), key=rank)
+
+        def fmt(pair, p=None, k=""):
+            return Z(*pair).format(n=name_of(p), k=k)
+
+        def noun(tr_):
+            return Z(*TRAIT_NOUN[tr_])
+        my_tr = traits(me)
         if me.is_dead:
             r = me.respawn
             head = Z("阵亡 · {0:.0f} 秒后复活", "Dead · respawn in {0:.0f}s").format(r)
@@ -6700,13 +6876,15 @@ class Engine:
                     add(90, "r_soon", v, Z("拖住别打：{0:.0f} 秒后队友就到", "Stall, do not fight: allies arrive in {0:.0f}s").format(a_back), "", "bad", Z("拖", "Stall"))
                 elif late:
                     add(90, "r_late", v, Z("这波不能再死人：放塔保命", "No more deaths this wave: give the tower"), sub_, "bad", Z("放塔", "Give"))
+                elif my_tr and hp is not None and hp >= 0.5:
+                    add(90, "sr_%s_%s" % (my_tr[0][0], cidl(me)), v, Z("退到塔下；", "Back to tower; ") + fmt(TR_SELF[my_tr[0][0]][2], None, my_tr[0][1]), sub_, "bad", Z("退", "Back"))
                 else:
                     add(90, "r_def", v, Z("退到塔下，别接团", "Back to tower, do not fight"), sub_, "bad", Z("退", "Back"))
             elif diff == -1:
                 v = Z("少一人（{0}）", "One down ({0})").format(vs)
                 sub_ = Z("队友 {0:.0f} 秒后复活", "Ally respawns in {0:.0f}s").format(a_back) if a_back else ""
                 if e_carry is not None and e_carry.is_dead:
-                    add(72, "m1_carry", v, Z("但对面核心{0}死了：可以打", "But their carry {0} is dead: you can fight").format(name_of(e_carry)),
+                    add(73, "m1_carry", v, Z("但对面核心{0}死了：可以打", "But their carry {0} is dead: you can fight").format(name_of(e_carry)),
                         Z("{0:.0f} 秒内", "within {0:.0f}s").format(e_carry.respawn), "good", Z("可打", "Fight"))
                 elif a_has_front and not a_front_alive:
                     add(72, "m1_nofront", v, Z("前排没了：别接团，退后消耗", "No frontline: do not fight, poke from range"), sub_, "warn", Z("消耗", "Poke"))
@@ -6715,18 +6893,23 @@ class Engine:
                 elif a_back and a_back <= 6:
                     add(72, "m1_soon", v, Z("等 {0:.0f} 秒，队友到了再打", "Wait {0:.0f}s for your ally, then fight").format(a_back), "", "warn", Z("等人", "Wait"))
                 else:
-                    add(72, "m1_def", v, Z("别先手，等人齐", "Do not engage, wait for the team"), sub_, "warn", Z("等人", "Wait"))
+                    if my_tr:
+                        add(72, "sd_%s_%s" % (my_tr[0][0], cidl(me)), v, fmt(TR_SELF[my_tr[0][0]][2], None, my_tr[0][1]), sub_, "warn", Z("等人", "Wait"))
+                    else:
+                        add(72, "m1_def", v, Z("别先手，等人齐", "Do not engage, wait for the team"), sub_, "warn", Z("等人", "Wait"))
             elif diff == 1:
                 v = Z("多一人（{0}）", "One up ({0})").format(vs)
                 sub_ = Z("对面 {0:.0f} 秒后人齐", "Enemy back in {0:.0f}s").format(e_back) if e_back else ""
                 if e_back and e_back < 4:
-                    add(70, "p1_soon", v, Z("对面 {0:.0f} 秒后人齐：别深追", "Enemy is back in {0:.0f}s: do not chase deep").format(e_back), "", "warn", Z("别追", "Hold"))
+                    add(73, "p1_soon", v, Z("对面 {0:.0f} 秒后人齐：别深追", "Enemy is back in {0:.0f}s: do not chase deep").format(e_back), "", "warn", Z("别追", "Hold"))
                 elif e_has_front and not e_front_alive:
                     add(70, "p1_nofront", v, Z("对面前排死了：直接冲后排", "Their frontline is dead: run at the backline"), sub_, "good", Z("冲", "Go"))
                 elif e_carry is not None and e_carry.is_dead:
                     add(70, "p1_carry", v, Z("对面核心{0}死了：现在开团", "Their carry {0} is dead: fight now").format(name_of(e_carry)), sub_, "good", Z("开团", "Fight"))
                 elif e_sup and all(p.is_dead for p in e_sup):
                     add(70, "p1_nosup", v, Z("对面辅助死了：没人保后排，集火", "Their support is dead: focus the unprotected backline"), sub_, "good", Z("集火", "Focus"))
+                elif my_tr:
+                    add(70, "sa_%s_%s" % (my_tr[0][0], cidl(me)), v, fmt(TR_SELF[my_tr[0][0]][1], None, my_tr[0][1]), sub_, "good", Z("压", "Press"))
                 else:
                     by_role(70, "p1", v, {
                         "tank": ("你先手，队友会跟", "You engage, the team follows"),
@@ -6745,7 +6928,7 @@ class Engine:
                     add(88, "p_out", Z("对面 {0:.0f} 秒后复活", "Enemy respawns in {0:.0f}s").format(e_back), Z("从塔下退出来，别被反打", "Step out of tower range before they return"), "", "warn", Z("退出", "Exit"))
                 elif E == 0 and enemy_lost >= 5:
                     add(80, "p_end", v, Z("对面团灭：直接点基地，结束比赛", "Enemy aced: hit the nexus and end it"), "", "good", Z("点基地", "End"))
-                elif E == 0 and (late or e_back >= 30):
+                elif E == 0 and (e_back >= 30 or (late and e_back >= 20)):
                     add(80, "p_ace_long", v, Z("对面团灭而且复活久：一波推到底", "Enemy aced with long timers: push all the way"), per, "good", Z("推到底", "Push all"))
                 elif E == 0:
                     add(80, "p_ace", v, Z("对面团灭：全力推塔", "Enemy aced: push towers"), per, "good", Z("推塔", "Push"))
@@ -6764,6 +6947,38 @@ class Engine:
                 elif dead_e and e_has_front and not e_front_alive:
                     add(67, "x_enofront", Z("对面没前排了（{0}）", "They have no frontline ({0})").format(vs), Z("谁冲上来就集火谁", "Focus whoever walks up"),
                         Z("对面 {0:.0f} 秒后人齐", "Enemy back in {0:.0f}s").format(e_back) if e_back else "", "good", Z("集火", "Focus"))
+            # ---- 5.14：对面 / 我方关键英雄死掉的那段时间
+            if diff in (0, 1):
+                cand = [(rank(tk), -pw(p), i, tk) for i, p in enumerate(dead_e) if p.respawn >= 6 for tk in traits(p)]
+                if cand:
+                    _, _, i, (tr_, k) = min(cand)
+                    p = dead_e[i]
+                    add(71, "ed_%s_%s" % (tr_, cidl(p)), Z("{0}死了 · {1:.0f} 秒", "{0} is dead · {1:.0f}s").format(name_of(p), p.respawn),
+                        fmt(TR_EDEAD[tr_], p, k), Z("场上 {0}", "On the map: {0}").format(vs), "good", Z("压", "Press"))
+            if diff <= 0:
+                cand = [(rank(tk), i, tk) for i, p in enumerate(dead_a) if p is not me and p.respawn >= 6 for tk in traits(p) if tk[0] in TR_ADEAD]
+                if cand:
+                    _, i, (tr_, k) = min(cand)
+                    p = dead_a[i]
+                    add(72.5, "ad_%s_%s" % (tr_, cidl(p)), Z("队友{0}死了 · {1:.0f} 秒", "Ally {0} is dead · {1:.0f}s").format(name_of(p), p.respawn),
+                        fmt(TR_ADEAD[tr_], p, k), Z("场上 {0}", "On the map: {0}").format(vs), "warn", Z("等", "Wait"))
+            # ---- 5.14：对面有人刚到 6 级（有大招了）
+            lv6 = getattr(self, "_lv6", None)
+            first6 = lv6 is None or t < getattr(self, "_lv6_gt", 0) - 30
+            if first6:
+                lv6 = self._lv6 = {}
+            self._lv6_gt = t
+            for p in enemies:
+                if p.level >= 6 and p.name not in lv6:
+                    lv6[p.name] = 0.0 if (first6 or p.level > 6) else now_t
+            for p in alive_e:
+                if now_t - lv6.get(p.name, 0) < 20:
+                    tk = next((x for x in traits(p) if x[1] == "R"), None)
+                    if tk:
+                        add(64, "e6_%s_%s_%d" % (tk[0], cidl(p), side), Z("{0}到 6 级了", "{0} hit level 6").format(name_of(p)),
+                            Z("有 R（{0}）了：", "R ({0}) is up: ").format(noun(tk[0])) + fmt(TR_ENEMY[tk[0]][side], p, "R"), "", "warn",
+                            Z("防{0}", "vs {0}").format(noun(tk[0])))
+                        break
             # ---- 建筑刚变化
             if my_fell:
                 add(83, "t_myfell", Z("我方塔掉了", "Our tower fell"), Z("退到下一座塔，别在废墟上打", "Fall back to the next tower"), "", "bad", Z("退塔", "Fall back"))
@@ -6870,6 +7085,26 @@ class Engine:
             alive_sup = [p for p in e_sup if not p.is_dead]
             if alive_sup and my_role in ("assassin", "fighter", "mage"):
                 add(30, "x_sup", Z("对面有辅助{0}", "Enemy support: {0}").format(name_of(alive_sup[0])), Z("能碰到就先杀{0}，后排就没人保", "Kill {0} first when reachable; the backline loses its peel").format(name_of(alive_sup[0])), "", "", Z("先杀辅助", "Kill sup"))
+            # ---- 5.14：对面最强的两个人各说一条（按他的关键技能）；队友和你自己的关键技能
+            thr = sorted([p for p in alive_e if traits(p)], key=lambda p: -(pw(p) + (1e9 if p is fed else 0)))[:2]
+            for i, p in enumerate(thr):
+                tl = traits(p)
+                tr_, k = tl[int(now_t / 48) % len(tl)]
+                if k == "R" and p.level < 6:
+                    add(39 - i, "e5_%s_%s" % (tr_, cidl(p)), Z("{0}还没 6 级", "{0} is not level 6 yet").format(name_of(p)),
+                        Z("没有 R（{0}）：趁现在压他们", "No R ({0}) yet: pressure them now").format(noun(tr_)), "", "good", Z("压", "Press"))
+                else:
+                    add(39 - i, "ea_%s_%s_%d" % (tr_, cidl(p), side), Z("对面{0} · {1}", "Enemy {0} · {1}").format(name_of(p), noun(tr_)),
+                        fmt(TR_ENEMY[tr_][side], p, k), "", "warn" if p is fed else "", Z("防{0}", "vs {0}").format(noun(tr_)))
+            al_ = sorted((rank(tk), i, tk) for i, p in enumerate(allies) if not p.is_dead for tk in traits(p) if tk[0] in TR_ALLY)
+            if al_:
+                _, i, (tr_, k) = al_[int(now_t / 56) % len(al_)]
+                add(25, "aa_%s_%s" % (tr_, cidl(allies[i])), Z("队友{0} · {1}", "Ally {0} · {1}").format(name_of(allies[i]), noun(tr_)),
+                    fmt(TR_ALLY[tr_], allies[i], k), "", "", Z("跟队友", "Follow"))
+            if my_tr:
+                tr_, k = my_tr[int(now_t / 64) % len(my_tr)]
+                add(20, "sn_%s_%s" % (tr_, cidl(me)), Z("你的 {0} · {1}", "Your {0} · {1}").format(k, noun(tr_)), fmt(TR_SELF[tr_][0], None, k), nxt, "",
+                    Z("用 {0}", "Use {0}").format(k))
             # ---- 平时打法：时间段 × 局势 × 定位
             if minute < 5:
                 by_role(10, "ph_early", Z("前期 · {0}", "Early · {0}").format(vs), {
@@ -6918,7 +7153,7 @@ class Engine:
         urgent = [d for d in out if d["pri"] >= 50]
         now, hold = time.time(), getattr(self, "_now_hold", None)
         if not urgent:
-            pool = sorted(out, key=lambda d: -d["pri"])
+            pool = sorted(out, key=lambda d: -d["pri"])[:6]   # 最多轮 6 条，按重要程度取
             best = pool[int(now / 8) % len(pool)]      # 背景提示轮流显示
             if hold and now - hold[1] < 3 and hold[0]["pri"] >= 50 and hold[0]["key"] != "dead" and not me.is_dead:
                 return hold[0]                         # 刚才的紧急提示至少留 3 秒

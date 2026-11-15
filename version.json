@@ -1,17 +1,17 @@
 {
- "version": "5.13.0",
+ "version": "5.14.0",
  "date": "2026-11-14",
  "notes": [
-  "实时决策细分：13 种 → 134 种（按谁死了、还剩几秒、你的定位、钱和等级给不同的话）",
-  "紧急的事马上显示；不紧急的提示每 8 秒轮流一条"
+  "实时决策按英雄细分：171 个英雄的关键技能 × 场上局面，约 2700 种",
+  "对面 / 我方关键英雄死掉时、对面刚到 6 级时，点名说该怎么打"
  ],
  "files": {
-  "haidou_helper.py": "a875a73ab49def05f2f1b42cca5d0ce06528143732b89b273cbd95a353de66fe",
+  "haidou_helper.py": "208a56cf1421ca38cae3a55ced70082a48a1a396f6e7dec75c59189c5d4feaf8",
   "lang_en.py": "0713fb8062ccd0e9d70f438abc88b6612982d070da1df3c02304f37c43286a4a",
-  "README.md": "92426793f71a1e61441a00f6e52e5377e6c5899ac21c93dae90c16711a181c0b",
+  "README.md": "cfffafa33afeef8db91df01a58348691620df6688d87a246ded98ecafa254fe9",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026111401
+ "build": 2026111402
 }
