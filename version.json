@@ -1,17 +1,17 @@
 {
- "version": "5.14.0",
- "date": "2026-11-14",
+ "version": "5.15.0",
+ "date": "2026-11-15",
  "notes": [
-  "实时决策按英雄细分：171 个英雄的关键技能 × 场上局面，约 2700 种",
-  "对面 / 我方关键英雄死掉时、对面刚到 6 级时，点名说该怎么打"
+  "语音播报：把要紧的提示读出来（⋯ 里可关）",
+  "水晶重生计时；对标加参团率和装备排名"
  ],
  "files": {
-  "haidou_helper.py": "208a56cf1421ca38cae3a55ced70082a48a1a396f6e7dec75c59189c5d4feaf8",
-  "lang_en.py": "0713fb8062ccd0e9d70f438abc88b6612982d070da1df3c02304f37c43286a4a",
-  "README.md": "cfffafa33afeef8db91df01a58348691620df6688d87a246ded98ecafa254fe9",
+  "haidou_helper.py": "0986c096ab33c25d45cb4d1af2ff724e53528da94178394fa925804f84e33f23",
+  "lang_en.py": "c33c23316805eba3a0c3d5815b758194df979ee0901902d2f6b22374301939d6",
+  "README.md": "343ec443040f52b778b25a7ba9249ef3ac7da53b821b497faca9e07fcbd9a1f9",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026111402
+ "build": 2026111501
 }

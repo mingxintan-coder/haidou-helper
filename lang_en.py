@@ -1184,4 +1184,11 @@ EN.update({'下局注意': 'Next game', '三选一有 {0}/{1} 次没选第一推
     '等技能': 'Wait CDs',
     '保 C': 'Peel',
     '每 1~2 秒按场上情况重算。紧急的事（加点、人数、残血、推塔）马上显示；\n不紧急的提示每 8 秒轮流一条。': 'Recomputed every 1-2 s. Urgent things (skill point, numbers, low HP, pushing) show immediately;\nnon-urgent tips rotate every 8 s.',
+    '对面 {0} 后重生': 'theirs back in {0}',
+    '我方 {0} 后重生': 'ours back in {0}',
+    '水晶': 'Inhib',
+    '参团 {0:.0f}%': 'KP {0:.0f}%',
+    'Windows 里没有装中文语音，所以读不出来。\n到 设置 → 时间和语言 → 语言和区域 → 添加「中文（简体）」，勾上「文本转语音」，装好后重开助手。': 'No matching text-to-speech voice is installed in Windows.\nAdd one under Settings → Time & language → Language & region (tick "Text-to-speech"), then restart the helper.',
+    '语音播报已打开': 'Voice announcements are on',
+    '语音播报（把要紧的提示读出来）': 'Voice announcements (read urgent tips aloud)',
 })

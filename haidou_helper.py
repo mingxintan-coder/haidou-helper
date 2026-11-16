@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.14.0"
-APP_BUILD = 2026111402         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.15.0"
+APP_BUILD = 2026111501         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -4541,6 +4541,9 @@ class Advisor:
             out.append(hr)
         br = self.bench_row(me)
         if br:
+            tk_ = me.kills + sum(p.kills for p in allies)
+            if tk_ >= 5:
+                br = (br[0], br[1] + " · " + tr("参团 {0:.0f}%").format(100 * (me.kills + me.assists) / tk_), br[2])
             out.append(br)
         out.append((tr("玩法"), style + (" · " + tr("打{0}").format(focus) if focus else ""), False))
         if ealerts:
@@ -5749,6 +5752,92 @@ TR_ADEAD = {
 }
 
 
+class Speaker:
+    """5.15：语音播报。开一个看不见的 PowerShell，用 Windows 自带的朗读（System.Speech）；只出声音，不碰游戏。
+       文字用 base64 传过去（中文不会乱码）。没有对应语言的语音就不出声（ok = False）。"""
+    PS = ("Add-Type -AssemblyName System.Speech;$s=New-Object System.Speech.Synthesis.SpeechSynthesizer;"
+          "$v=$s.GetInstalledVoices()|?{$_.Enabled -and $_.VoiceInfo.Culture.Name -like '__L__*'}|select -First 1;"
+          "if($v){$s.SelectVoice($v.VoiceInfo.Name);[Console]::Out.WriteLine('VOICE '+$v.VoiceInfo.Name)}else{[Console]::Out.WriteLine('NOVOICE')};"
+          "[Console]::Out.Flush();$s.Rate=3;"
+          "while(($l=[Console]::In.ReadLine()) -ne $null){try{$t=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($l));"
+          "$s.SpeakAsyncCancelAll();[void]$s.SpeakAsync($t)}catch{}}")
+
+    def __init__(self):
+        self.proc = None
+        self.ok = None                 # None = 还没启动 / 启动中，True = 可以说话，False = 没有语音
+        self.voice = ""
+        self.enabled = True
+        self.last_t = 0.0
+        self.last_pri = 0
+        self.said = {}                 # key -> 上次说的时间
+
+    def start(self):
+        if self.proc is not None or self.ok is False:
+            return
+        if os.name != "nt":
+            self.ok = False
+            return
+        try:
+            import subprocess
+            self.proc = subprocess.Popen(
+                ["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command",
+                 self.PS.replace("__L__", "en" if LANG == "en" else "zh")],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=0x08000000)
+
+            def wait():
+                try:
+                    line = self.proc.stdout.readline().decode("utf-8", "ignore").strip()
+                    self.ok = line.startswith("VOICE")
+                    self.voice = line[6:] if self.ok else ""
+                except Exception:  # noqa
+                    self.ok = False
+            threading.Thread(target=wait, daemon=True).start()
+        except Exception:  # noqa
+            self.ok = False
+            self.proc = None
+
+    @staticmethod
+    def clean(text):
+        """读出来之前：去掉括号里的补充、符号"""
+        text = re.sub(r"[（(][^）)]*[）)]", "", str(text or ""))
+        text = re.sub(r"[「」|·→]", " ", text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    def say(self, text, key, pri=50, repeat=40.0, now=None):
+        """同一件事 repeat 秒内不重复；两句话至少隔 4 秒，除非新的更要紧。回传有没有说"""
+        now = time.time() if now is None else now
+        text = self.clean(text)
+        if not self.enabled or not text or self.ok is False:
+            return False
+        if now - self.said.get(key, 0) < repeat:
+            return False
+        if now - self.last_t < 4 and pri <= self.last_pri:
+            return False
+        self.said[key] = now
+        self.last_t, self.last_pri = now, pri
+        if len(self.said) > 300:
+            self.said = {k: v for k, v in self.said.items() if now - v < 120}
+        if self.proc is None:
+            self.start()
+        try:
+            import base64
+            self.proc.stdin.write(base64.b64encode(text.encode("utf-8")) + b"\n")
+            self.proc.stdin.flush()
+            return True
+        except Exception:  # noqa
+            self.proc = None
+            return False
+
+    def stop(self):
+        try:
+            if self.proc:
+                self.proc.stdin.close()
+                self.proc.terminate()
+        except Exception:  # noqa
+            pass
+        self.proc = None
+
+
 class Engine:
     def __init__(self, gd, source, interval=1.5, stats=None):
         self.gd, self.source, self.interval = gd, source, interval
@@ -6643,6 +6732,30 @@ class Engine:
                 text += tr(" 每座 +{0:.0f}%").format(per * 100)
         return (tr("推塔"), text, True)
 
+    @staticmethod
+    def inhib_timers(raw, me):
+        """5.15：水晶还有几秒重生 → {"my": 秒或 None, "enemy": 秒或 None}。
+           水晶被拆后 5 分钟重生；读到「即将重生」事件（提前 15 秒）就按它校准，读到「已重生」就清掉"""
+        down = {}
+        for ev in (((raw or {}).get("events") or {}).get("Events") or []):
+            name = ev.get("EventName")
+            if name not in ("InhibKilled", "InhibRespawningSoon", "InhibRespawned"):
+                continue
+            mt = re.search(r"_T([12])", str(ev.get("InhibKilled") or ev.get("InhibRespawningSoon") or ev.get("InhibRespawned") or ""))
+            if not mt:
+                continue
+            et = float(ev.get("EventTime") or 0)
+            if name == "InhibKilled":
+                down[mt.group(1)] = et + 300
+            elif name == "InhibRespawningSoon":
+                down[mt.group(1)] = et + 15
+            else:
+                down.pop(mt.group(1), None)
+        t = float(getattr(me, "game_time", 0) or 0)
+        my_t = "1" if str(getattr(me, "team", "")).upper() in ("ORDER", "100") else "2"
+        left = {k: v - t for k, v in down.items() if v - t > 0}
+        return {"my": left.get(my_t), "enemy": left.get("2" if my_t == "1" else "1")}
+
     def decide(self, state, rec, raw=None):
         """5.13：实时决策（细分版，约 140 种）。每次刷新（约 1.5 秒）把场上情况拆成：
            人数 / 谁死了 / 复活时间 / 血量蓝量 / 技能点和大招 / 刚发生的击杀和拆塔 / 连杀赏金 / 经济和等级 / 建筑 / 胜率 / 时间段 / 你的定位
@@ -7064,13 +7177,43 @@ class Engine:
                     add(36, "w_end", Z("胜率 {0:.0f}%", "Win chance {0:.0f}%").format(wp * 100), Z("可以结束了：跟超级兵一起推", "Time to end: push with the super minions"), "", "good", Z("结束", "End"))
                 else:
                     add(36, "w_high", Z("胜率 {0:.0f}%", "Win chance {0:.0f}%").format(wp * 100), Z("优势很大：抱团别单走，别送赏金", "Big lead: stay grouped, do not give bounties"), "", "good", Z("抱团", "Group"))
+            inh = self.inhib_timers(raw, me)
+            if inh["enemy"] and inh["enemy"] <= 30:
+                add(65, "i_e_soon", Z("对面水晶 {0:.0f} 秒后重生", "Their inhibitor respawns in {0:.0f}s").format(inh["enemy"]),
+                    Z("超级兵快没了：现在推，不然要重新拆", "Super minions end soon: push now or redo it"), "", "warn", Z("现在推", "Push now"))
+            elif inh["enemy"]:
+                add(34, "i_e", Z("对面水晶破了 · {0:.0f}:{1:02.0f} 后重生", "Their inhibitor is down · back in {0:.0f}:{1:02.0f}").format(inh["enemy"] // 60, inh["enemy"] % 60),
+                    Z("跟着超级兵一起推，别提前进", "Push with super minions; do not go in early"), "", "good", Z("跟兵", "With wave"))
+            if inh["my"] and inh["my"] <= 30:
+                add(65, "i_m_soon", Z("我方水晶 {0:.0f} 秒后重生", "Our inhibitor respawns in {0:.0f}s").format(inh["my"]),
+                    Z("再守一下：重生后就没有超级兵了，别现在接团", "Hold a bit longer: no more super minions after respawn"), "", "good", Z("再守", "Hold"))
+            elif inh["my"]:
+                add(35, "i_m", Z("我方水晶被破 · {0:.0f}:{1:02.0f} 后重生", "Our inhibitor is down · back in {0:.0f}:{1:02.0f}").format(inh["my"] // 60, inh["my"] % 60),
+                    Z("先清超级兵，再打团", "Clear super minions before fighting"), "", "warn", Z("清兵", "Clear"))
+            # ---- 5.15 对标：参团率、装备排名
+            tk_ = sum(p.kills for p in team)
+            if tk_ >= 8 and (me.kills + me.assists) / tk_ < 0.35:
+                add(37, "b_kp", Z("参团率 {0:.0f}%", "Kill participation {0:.0f}%").format(100 * (me.kills + me.assists) / tk_),
+                    Z("队伍的人头你参与太少：跟紧队友打团，别自己在后面清兵", "You join too few kills: stick with the team in fights"), "", "warn", Z("跟团", "Group"))
+            if minute >= 6:
+                val = lambda p: sum(adv.gd.item_price(i) for i in p.items)   # noqa
+                order = sorted(team + enemies, key=val, reverse=True)
+                rk = next(i for i, p in enumerate(order) if p is me) + 1
+                if rk >= len(order) - 1 and len(order) >= 8:
+                    by_role(37, "b_poor", Z("装备全场第 {0}/{1}", "Items: #{0} of {1}").format(rk, len(order)), {
+                        "tank": ("这局你不肉：只在队友能跟的时候开", "You are not tanky this game: engage only with follow-up"),
+                        "fighter": ("打不过正面：只打落单和残血", "You lose straight fights: only hit isolated or low targets"),
+                        "adc": ("伤害不够：先点前排攒钱，别冒险找后排", "Low damage: hit the frontline safely, do not risk for the backline"),
+                        "mage": ("秒不掉人：技能用来清兵和控制", "You cannot one-shot: use spells for waves and CC"),
+                        "assassin": ("切不死人：等队友先打残再进", "You cannot kill alone: enter after teammates soften targets"),
+                        "support": ("别管输出：控制和保人做好就行", "Ignore damage: just land CC and protect")}, nxt, "warn", Z("稳", "Safe"))
             if enemy_lost >= 5:
                 add(34, "s_enexus", Z("对面只剩基地", "Only their nexus is left"), Z("赢一波团就直接点水晶", "Win one fight and hit the nexus"), "", "good", Z("点基地", "End"))
-            elif enemy_lost >= 3:
+            elif enemy_lost >= 3 and not inh["enemy"] and False:
                 add(34, "s_einhib", Z("对面水晶破了", "Their inhibitor is down"), Z("跟着超级兵一起推，别提前进", "Push with super minions; do not go in early"), "", "good", Z("跟兵", "With wave"))
             if my_lost >= 5:
                 add(35, "s_mynexus", Z("我方只剩基地", "Only our nexus is left"), Z("不能再输团：全员守家，别出高地", "No more lost fights: everyone defends"), "", "bad", Z("守家", "Defend"))
-            elif my_lost >= 3:
+            elif my_lost >= 3 and not inh["my"] and False:
                 add(35, "s_myinhib", Z("我方水晶被破", "Our inhibitor is down"), Z("先清超级兵，再打团", "Clear super minions before fighting"), "", "warn", Z("清兵", "Clear"))
             if lv_d <= -2:
                 add(33, "l_behind", Z("等级落后 {0:.0f} 级", "{0:.0f} levels behind").format(-lv_d), Z("别先手：站在经验范围里蹭等级", "Do not engage: soak XP in range"), "", "warn", Z("蹭经验", "Soak XP"))
@@ -8357,6 +8500,15 @@ class Engine:
             except Exception:  # noqa
                 pass
         try:
+            try:
+                inh = self.inhib_timers(raw, state[2])
+                if (inh["my"] or inh["enemy"]) and isinstance(rec.get("brief"), list):
+                    mmss = lambda v: "{0:.0f}:{1:02.0f}".format(v // 60, v % 60)   # noqa
+                    bits = ([tr("对面 {0} 后重生").format(mmss(inh["enemy"]))] if inh["enemy"] else []) + \
+                           ([tr("我方 {0} 后重生").format(mmss(inh["my"]))] if inh["my"] else [])
+                    rec["brief"].append((tr("水晶"), " · ".join(bits), min(v for v in inh.values() if v) <= 30))
+            except Exception:  # noqa
+                pass
             pr = self.push_row(state)
             if pr and isinstance(rec.get("brief"), list):
                 push_word = tr("敌少{0}人 → 推").split("{")[0]
@@ -12350,6 +12502,12 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     """紧凑悬浮窗：出装 / 增幅 / 玩法 三个分页，一次只看一页；平时收成一行。"""
     import tkinter as tk
     import tkinter.font as tkfont
+    import atexit
+    speaker = Speaker()                    # 5.15：语音播报
+    speaker.enabled = load_ui_cfg().get("voice", True)
+    if speaker.enabled:
+        speaker.start()
+    atexit.register(speaker.stop)
 
     # ---------- 5.0：设计系统 ----------
     # 在游戏画面旁边一眼扫过：底色压暗、只有一个强调色（海克斯青），黄 / 红只用在「要注意」，
@@ -12772,8 +12930,27 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         return {"verb": verb, "what": what, "sub": sub, "tip": tip.strip(), "col": col, "copy": copy, "kind": kind,
                 "short": short}
 
+    def speak_now(rec, ni):
+        """5.15：把要紧的事读出来（三选一选哪张 / 阵亡时买什么 / 紧急的实时决策）"""
+        if not speaker.enabled or not ni:
+            return
+        k = ni.get("kind")
+        if k == "aug":
+            speaker.say(ni["what"], "aug:" + ni["what"], 99, repeat=90)
+        elif k == "buy":
+            speaker.say(ni["verb"] + " " + ni["what"], "buy:" + ni["what"], 60, repeat=120)
+        elif k == "now":
+            nw = rec.get("now") or {}
+            if nw.get("pri", 0) >= 50:
+                head = re.split(r" · |（|\(", nw["verb"])[0]
+                speaker.say(head + "，" + nw["what"], nw["key"], nw["pri"], repeat=60 if nw["key"].startswith(("d_", "skill")) else 40)
+
     def update_now(rec):
         ni = now_info(rec)
+        try:
+            speak_now(rec, ni)
+        except Exception:  # noqa
+            log_crash("speak failed", sys.exc_info())
         try:
             update_hud(rec, ni)
         except Exception:  # noqa
@@ -13707,6 +13884,32 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         if current.get("rec"):
             show(current["rec"], flash=False)
     menu.add_checkbutton(label=tr("显示战况条（连招 / 战局 / 威胁 / 玩法）"), variable=brief_var, command=toggle_brief)
+    voice_var = tk.BooleanVar(value=speaker.enabled)
+
+    def toggle_voice():
+        speaker.enabled = bool(voice_var.get())
+        c = load_ui_cfg()
+        c["voice"] = speaker.enabled
+        save_ui_cfg(c)
+        if speaker.enabled:
+            speaker.start()
+            root.after(2500, lambda: voice_check(True))
+
+    def voice_check(test=False):
+        if speaker.enabled and speaker.ok is False:
+            import tkinter.messagebox as mb
+            mb.showinfo(tr("海斗助手"), tr("Windows 里没有装中文语音，所以读不出来。\n到 设置 → 时间和语言 → 语言和区域 → 添加「中文（简体）」，勾上「文本转语音」，装好后重开助手。"))
+        elif test and speaker.ok:
+            speaker.say(tr("语音播报已打开"), "test", 99, repeat=0)
+    menu.add_checkbutton(label=tr("语音播报（把要紧的提示读出来）"), variable=voice_var, command=toggle_voice)
+
+    def voice_first_check():
+        if speaker.enabled and speaker.ok is False and not load_ui_cfg().get("voice_warned"):
+            c = load_ui_cfg()
+            c["voice_warned"] = True
+            save_ui_cfg(c)
+            voice_check()
+    root.after(8000, voice_first_check)
     live_now_var = tk.BooleanVar(value=getattr(engine, "live_now", True))
 
     def toggle_live_now():
