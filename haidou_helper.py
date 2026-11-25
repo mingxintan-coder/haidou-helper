@@ -35,14 +35,35 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.15.0"
-APP_BUILD = 2026111501         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.16.0"
+APP_BUILD = 2026112401         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
                 "https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
                 "https://cdn.jsdelivr.net/gh/mingxintan-coder/haidou-helper@main/version.json"]
 APP_DIR = os.path.join(os.path.expanduser("~"), ".lol_haidou_helper")
+
+
+def _install_github_token():
+    """5.16：仓库改成私人后，更新要带 GitHub 读取权杖。权杖只放在你电脑上的 github_token.txt（不在程序里、不上传），
+       只加在发往这个仓库的请求上；没有这个文件就照旧（公开仓库不需要）"""
+    try:
+        with open(os.path.join(APP_DIR, "github_token.txt"), encoding="utf-8") as f:
+            tok = f.read().strip()
+    except OSError:
+        return
+    if not tok:
+        return
+
+    class _Auth(urllib.request.BaseHandler):
+        def https_request(self, req):
+            u = req.full_url
+            if u.startswith(("https://api.github.com/repos/mingxintan-coder/haidou-helper/",
+                             "https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/")):
+                req.add_header("Authorization", "Bearer " + tok)
+            return req
+    urllib.request.install_opener(urllib.request.build_opener(_Auth()))
 
 # ---------- 界面语言（中文 / English）：启动时按设置决定，切换后重新打开生效 ----------
 LANG = "zh"
@@ -6036,10 +6057,15 @@ class Engine:
             if not getattr(self, "_cs_seen_game", False):
                 self._cs_seen_game = True
                 self.reset_manual()                  # 新的一局开始选英雄：上一局的手动输入清掉
+        try:
+            self.cs_mates_start(sess, cred)          # 5.16：队友近期表现（背景读，读好了再刷新）
+        except Exception:  # noqa
+            pass
         payload = self.champ_select_payload(sess)
         if payload is None:
             return None
-        sig = (tuple(payload["cand_ids"]), tuple(payload["team_ids"]), self.stats_dirty)
+        sig = (tuple(payload["cand_ids"]), tuple(payload["team_ids"]), self.stats_dirty,
+               len(getattr(self, "_mates", {}) or {}))
         with self.lock:
             self.stats_dirty = False
         if sig == getattr(self, "_cs_sig", None):
@@ -6060,6 +6086,114 @@ class Engine:
             finally:
                 self._lcu_finding = False
         threading.Thread(target=run, daemon=True).start()
+
+    def cs_mates_start(self, sess, cred):
+        """5.16：一进选英雄就在背景读 4 个队友最近 20 局和段位（跟进游戏后的情报一样，只是提早到选英雄）"""
+        gid = sess.get("gameId") if isinstance(sess, dict) else None
+        if not gid or getattr(self, "_mates_gid", None) == gid:
+            return
+        self._mates_gid, self._mates = gid, {}
+        cell = sess.get("localPlayerCellId")
+        members = [m for m in sess.get("myTeam") or [] if isinstance(m, dict) and m.get("cellId") != cell]
+        threading.Thread(target=self.cs_mates_fetch, args=(gid, members, cred), daemon=True, name="mates").start()
+
+    def cs_mates_fetch(self, gid, members, cred):
+        out = {}
+        for m in members:
+            pu = m.get("puuid")
+            if not pu and m.get("summonerId"):
+                try:
+                    pu = (lcu_get(f"/lol-summoner/v1/summoners/{m['summonerId']}", cred, timeout=5) or {}).get("puuid")
+                except Exception:  # noqa
+                    pu = None
+            if not pu:
+                continue
+            try:
+                hist = lcu_get(f"/lol-match-history/v1/products/lol/{pu}/matches?begIndex=0&endIndex=20", cred, timeout=15)
+            except Exception:  # noqa
+                hist = None
+            try:
+                rank = parse_lcu_rank(lcu_get(f"/lol-ranked/v1/ranked-stats/{pu}", cred, timeout=10))
+            except Exception:  # noqa
+                rank = None
+            out[m.get("cellId")] = {"puuid": pu, "games": ((hist or {}).get("games") or {}).get("games") or [], "rank": rank,
+                                    "name": m.get("gameName") or m.get("summonerName") or ""}
+            if getattr(self, "_mates_gid", None) != gid:
+                return
+            self._mates = dict(out)
+            with self.lock:
+                self.stats_dirty = True                  # 让选英雄画面重画
+            self.wake.set()
+            time.sleep(0.3)
+
+    def cs_mates_rows(self, sess):
+        """队友近期表现 → [(英雄 id, 文字, 要注意)]：近 20 局海斗胜负、估的隐藏分、这个英雄玩过几次、车队、以前遇过"""
+        mates = getattr(self, "_mates", None) or {}
+        if not mates:
+            return []
+        by_key = {str(c.get("key")): c["id"] for c in self.gd.champs.values()}
+        infos = []
+        for m in sess.get("myTeam") or []:
+            d = mates.get(m.get("cellId"))
+            if not d:
+                continue
+            ck = m.get("championId") or m.get("championPickIntent") or 0
+            i = self.player_intel(d["games"], ck)
+            i.update({"ally": True, "rank": d["rank"], "puuid": d["puuid"], "champ": by_key.get(str(ck)),
+                      "gids": [x.get("gameId") for x in d["games"] if x.get("gameId")], "name": d["name"]})
+            infos.append(i)
+        if not infos:
+            return []
+        self.mark_parties(infos)
+        try:
+            estimate_mmr(infos)
+        except Exception:  # noqa
+            pass
+        seen = read_json(SEEN_FILE) or {}
+        out = []
+        for i in infos:
+            bits = []
+            if i["may_n"]:
+                bits.append(tr("海斗 {0}/{1} 胜").format(i["may_w"], i["may_n"]))
+            if i.get("mmr"):
+                bits.append("≈{0:.0f}".format(i["mmr"]))
+            if i["champ_n"] >= 3:
+                bits.append(tr("这英雄 {0} 局").format(i["champ_n"]))
+            elif i["champ_n"] == 0 and i["n"] >= 10 and i.get("champ"):
+                bits.append(tr("没玩过这英雄"))
+            if i["streak"] <= -3:
+                bits.append(tr("连败 {0}").format(-i["streak"]))
+            elif i["streak"] >= 3:
+                bits.append(tr("连胜 {0}").format(i["streak"]))
+            if i.get("party"):
+                bits.append(tr("车队"))
+            sn = (seen.get(i["puuid"]) or {}).get("n")
+            if sn:
+                bits.append(tr("遇过 {0} 次").format(sn))
+            bad = (i["may_n"] >= 8 and i["may_w"] / i["may_n"] < 0.4) or i["streak"] <= -3
+            out.append((i.get("champ"), " · ".join(bits) or tr("没有近期记录"), bad))
+        return out
+
+    def team_plan(self, team, bench, keep=()):
+        """5.16 全队换人：队友手上的英雄和备选席比，谁换哪个能让这局胜率高最多（每个备选英雄只给一个人；≥1.5% 才说）"""
+        def est(c):
+            try:
+                return self.advisor.champ_win_est(c)[0]
+            except Exception:  # noqa
+                return None
+        avail = [b for b in dict.fromkeys(bench) if b and b not in keep]
+        e = {c: est(c) for c in set(team) | set(avail)}
+        pairs = sorted(((e[b] - e[a], a, b) for a in team for b in avail if e.get(a) is not None and e.get(b) is not None),
+                       key=lambda x: -x[0])
+        used, plan = set(), []
+        for gain, a, b in pairs:
+            if gain < 0.015:
+                break
+            if a in used or b in used:
+                continue
+            plan.append({"ally": a, "bench": b, "gain": gain})
+            used |= {a, b}
+        return plan
 
     def champ_select_payload(self, sess):
         by_key = {str(c.get("key")): c["id"] for c in self.gd.champs.values()}
@@ -6139,8 +6273,19 @@ class Engine:
                                                 (0 if sess.get("allowRerolling") is False else None), bench_best)
         except Exception:  # noqa
             reroll = None
+        plan, mates = [], []
+        try:
+            if sess.get("benchEnabled", True):
+                keep = [mine] + subset_c + ([ranked[0]["id"]] if ranked and ranked[0]["id"] != mine else [])
+                plan = self.team_plan(team, bench_c, keep)
+        except Exception:  # noqa
+            log_crash("team plan failed", sys.exc_info())
+        try:
+            mates = self.cs_mates_rows(sess)
+        except Exception:  # noqa
+            log_crash("mates failed", sys.exc_info())
         return {"cands": ranked, "cand_ids": cands, "team_ids": team, "needs": needs, "mine": mine, "subset": subset_c,
-                "bench_enabled": bool(sess.get("benchEnabled", True)), "reroll": reroll}
+                "bench_enabled": bool(sess.get("benchEnabled", True)), "reroll": reroll, "team_plan": plan, "mates": mates}
 
     def write_item_set(self, champ):
         """把推荐出装写进游戏商店的「推荐装备」页（客户端 /lol-item-sets）：只在海斗地图、只给这个英雄；
@@ -13566,7 +13711,7 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         else:
             route_box.pack(fill="x", pady=(2, 3), before=tips_box)
     tip_lbls = []
-    for _ in range(2):
+    for _ in range(4):
         lb = Label(tips_box, text="", bg=BG, fg=FG, font=F["tip"], anchor="w", justify="left")
         wraps.append(lb)
         tip_lbls.append(lb)
@@ -14342,6 +14487,23 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             mini_extra = "\n" + rtxt
         else:
             mini_extra = ""
+        # 5.16：全队换人建议（点一下复制，贴到选人聊天里）＋ 队友近期表现
+        try:
+            cn = engine.gd.champ_name
+            plan = sel.get("team_plan") or []
+            if plan:
+                txt = tr("全队换人：") + tr("、").join("{0}→{1} {2:+.0f}%".format(cn(x["ally"]), cn(x["bench"]), x["gain"] * 100) for x in plan[:3])
+                st["team_msg"] = tr("换人建议：") + tr("，").join(tr("{0} 换 {1}（胜率 +{2:.0f}%）").format(
+                    cn(x["ally"]), cn(x["bench"]), x["gain"] * 100) for x in plan[:3])
+                tip_lbls[2].config(text="⇄ " + txt, fg=ACC, cursor="hand2")
+                tip_lbls[2].pack(fill="x", pady=(0, 1))
+            mates = sel.get("mates") or []
+            if mates:
+                tip_lbls[3].config(text="\n".join("{0}：{1}".format(cn(c) if c else "?", t) for c, t, bad in mates),
+                                   fg=WARN if any(bad for _, _, bad in mates) else SUB)
+                tip_lbls[3].pack(fill="x", pady=(0, 1))
+        except Exception:  # noqa
+            log_crash("team rows failed", sys.exc_info())
         # 你自己的英雄、分给你挑的 1~3 个一定要看得到（备选席很多时会被挤出前 4），剩下的位置给分数最高的
         must = [c for c in cands if c is mine or c["id"] in (sel.get("subset") or [])][:4]
         rows = must + [c for c in cands if c not in must][:4 - len(must)]
@@ -14391,6 +14553,21 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             copy_item(names[i])
             st["mini_i"] = i + 1
     mini.bind("<Button-1>", mini_click)
+
+    def copy_team_msg(e=None):
+        msg = st.get("team_msg")
+        if not msg:
+            return
+        try:
+            root.clipboard_clear()
+            root.clipboard_append(msg)
+            root.update()
+        except tk.TclError:
+            return
+        engine.q.put(("data", tr("已复制换人建议：在选人聊天框按 Ctrl+V 发给队友")))
+    tip_lbls[2].bind("<Button-1>", copy_team_msg)
+    hover(tip_lbls[2], lambda: tr("按这局的预估胜率算：队友换成备选席上的英雄能高多少。\n点一下复制成一句话，贴到选人聊天里给队友看。"))
+    hover(tip_lbls[3], lambda: tr("队友最近 20 局（从游戏客户端读）：海斗胜负、估的隐藏分、这个英雄玩过几次、是不是车队、以前遇过几次。\n黄色＝有人近期海斗胜率低于 40% 或在连败。"))
     for i, r in enumerate(item_rows):
         for w in (r["fr"], r["nm"], r["sc"], r["rs"], r["meta"]):
             w.config(cursor="hand2")
@@ -14988,6 +15165,7 @@ def start_web(engine, port=8765):
 
 # --------------------------------------------------------------------------------------
 def main():
+    _install_github_token()
     ap = argparse.ArgumentParser(description=tr("海斗助手：海克斯大乱斗实时出装/增幅推荐"))
     ap.add_argument("--mock", action="store_true", help=tr("使用模拟对局演示"))
     ap.add_argument("--console", action="store_true", help=tr("控制台文字模式"))

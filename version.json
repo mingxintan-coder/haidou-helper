@@ -1,17 +1,17 @@
 {
- "version": "5.15.0",
- "date": "2026-11-15",
+ "version": "5.16.0",
+ "date": "2026-11-24",
  "notes": [
-  "语音播报：把要紧的提示读出来（⋯ 里可关）",
-  "水晶重生计时；对标加参团率和装备排名"
+  "选英雄：全队换人建议（点一下复制给队友）、4 个队友近期表现",
+  "支持私人仓库更新（本机 github_token.txt）"
  ],
  "files": {
-  "haidou_helper.py": "0986c096ab33c25d45cb4d1af2ff724e53528da94178394fa925804f84e33f23",
-  "lang_en.py": "c33c23316805eba3a0c3d5815b758194df979ee0901902d2f6b22374301939d6",
-  "README.md": "343ec443040f52b778b25a7ba9249ef3ac7da53b821b497faca9e07fcbd9a1f9",
+  "haidou_helper.py": "7621fb0946ba5edc5f5f8b5d8a48037bd108d4856481475c8e997c2f4187f98f",
+  "lang_en.py": "f6ea1e2441a42b8c6c7960fce39773819b9d7f59e9e47755b6230900f15d9e16",
+  "README.md": "e1983e20404c6352e411375e759e4131b390399c0db838a85dce0f57b8fcc64a",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026111501
+ "build": 2026112401
 }
