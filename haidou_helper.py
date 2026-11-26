@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.16.0"
-APP_BUILD = 2026112401         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.17.0"
+APP_BUILD = 2026112501         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5200,17 +5200,19 @@ class ScreenScanner:
         good = [(cx, cy, txt, h) for cx, cy, txt, sc, h in lines if sc >= 0.5 and txt]
         names = [(cx, cy, self._is_name(txt), h) for cx, cy, txt, h in good if self._is_name(txt)]
         rows = []
-        for combo in itertools.combinations(sorted(names, key=lambda n: n[0]), 3):
-            ys = [n[1] for n in combo]
-            hmax = max(8.0, max(n[3] for n in combo))
-            if max(ys) - min(ys) > 1.2 * hmax:
-                continue
-            gaps = [combo[1][0] - combo[0][0], combo[2][0] - combo[1][0]]
-            if min(gaps) < width * 0.08 or max(gaps) > 1.6 * min(gaps):
-                continue          # 三张卡应该大致等距
-            rows.append((sum(ys) / 3, max(ys) - min(ys), combo))
-        # 从上往下试：卡片名称在描述上面，第一排能通过验证的就是
-        for _, _, combo in sorted(rows, key=lambda r: (round(r[0] / 10), r[1])):
+        srt = sorted(names, key=lambda n: n[0])
+        for k in (4, 3):          # 5.17：「Maestro」这一场是四选一；先找四张，找不到再找三张
+            for combo in itertools.combinations(srt, k) if len(srt) <= 14 else ():
+                ys = [n[1] for n in combo]
+                hmax = max(8.0, max(n[3] for n in combo))
+                if max(ys) - min(ys) > 1.2 * hmax:
+                    continue
+                gaps = [combo[i + 1][0] - combo[i][0] for i in range(k - 1)]
+                if min(gaps) < width * 0.08 or max(gaps) > 1.6 * min(gaps):
+                    continue          # 卡片应该大致等距
+                rows.append((-k, sum(ys) / k, max(ys) - min(ys), combo))
+        # 张数多的先试，再从上往下试：卡片名称在描述上面，第一排能通过验证的就是
+        for _, _, _, combo in sorted(rows, key=lambda r: (r[0], round(r[1] / 10), r[2])):
             offers = self._validate(combo, good)
             if offers:
                 sx, ox = 1 / getattr(self, "scale", 1.0), getattr(self, "offset", (0, 0))[0]
@@ -5220,7 +5222,7 @@ class ScreenScanner:
 
     def _validate(self, combo, good):
         centers = [n[0] for n in combo]
-        half = (centers[2] - centers[0]) / 4
+        half = (centers[-1] - centers[0]) / (len(centers) - 1) / 2
         offers = []
         for cx0, cy0, name, h0 in combo:
             desc = [txt for cx, cy, txt, h in sorted(good, key=lambda g: g[1])
@@ -5236,6 +5238,8 @@ class ScreenScanner:
             return None
         known = sum(1 for n, _ in offers if self.advisor.match_name(n, 0.7))
         described = sum(1 for _, d in offers if len(d) >= 6 and keyword_tags(d))
+        if len(offers) == 4 and known < 3:
+            return None                       # 四张的要求更严，免得把三张卡旁边的别的文字当成第四张
         if not (known >= 2 or (known >= 1 and described >= 2) or described >= 3):
             return None
         return offers
@@ -7191,7 +7195,7 @@ class Engine:
                 elif E == 0:
                     add(80, "p_ace", v, Z("对面团灭：全力推塔", "Enemy aced: push towers"), per, "good", Z("推塔", "Push"))
                 elif e_back < 10:
-                    add(80, "p_short", v, Z("时间只够拆一座：拆完就退", "Time for one tower only: take it and leave"), per, "good", Z("拆一座", "One tower"))
+                    add(80, "p_short", v, Z("时间不多：先打掉塔的镀层（一块 100 金），打完就退", "Short window: break turret plates (100g each), then leave"), per, "good", Z("打镀层", "Plates"))
                 elif hp is not None and hp < 0.5:
                     add(80, "p_hurt", v, Z("半血别抗塔：让满血队友先进塔", "Half HP: let a full-HP teammate tank the tower"), per, "good", Z("点塔", "Hit tower"))
                 elif my_role == "tank":
@@ -8353,6 +8357,8 @@ class Engine:
                 return
             self.manual.setdefault("picked", []).append(name)
             self.manual_dirty = "picked:" + name
+            if getattr(self, "_aug_owed", 0) > 0 and (self._aug_stage or 0) >= 2:
+                self._aug_owed -= 1                    # 5.17：选了一张，欠的少一张
         self.wake.set()
 
     IME_START = 45        # 开局前 45 秒在泉水买装：不动输入法
@@ -8572,13 +8578,24 @@ class Engine:
             return ("status", tr("已连接，等待玩家数据…"))
         self.check_game_end(raw)
         me0 = state[2]
-        # 5.11：三选一只在开局（3 级）和升到 7 / 11 / 15 级时出现 → 只在这几个时刻自动识别，平时完全不跑
+        # 5.11 / 5.17：三选一在开局（3 级）马上出现；7 / 11 / 15 级的要等「到级之后下一次阵亡」才出现
+        # → 只在这几个时刻自动识别：开局一次；到级后每次阵亡一次（直到识别到你选了一张）
+        aram = mode_kind(state[0], state[1]) == "aram"
         stg = sum(1 for x in (3, 7, 11, 15) if (me0.level or 0) >= x)
         if self._aug_stage is None:                     # 这局第一次读到：开局才触发，中途打开助手不触发
-            if stg >= 1 and me0.game_time < 90 and mode_kind(state[0], state[1]) == "aram":
+            if stg >= 1 and me0.game_time < 90 and aram:
                 self.aug_want = time.time()
-        elif stg > self._aug_stage and mode_kind(state[0], state[1]) == "aram":
-            self.aug_want = time.time()
+            self._aug_owed = 0
+            self._aug_dead = bool(me0.is_dead)
+        elif stg > self._aug_stage and aram:
+            self._aug_owed = getattr(self, "_aug_owed", 0) + (stg - self._aug_stage)
+            if self._aug_stage == 0:                   # 刚到 3 级（开局那张）不用等阵亡
+                self._aug_owed -= 1
+                self.aug_want = time.time()
+        dead_now = bool(me0.is_dead)
+        if dead_now and not getattr(self, "_aug_dead", False) and getattr(self, "_aug_owed", 0) > 0 and aram:
+            self.aug_want = time.time()                # 刚阵亡，而且还有没选的增幅
+        self._aug_dead = dead_now
         self._aug_stage = stg
         if getattr(self, "ime_fix", True):
             # 3.3.2：改成背景每 2 秒看一次（ime_guard）：活着、不在买装备时，输入法一直保持英文
@@ -13235,14 +13252,16 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         intel = (getattr(engine, "cur_game", None) or {}).get("intel") or st.get("intel_last") or []
         em = [i["mmr"] for i in intel if not i.get("ally") and i.get("mmr")]
         augs = rec.get("augs") or []
-        order = [x if isinstance(x, str) else (x[0] if x else "") for x in (getattr(engine, "manual", {}) or {}).get("cand") or []]
+        man_ = getattr(engine, "manual", {}) or {}
+        order = [(x if isinstance(x, str) else (x[0] if x else "")).split("|", 1)[0]
+                 for x in (man_.get("cand") or man_.get("auto") or [])]
         cols = None
         if rec.get("cand_mode") and augs:
             by = {d["name"]: d for d in augs}
-            if len(order) == 3 and all(n in by for n in order):
+            if len(order) in (3, 4) and all(n in by for n in order):
                 cols = [(n, by[n].get("total", 0.0), by[n] is augs[0]) for n in order]
             else:
-                cols = [(d["name"], d.get("total", 0.0), d is augs[0]) for d in augs[:3]]
+                cols = [(d["name"], d.get("total", 0.0), d is augs[0]) for d in augs[:max(3, len(order))]]
         items = [d for d in (rec.get("items") or []) if "total" in d]
         su = rec.get("skill_up")
         sc_ = scanner
@@ -13343,8 +13362,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
             x0, y0 = hud["win"].winfo_x(), hud["win"].winfo_y()
             if d["cols"]:
                 cw = int(150 * k)
-                xs = d["card_x"] if len(d["card_x"]) == 3 else None
-                width = int(xs[2] - xs[0] + cw) if xs else cw * 3 + int(24 * k)
+                xs = d["card_x"] if len(d["card_x"]) == len(d["cols"]) else None
+                width = int(xs[-1] - xs[0] + cw) if xs else cw * len(d["cols"]) + int(12 * k) * (len(d["cols"]) - 1)
                 row = tk.Frame(inner, bg=BG, width=width, height=int(54 * k))
                 row.pack()
                 row.pack_propagate(False)
