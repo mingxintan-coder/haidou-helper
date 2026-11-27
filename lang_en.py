@@ -1203,4 +1203,5 @@ EN.update({'下局注意': 'Next game', '三选一有 {0}/{1} 次没选第一推
     '这英雄 {0} 局': '{0} games on champ',
     '遇过 {0} 次': 'met {0}x',
     '队友最近 20 局（从游戏客户端读）：海斗胜负、估的隐藏分、这个英雄玩过几次、是不是车队、以前遇过几次。\n黄色＝有人近期海斗胜率低于 40% 或在连败。': "Teammates' last 20 games (from the client): Mayhem record, estimated MMR, games on this champion, premade, times met.\nYellow = someone is under 40% in Mayhem recently or on a losing streak.",
+    '未安装 OCR 库（运行 start_mac.command 会自动安装）': 'OCR library not installed (run start_mac.command to install it)',
 })

@@ -35,14 +35,25 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.18.0"
-APP_BUILD = 2026112601         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.19.0"
+APP_BUILD = 2026112602         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
                 "https://raw.githubusercontent.com/mingxintan-coder/haidou-helper/main/version.json",
                 "https://cdn.jsdelivr.net/gh/mingxintan-coder/haidou-helper@main/version.json"]
 APP_DIR = os.path.join(os.path.expanduser("~"), ".lol_haidou_helper")
+
+
+def _mac_certs():
+    """5.19：Mac 上 python.org 装的 Python 没有根证书，连 GitHub 会失败 → 有 certifi 就用它的证书"""
+    if sys.platform != "darwin":
+        return
+    try:
+        import certifi
+        ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
+    except Exception:  # noqa
+        pass
 
 
 def _install_github_token():
@@ -5080,7 +5091,8 @@ class ScreenScanner:
                 from rapidocr_onnxruntime import RapidOCR
                 self.ocr, self.kind = RapidOCR(intra_op_num_threads=2), "v1"
             except ImportError:
-                self.error = tr("未安装 OCR 库（运行 start.bat 会自动安装）")
+                self.error = tr("未安装 OCR 库（运行 start.bat 会自动安装）") if sys.platform.startswith("win") else \
+                    tr("未安装 OCR 库（运行 start_mac.command 会自动安装）")
             except Exception as e:  # noqa
                 self.error = tr('OCR 初始化失败：{0}').format(e)
         except Exception as e:  # noqa
@@ -5843,6 +5855,10 @@ class Speaker:
         if self.starts > 3:                       # 小程序一直死掉：放弃，不再重开
             self.ok = False
             return
+        if sys.platform == "darwin":                  # 5.19：Mac 用系统自带的 say；每句开一次，新的一句打断旧的
+            self.mac_voice = self.mac_find_voice()
+            self.ok = self.mac_voice is not None
+            return
         v = self.find_voice(LANG == "en")
         if not v:
             self.ok = False
@@ -5859,6 +5875,37 @@ class Speaker:
             self.ok, self.voice = True, v[1]
         except Exception:  # noqa
             self.ok, self.proc = False, None
+
+    @staticmethod
+    def mac_find_voice():
+        """Mac：say -v ? 列出语音，找中文（zh_CN / zh_TW / zh_HK）或英文的 → 名字；没有 → None"""
+        try:
+            import subprocess
+            out = subprocess.run(["say", "-v", "?"], capture_output=True, text=True, timeout=10).stdout or ""
+        except Exception:  # noqa
+            return None
+        want = ("en_US", "en_GB") if LANG == "en" else ("zh_CN", "zh_TW", "zh_HK")
+        for code in want:
+            for line in out.splitlines():
+                mt = re.match(r"^(.+?)\s{2,}" + code + r"\b", line)
+                if mt:
+                    return mt.group(1).strip()
+        return None
+
+    def mac_say(self, text):
+        import subprocess
+        try:
+            if self.proc and self.proc.poll() is None:
+                self.proc.terminate()
+        except Exception:  # noqa
+            pass
+        try:
+            self.proc = subprocess.Popen(["say", "-v", self.mac_voice, "-r", "230", text],
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception:  # noqa
+            self.ok = False
+            return False
 
     @staticmethod
     def clean(text):
@@ -5881,6 +5928,10 @@ class Speaker:
         self.last_t, self.last_pri = now, pri
         if len(self.said) > 300:
             self.said = {k: v for k, v in self.said.items() if now - v < 120}
+        if sys.platform == "darwin":
+            if self.ok is None:
+                self.start()
+            return bool(self.ok) and self.mac_say(text)
         if self.proc is None:
             self.start()
         if self.proc is None:
@@ -10095,7 +10146,9 @@ def habit_bonus(cnt, wins, games, all_wins, decided, weight, cnt_decided=None):
 # --------------------------------------------------------------------------------------
 LCU_LOCKFILES = [r"C:\Riot Games\League of Legends\lockfile", r"D:\Riot Games\League of Legends\lockfile",
                  r"C:\Program Files\Riot Games\League of Legends\lockfile",
-                 r"D:\WeGameApps\英雄联盟\LeagueClient\lockfile", r"C:\WeGameApps\英雄联盟\LeagueClient\lockfile"]
+                 r"D:\WeGameApps\英雄联盟\LeagueClient\lockfile", r"C:\WeGameApps\英雄联盟\LeagueClient\lockfile",
+                 "/Applications/League of Legends.app/Contents/LoL/lockfile",                     # 5.19：Mac
+                 os.path.expanduser("~/Applications/League of Legends.app/Contents/LoL/lockfile")]
 MAYHEM_QUEUES = {2400}          # 海克斯大乱斗；另外 gameMode 为 KIWI 的也算
 
 
@@ -10148,6 +10201,19 @@ def lcu_credentials():
                     pass
             if port and token:
                 return int(port.group(1)), token.group(1)
+    if sys.platform == "darwin":                      # 5.19：Mac 从进程参数读（ps 是系统自带的）
+        try:
+            import subprocess
+            out = subprocess.run(["ps", "-A", "-ww", "-o", "args"], capture_output=True, text=True, timeout=10).stdout or ""
+            for line in out.splitlines():
+                if "LeagueClientUx" not in line:
+                    continue
+                port = re.search(r"--app-port=(\d+)", line)
+                token = re.search(r"--remoting-auth-token=([\w-]+)", line)
+                if port and token:
+                    return int(port.group(1)), token.group(1)
+        except Exception:  # noqa
+            pass
     return None
 
 
@@ -12761,9 +12827,10 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
     GOOD, WARN, BAD = "#4fd18b", "#f2b04a", "#ff6f57"
     WARN_BG, GOOD_BG = "#2a2216", "#13251c"
     GOLD, GREEN, YELLOW, ORANGE, GREY = ACC, GOOD, WARN, WARN, DIM
-    FAMILY = "Microsoft YaHei UI" if sys.platform.startswith("win") else "Noto Sans CJK SC"
-    NUMFAM = "Bahnschrift SemiBold" if sys.platform.startswith("win") else "DejaVu Sans"
-    CODEFAM = "Consolas" if sys.platform.startswith("win") else "DejaVu Sans Mono"
+    MAC_ = sys.platform == "darwin"
+    FAMILY = "Microsoft YaHei UI" if sys.platform.startswith("win") else "PingFang SC" if MAC_ else "Noto Sans CJK SC"
+    NUMFAM = "Bahnschrift SemiBold" if sys.platform.startswith("win") else "SF Pro Display" if MAC_ else "DejaVu Sans"
+    CODEFAM = "Consolas" if sys.platform.startswith("win") else "Menlo" if MAC_ else "DejaVu Sans Mono"
     ICON_GLYPHS = re.compile("[\U0001F300-\U0001FAFF\u2B06\u26A0\u2694\u2605\u25B6\u25B2\u25BC\u21EA\u25CF\uFE0F]\\s?")
 
     class Label(tk.Label):
@@ -13325,6 +13392,8 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
         w.bind("<B1-Motion>", move)
         w.bind("<ButtonRelease-1>", release)
         w.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
+        if sys.platform == "darwin":                  # Mac 的右键是 Button-2（双指点也是）
+            w.bind("<Button-2>", lambda e: menu.tk_popup(e.x_root, e.y_root))
 
     def hud_data(rec, ni):
         rec = rec or {}
@@ -13653,6 +13722,13 @@ def run_overlay(engine, alpha=0.92, scanner=None, scale=None):
                 except Exception:  # noqa
                     pass
             threading.Thread(target=run, daemon=True).start()
+        elif sys.platform == "darwin":                # 5.19：Mac 用系统自带的提示音
+            try:
+                import subprocess
+                snd = "/System/Library/Sounds/{0}.aiff".format("Glass" if len(tones) > 1 else "Tink")
+                subprocess.Popen(["afplay", snd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:  # noqa
+                pass
         else:
             try:
                 root.bell()
@@ -15264,6 +15340,7 @@ def start_web(engine, port=8765):
 
 # --------------------------------------------------------------------------------------
 def main():
+    _mac_certs()
     _install_github_token()
     ap = argparse.ArgumentParser(description=tr("海斗助手：海克斯大乱斗实时出装/增幅推荐"))
     ap.add_argument("--mock", action="store_true", help=tr("使用模拟对局演示"))

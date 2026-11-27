@@ -1,17 +1,16 @@
 {
- "version": "5.18.0",
+ "version": "5.19.0",
  "date": "2026-11-26",
  "notes": [
-  "语音播报改用 Python + Windows 语音，不再用隐藏 PowerShell（会被防毒软件报威胁）",
-  "商店开着时打中文不会再被切回英文"
+  "Mac 版（试用）：双击 start_mac.command 启动；输入法切换和 F8 快捷键只有 Windows 有"
  ],
  "files": {
-  "haidou_helper.py": "95832b11779cab3ae00155ed3c89c3dbf58bcc7b43eeb302d2736a39b4e7986c",
-  "lang_en.py": "f6ea1e2441a42b8c6c7960fce39773819b9d7f59e9e47755b6230900f15d9e16",
-  "README.md": "e0c7792e99aae00885bfe3a7778274da33d9c364b525994e7325c2786683d11d",
+  "haidou_helper.py": "6d85fa52dd19bf081e5a857ca02e89559f3b4e5e5f80173dc4b7e7dbcbc77f88",
+  "lang_en.py": "af2611e1957798e4420c264ecf25e7e34462b5cb6b9f9b15055deb3a08393352",
+  "README.md": "06983839c26021c6b41375e0a4f92939537f651de477ea84334d6f369d741912",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026112601
+ "build": 2026112602
 }
