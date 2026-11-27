@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.17.0"
-APP_BUILD = 2026112501         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.18.0"
+APP_BUILD = 2026112601         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -5388,6 +5388,17 @@ class ShopVision:
         d = self.distance(sig, key)
         return None if d is None else d < self.THRESH
 
+    def bottom_open(self):
+        """5.18：只看最下面「出售 / 复原 / 金币」那一条。打中文时选字框会盖住上面的搜索框，
+           所以判断「商店关了没」只看下面这条，免得打字时被当成关了商店、切回英文"""
+        sig, key = self.signature()
+        tpls = self.tpl.get(key) or []
+        if not tpls:
+            return None
+        n = self.SZ[0] * self.SZ[1]
+        d = min(sum(abs(a - b) for a, b in zip(sig[n:], t[n:])) / float(n) for t in tpls)
+        return d < self.THRESH
+
     def learn(self):
         """你按 P 开了商店：记下现在的样子（太亮的不记 —— 多半不是商店）"""
         sig, key = self.signature()
@@ -5778,48 +5789,76 @@ TR_ADEAD = {
 
 
 class Speaker:
-    """5.15：语音播报。开一个看不见的 PowerShell，用 Windows 自带的朗读（System.Speech）；只出声音，不碰游戏。
-       文字用 base64 传过去（中文不会乱码）。没有对应语言的语音就不出声（ok = False）。"""
-    PS = ("Add-Type -AssemblyName System.Speech;$s=New-Object System.Speech.Synthesis.SpeechSynthesizer;"
-          "$v=$s.GetInstalledVoices()|?{$_.Enabled -and $_.VoiceInfo.Culture.Name -like '__L__*'}|select -First 1;"
-          "if($v){$s.SelectVoice($v.VoiceInfo.Name);[Console]::Out.WriteLine('VOICE '+$v.VoiceInfo.Name)}else{[Console]::Out.WriteLine('NOVOICE')};"
-          "[Console]::Out.Flush();$s.Rate=3;"
-          "while(($l=[Console]::In.ReadLine()) -ne $null){try{$t=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($l));"
-          "$s.SpeakAsyncCancelAll();[void]$s.SpeakAsync($t)}catch{}}")
+    """5.18：语音播报。另开一个 Python 小程序（同一个 haidou_helper.py 加 --speak-child），
+       用 Windows 自带的语音（SAPI）念；只出声音，不碰游戏。5.15 用的是隐藏的 PowerShell，会被防毒软件当成威胁，已拿掉。
+       电脑里没有对应语言的语音（Speech\\Voices 里找不到）就不出声（ok = False）。"""
 
     def __init__(self):
         self.proc = None
-        self.ok = None                 # None = 还没启动 / 启动中，True = 可以说话，False = 没有语音
+        self.ok = None                 # None = 还没启动，True = 可以说话，False = 没有语音 / 启动不了
         self.voice = ""
         self.enabled = True
         self.last_t = 0.0
         self.last_pri = 0
         self.said = {}                 # key -> 上次说的时间
 
+    @staticmethod
+    def find_voice(want_en=False):
+        """在登录档里找 SAPI 语音 → (语言代码, 名字) 或 None。中文：804（简体）优先，没有就 404（繁体）"""
+        if os.name != "nt":
+            return None
+        try:
+            import winreg
+        except ImportError:
+            return None
+        found = []
+        for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            try:
+                root = winreg.OpenKey(hive, r"SOFTWARE\Microsoft\Speech\Voices\Tokens")
+            except OSError:
+                continue
+            i = 0
+            while True:
+                try:
+                    name = winreg.EnumKey(root, i)
+                except OSError:
+                    break
+                i += 1
+                try:
+                    attrs = winreg.OpenKey(root, name + r"\Attributes")
+                    lang = str(winreg.QueryValueEx(attrs, "Language")[0]).lower()
+                    found.append((lang, name))
+                except OSError:
+                    continue
+        for code in (("409", "809") if want_en else ("804", "404", "c04")):
+            for lang, name in found:
+                if code in lang.split(";"):
+                    return code, name
+        return None
+
     def start(self):
         if self.proc is not None or self.ok is False:
             return
-        if os.name != "nt":
+        self.starts = getattr(self, "starts", 0) + 1
+        if self.starts > 3:                       # 小程序一直死掉：放弃，不再重开
+            self.ok = False
+            return
+        v = self.find_voice(LANG == "en")
+        if not v:
             self.ok = False
             return
         try:
             import subprocess
-            self.proc = subprocess.Popen(
-                ["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command",
-                 self.PS.replace("__L__", "en" if LANG == "en" else "zh")],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=0x08000000)
-
-            def wait():
-                try:
-                    line = self.proc.stdout.readline().decode("utf-8", "ignore").strip()
-                    self.ok = line.startswith("VOICE")
-                    self.voice = line[6:] if self.ok else ""
-                except Exception:  # noqa
-                    self.ok = False
-            threading.Thread(target=wait, daemon=True).start()
+            exe = sys.executable or "python"
+            pyw = os.path.join(os.path.dirname(exe), "pythonw.exe")
+            if os.path.exists(pyw):
+                exe = pyw
+            self.proc = subprocess.Popen([exe, os.path.abspath(__file__), "--speak-child", v[0]],
+                                         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                         creationflags=0x08000000)
+            self.ok, self.voice = True, v[1]
         except Exception:  # noqa
-            self.ok = False
-            self.proc = None
+            self.ok, self.proc = False, None
 
     @staticmethod
     def clean(text):
@@ -5844,9 +5883,13 @@ class Speaker:
             self.said = {k: v for k, v in self.said.items() if now - v < 120}
         if self.proc is None:
             self.start()
+        if self.proc is None:
+            return False
+        if self.proc.poll() is not None:          # 小程序已经结束了：下一句再开
+            self.proc = None
+            return False
         try:
-            import base64
-            self.proc.stdin.write(base64.b64encode(text.encode("utf-8")) + b"\n")
+            self.proc.stdin.write((text.replace("\n", " ") + "\n").encode("utf-8"))
             self.proc.stdin.flush()
             return True
         except Exception:  # noqa
@@ -5862,6 +5905,41 @@ class Speaker:
             pass
         self.proc = None
 
+
+def speak_child(lang_code):
+    """语音小程序：一行一句，从 stdin 读进来，交给 Windows 的 SAPI 念（ctypes 直接叫 COM，不用 PowerShell）。
+       新的一句会打断还没念完的旧句子。出错就结束（主程序下次要说话时会再开）"""
+    import ctypes
+    from ctypes import wintypes
+    ole32 = ctypes.windll.ole32
+    ole32.CoInitializeEx(None, 2)                      # COINIT_APARTMENTTHREADED
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("a", wintypes.DWORD), ("b", wintypes.WORD), ("c", wintypes.WORD), ("d", ctypes.c_ubyte * 8)]
+
+    def guid(txt):
+        g = GUID()
+        ole32.CLSIDFromString(ctypes.c_wchar_p(txt), ctypes.byref(g))
+        return g
+    clsid, iid = guid("{96749377-3391-11D2-9EE3-00C04F797396}"), guid("{6C44DF74-72B9-4992-A1EC-EF996E0422D4}")
+    voice = ctypes.c_void_p()
+    if ole32.CoCreateInstance(ctypes.byref(clsid), None, 0x17, ctypes.byref(iid), ctypes.byref(voice)) != 0 or not voice:
+        return
+    vt = ctypes.cast(voice, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)))[0]
+    speak = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_wchar_p, wintypes.DWORD, ctypes.c_void_p)(vt[20])
+    set_rate = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_long)(vt[28])
+    set_rate(voice, 2)
+    SPF = 1 | 2 | 8                                    # 非同步 + 打断旧的 + 文字里有 XML（指定语言）
+    try:
+        stdin = sys.stdin.buffer if sys.stdin is not None else os.fdopen(0, "rb")   # pythonw 有时没有 sys.stdin
+    except Exception:  # noqa
+        return
+    for raw in iter(stdin.readline, b""):
+        txt = raw.decode("utf-8", "ignore").strip()
+        if not txt:
+            continue
+        txt = txt.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        speak(voice, '<voice required="Language={0}">{1}</voice>'.format(lang_code, txt), SPF, None)
 
 class Engine:
     def __init__(self, gd, source, interval=1.5, stats=None):
@@ -8435,15 +8513,17 @@ class Engine:
                             learn_at = None
                             if sm.shop and vision.learn():
                                 _perf_write(time.strftime("%H:%M:%S ") + "shop look learned")
-                        seen = vision.is_open()
+                        seen = vision.bottom_open() if sm.shop else vision.is_open()
                     except Exception:  # noqa
                         vision = None                     # 截不了画面：之后只看按键
-                if act == "en" and vision is not None and vision.ready():
+                if act == "en" and vision is not None and vision.ready() and not ev["esc"]:
                     try:                                  # 5.8.0：按键以为商店关了（例：搜索时打到 p）→ 看画面确认，还开着就不切
-                        if vision.is_open():
+                        if vision.bottom_open() is not False:
                             sm.shop, sm.shop_t, act = True, now, None
                     except Exception:  # noqa
                         pass
+                if act == "en" and now - max(last_typing, sm.last_letter) < 1.5 and not ev["esc"]:
+                    sm.shop, sm.shop_t, act = True, now, None   # 5.18：刚还在打字（多半在商店搜索框）→ 不切英文
                 if seen is True:
                     closed_n = 0
                     open_n += 1
@@ -8454,9 +8534,9 @@ class Engine:
                         sm.shop, sm.shop_t, act = True, now, "zh"   # 连续两次看到商店、1 秒内没按技能 → 才切中文
                 elif seen is False:
                     open_n = 0
-                if seen is False and sm.shop and now - sm.shop_t > 0.8:
+                if seen is False and sm.shop and now - sm.shop_t > 0.8 and now - max(last_typing, sm.last_letter) > 2.0:
                     closed_n += 1
-                    if closed_n >= 2:                     # 连续两次没看到商店（0.6 秒）：关了
+                    if closed_n >= 4:                     # 5.18：连续四次（约 1.2 秒）看不到商店下面那条、2 秒没打字：才当成关了
                         sm.shop, sm.p_close_at, act, closed_n = False, None, "en", 0
                 if act == "zh" and lang != "zh" and now >= backoff:
                     game_ime_to_chinese()
@@ -8855,7 +8935,7 @@ def create_shortcut(force=False):
         q(tr("海斗助手") + ".lnk"), q(target), q(args), q(PROG_DIR), q(ICON_ICO + ",0"), q(tr("海斗助手")))
     try:
         import subprocess
-        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
                            capture_output=True, text=True, timeout=30, creationflags=0x08000000)
         ok = r.returncode == 0
     except Exception as e:  # noqa
@@ -15301,4 +15381,10 @@ def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) >= 2 and sys.argv[1] == "--speak-child":
+        try:
+            speak_child(sys.argv[2] if len(sys.argv) > 2 else "804")
+        except Exception:  # noqa
+            pass
+        sys.exit(0)
     main()
