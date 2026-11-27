@@ -113,6 +113,7 @@
 ## 5.19.1：修正 Mac 上「无法获取版本号 / CERTIFICATE_VERIFY_FAILED」
 
 python.org 装的 Mac Python 没有根证书，连 GitHub 会失败。现在没有 certifi 时，会从 Mac 系统自带的根证书库导出一份来用（存在 `~/.lol_haidou_helper/mac_roots.pem`）。
+屏幕识别要用的 onnxruntime 还不支持最新的 Python（3.13 / 3.14），装不上时助手照样能用，只是三选一要手动输入；想要识别请装 Python 3.12。
 5.19.0 本身连不上网、没法自动更新到这一版：请重新下载一次，或在终端机执行一次 `open "/Applications/Python 3.13/Install Certificates.command"`（3.13 换成你装的版本号）。
 
 ## 5.19.0：Mac 版（试用，未在 Mac 上实测）
