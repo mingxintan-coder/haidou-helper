@@ -1,16 +1,16 @@
 {
- "version": "5.19.0",
+ "version": "5.19.1",
  "date": "2026-11-26",
  "notes": [
-  "Mac 版（试用）：双击 start_mac.command 启动；输入法切换和 F8 快捷键只有 Windows 有"
+  "Mac：修正连不上网（CERTIFICATE_VERIFY_FAILED）"
  ],
  "files": {
-  "haidou_helper.py": "6d85fa52dd19bf081e5a857ca02e89559f3b4e5e5f80173dc4b7e7dbcbc77f88",
+  "haidou_helper.py": "5836b4c39ba7a41fc1d931efa6f39578c7bea603f2da4a9d0ca6655dee86385d",
   "lang_en.py": "af2611e1957798e4420c264ecf25e7e34462b5cb6b9f9b15055deb3a08393352",
-  "README.md": "2d3709c2f2e58157c41e6b4e4ad2b8dc581d28b9f2d7b7be0e58bed2c5262f5a",
+  "README.md": "275ce9e884cf9c00c42da91101ac56f16545a7e17d5fa48aa617600abf29751f",
   "seed_db.json.gz": "47d24fcced8098b608c3431592155f1431b2a440a0286fb8777271e88843a8fc",
   "icon.ico": "db7ccd6eeb41c59e75cf8fb19f94df48115b70df62946b31577232caa00ccdec",
   "icon.png": "8b9eb2706c94ba92c6eb09191df6bc4d42557ed870d2f82e8bd4a307af468438"
  },
- "build": 2026112602
+ "build": 2026112603
 }

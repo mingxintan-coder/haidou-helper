@@ -35,8 +35,8 @@ import urllib.request
 from collections import Counter
 
 
-APP_VERSION = "5.19.0"
-APP_BUILD = 2026112602         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
+APP_VERSION = "5.19.1"
+APP_BUILD = 2026112603         # 同一个版本号重新发布时用（version.json 的 build 比较大也会更新）
 REPO_URL = "https://github.com/mingxintan-coder/haidou-helper"
 # 新版本检查：只读取版本号并提醒，不会自动下载或替换程序（jsDelivr 是 GitHub 连不上时的备用镜像）
 VERSION_URLS = ["https://api.github.com/repos/mingxintan-coder/haidou-helper/contents/version.json?ref=main",
@@ -46,14 +46,36 @@ APP_DIR = os.path.join(os.path.expanduser("~"), ".lol_haidou_helper")
 
 
 def _mac_certs():
-    """5.19：Mac 上 python.org 装的 Python 没有根证书，连 GitHub 会失败 → 有 certifi 就用它的证书"""
+    """5.19.1：Mac 上 python.org 装的 Python 没有根证书，连 GitHub 会报 CERTIFICATE_VERIFY_FAILED。
+       先用 certifi；没装就从 Mac 系统自带的根证书库导出一份（security 指令，系统自带），存在本机重复用"""
     if sys.platform != "darwin":
         return
+    cafile = None
     try:
         import certifi
-        ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
+        cafile = certifi.where()
     except Exception:  # noqa
-        pass
+        pem = os.path.join(APP_DIR, "mac_roots.pem")
+        try:
+            if not os.path.exists(pem) or os.path.getsize(pem) < 10000 or time.time() - os.path.getmtime(pem) > 30 * 86400:
+                import subprocess
+                out = subprocess.run(["security", "find-certificate", "-a", "-p",
+                                      "/System/Library/Keychains/SystemRootCertificates.keychain"],
+                                     capture_output=True, timeout=30).stdout or b""
+                if b"BEGIN CERTIFICATE" in out:
+                    os.makedirs(APP_DIR, exist_ok=True)
+                    with open(pem, "wb") as f:
+                        f.write(out)
+            if os.path.exists(pem):
+                cafile = pem
+        except Exception:  # noqa
+            cafile = None
+    if cafile:
+        try:
+            ssl.create_default_context(cafile=cafile)          # 先试一下读得进来
+            ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=cafile)
+        except Exception:  # noqa
+            pass
 
 
 def _install_github_token():

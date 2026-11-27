@@ -110,6 +110,11 @@
   配上那段时间双方阵亡数，按规则判断原因：你第一个阵亡 → 站太前；开打时我方已少人 → 人数不利还接团；
   阵亡比对面多 2 个以上 → 团战换人吃亏；没人阵亡却掉 → 丢塔 / 兵线；否则经济被追上 → 对面装备成型。
 
+## 5.19.1：修正 Mac 上「无法获取版本号 / CERTIFICATE_VERIFY_FAILED」
+
+python.org 装的 Mac Python 没有根证书，连 GitHub 会失败。现在没有 certifi 时，会从 Mac 系统自带的根证书库导出一份来用（存在 `~/.lol_haidou_helper/mac_roots.pem`）。
+5.19.0 本身连不上网、没法自动更新到这一版：请重新下载一次，或在终端机执行一次 `open "/Applications/Python 3.13/Install Certificates.command"`（3.13 换成你装的版本号）。
+
 ## 5.19.0：Mac 版（试用，未在 Mac 上实测）
 
 同一个程序现在也能在 Mac 上跑。还没有在真的 Mac 上测过，有问题请回报。
